@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   questdb:
     image: questdb/questdb:latest
@@ -10,22 +8,10 @@ services:
       QDB_CAIRO_DEFAULT_TYPE: LINUX
     volumes:
       - questdb_data:/var/lib/questdb
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          bash -c 'exec 3<>/dev/tcp/localhost/9000 &&
-          printf "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n" >&3 &&
-          timeout 2 cat <&3 | grep -Eq "HTTP/1\\.[01] (200|301)"'
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      start_period: 30s
 
   data-collector:
     build:
       context: .
-      dockerfile: Dockerfile.arm64
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -35,14 +21,12 @@ services:
       - QUESTDB_USER=admin
       - QUESTDB_PASSWORD=quest
     depends_on:
-      questdb:
-        condition: service_healthy
+      - questdb
     command: python collect_data.py live --symbols BTC,ETH --max-rps 2
 
   signal-engine:
     build:
       context: ./signal-engine
-      dockerfile: Dockerfile.arm64
     volumes:
       - ./data:/app/data
     environment:
@@ -51,10 +35,9 @@ services:
       - QUESTDB_PORT=8812
       - QUESTDB_USER=admin
       - QUESTDB_PASSWORD=quest
-      - SYMBOLS=BTC
+      - SYMBOLS=["BTC"]
     depends_on:
-      questdb:
-        condition: service_healthy
+      - questdb
     command: python scripts/run_signal_pipeline.py --dry-run --skip-regime
 
 volumes:

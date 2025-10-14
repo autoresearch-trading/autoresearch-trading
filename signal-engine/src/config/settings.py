@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    data_root: Path = Field(default=Path("../data-collector/data"))
+    data_root: Path = Field(default=Path("../data"))
     symbols: List[str] = Field(default_factory=lambda: ["BTC"], alias="SYMBOLS")
 
     questdb_host: str = Field(default="localhost", alias="QUESTDB_HOST")
