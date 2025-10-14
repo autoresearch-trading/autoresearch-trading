@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  questdb:
+    image: questdb/questdb:latest
+    ports:
+      - "9000:9000"  # HTTP
+      - "9009:9009"  # PostgreSQL wire protocol
+    environment:
+      QDB_CAIRO_DEFAULT_TYPE: LINUX
+    volumes:
+      - questdb_data:/var/lib/questdb
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  data-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - QUESTDB_HOST=questdb
+      - QUESTDB_PORT=9009
+      - QUESTDB_USER=admin
+      - QUESTDB_PASSWORD=quest
+    depends_on:
+      questdb:
+        condition: service_healthy
+    command: python collect_data.py live --symbols BTC,ETH --max-rps 2
+
+  signal-engine:
+    build:
+      context: ./signal-engine
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+    environment:
+      - QUESTDB_HOST=questdb
+      - QUESTDB_PORT=9009
+      - QUESTDB_USER=admin
+      - QUESTDB_PASSWORD=quest
+    depends_on:
+      questdb:
+        condition: service_healthy
+    command: python scripts/run_signal_pipeline.py --symbols BTC --dry-run --skip-regime
+
+volumes:
+  questdb_data:
