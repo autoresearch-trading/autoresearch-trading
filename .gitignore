@@ -1,6 +1,42 @@
+# Virtual environments and local config
 .venv/
-__pycache__/
 .env
+
+# Runtime data directories
 data/
 logs/
 *.parquet
+
+# Python caches & artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Python build artifacts
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+
+# Test & coverage outputs
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# MyPy cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Editor & OS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
