@@ -133,6 +133,18 @@ def main() -> None:
     else:
         console.print("[yellow]No regime data available for window.[/yellow]")
 
+    console.print("Loading price data from trades...")
+    price_map = client.get_price_map(
+        symbol=symbol,
+        start_ts=start_dt,
+        end_ts=end_dt,
+    )
+
+    if price_map:
+        console.print(f"Loaded {len(price_map)} price points")
+    else:
+        console.print("[yellow]No trade data, using signal prices[/yellow]")
+
     config = BacktestConfig(
         initial_capital=args.initial_capital,
         position_size_pct=args.position_size,
@@ -149,7 +161,7 @@ def main() -> None:
     results = engine.run(
         signals=signals,
         regimes=regimes,
-        price_data=None,
+        price_data={symbol: price_map},
     )
 
     reporter = BacktestReporter(console)

@@ -64,6 +64,7 @@ def build_signal_dataflow(
     orderbook_source: Source[OrderbookSnapshot] | None = None,
     regime_sink: DynamicSink[MarketRegime] | None = None,
     funding_source: Source[FundingRateEvent] | None = None,
+    trade_sink: DynamicSink[Trade] | None = None,
     cvd_config: Optional[Dict[str, Any]] = None,
     tfi_config: Optional[Dict[str, Any]] = None,
     ofi_config: Optional[Dict[str, Any]] = None,
@@ -79,6 +80,10 @@ def build_signal_dataflow(
     flow = Dataflow("signal_processor")
 
     trades_stream = op.input("trades", flow, trades_source)
+
+    if trade_sink is not None:
+        op.output("write_trades", trades_stream, trade_sink)
+
     keyed_trades = op.key_on("trades_by_symbol", trades_stream, lambda trade: trade.symbol)
 
     signal_streams: List[Stream[Signal]] = []

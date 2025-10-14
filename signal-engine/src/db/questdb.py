@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
-from signals.base import MarketRegime, Signal
+from signals.base import MarketRegime, Signal, Trade
 
 
 class QuestDBClient:
@@ -134,7 +134,9 @@ class QuestDBClient:
             with conn.cursor() as cur:
                 with cur.copy(
                     """
-                    COPY regime_log (ts, symbol, regime, atr, spread_bps, funding_rate)
+                    COPY regime_log (
+                        ts, symbol, regime, atr, spread_bps, funding_rate, should_trade
+                    )
                     FROM STDIN
                     """
                 ) as copy:
@@ -147,8 +149,9 @@ class QuestDBClient:
                                 regime.atr,
                                 regime.spread_bps,
                                 regime.funding_rate,
-                        ]
-                    )
+                                regime.should_trade,
+                            ]
+                        )
 
     def query_regimes(
         self,
@@ -159,7 +162,7 @@ class QuestDBClient:
     ) -> list[MarketRegime]:
         """Fetch regime classifications for backtesting or monitoring."""
         sql = """
-            SELECT ts, symbol, regime, atr, spread_bps, funding_rate
+            SELECT ts, symbol, regime, atr, spread_bps, funding_rate, should_trade
             FROM regime_log
             WHERE symbol = %(symbol)s
               AND ts BETWEEN %(start_ts)s AND %(end_ts)s
@@ -175,6 +178,67 @@ class QuestDBClient:
             rows = conn.execute(sql, params).fetchall()
 
         return [MarketRegime(**row) for row in rows]
+
+    def write_trades_batch(self, trades: Sequence[Trade]) -> None:
+        """Bulk insert processed trades."""
+        if not trades:
+            return
+
+        with psycopg.connect(self.conn_string) as conn:
+            with conn.cursor() as cur:
+                with cur.copy(
+                    """
+                    COPY trades_processed (ts, symbol, trade_id, side, price, qty, is_large)
+                    FROM STDIN
+                    """
+                ) as copy:
+                    for trade in trades:
+                        copy.write_row(
+                            [
+                                trade.ts,
+                                trade.symbol,
+                                trade.trade_id,
+                                trade.side,
+                                trade.price,
+                                trade.qty,
+                                trade.is_large,
+                            ]
+                        )
+
+    def query_trades(
+        self,
+        symbol: str,
+        start_ts: datetime,
+        end_ts: datetime,
+    ) -> list[Trade]:
+        """Fetch trades for backtesting price data."""
+        sql = """
+            SELECT ts, symbol, trade_id, side, price, qty, is_large
+            FROM trades_processed
+            WHERE symbol = %(symbol)s
+              AND ts BETWEEN %(start_ts)s AND %(end_ts)s
+            ORDER BY ts ASC
+        """
+        params = {
+            "symbol": symbol,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+        }
+
+        with psycopg.connect(self.conn_string, row_factory=dict_row) as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        return [Trade(**row) for row in rows]
+
+    def get_price_map(
+        self,
+        symbol: str,
+        start_ts: datetime,
+        end_ts: datetime,
+    ) -> dict[datetime, float]:
+        """Build a timestamp -> price mapping from trades for backtesting."""
+        trades = self.query_trades(symbol, start_ts, end_ts)
+        return {trade.ts: trade.price for trade in trades}
 
 
 class QuestDBSink(DynamicSink[Any]):
@@ -214,6 +278,16 @@ class QuestDBSink(DynamicSink[Any]):
             if len(regimes) != len(batch):
                 raise TypeError("QuestDB regime sink received non-MarketRegime payload")
             client.write_regimes_batch(regimes)
+
+        return cls(host=host, port=port, user=user, password=password, writer=writer)
+
+    @classmethod
+    def for_trades(cls, *, host: str, port: int, user: str, password: str) -> "QuestDBSink":
+        def writer(client: QuestDBClient, batch: Sequence[Any]) -> None:
+            trades = [item for item in batch if isinstance(item, Trade)]
+            if len(trades) != len(batch):
+                raise TypeError("QuestDB trade sink received non-Trade payload")
+            client.write_trades_batch(trades)
 
         return cls(host=host, port=port, user=user, password=password, writer=writer)
 

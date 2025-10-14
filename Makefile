@@ -19,6 +19,13 @@ test-unit: ## Run unit tests only
 test-integration: ## Run integration tests only
 	cd signal-engine && python -m pytest tests/integration/ -v
 
+test-no-questdb: ## Run tests without QuestDB
+	cd signal-engine && SKIP_QUESTDB_TESTS=true python -m pytest tests/unit/ -v
+
+test-ci: ## Run tests suitable for CI
+	python -m pytest tests/ -v
+	cd signal-engine && python -m pytest tests/unit/ -v
+
 lint: ## Run linting
 	flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 	black --check .
@@ -53,8 +60,17 @@ signal-pipeline: ## Run signal pipeline with sample data
 collect-data: ## Start data collection
 	python collect_data.py live --symbols BTC,ETH --max-rps 2
 
-dev-setup: install docker-up ## Complete development setup
+dev-setup: install questdb-local ## Complete development setup
 	@echo "Development environment ready!"
 	@echo "QuestDB available at: http://localhost:9000"
 	@echo "Run 'make collect-data' to start data collection"
 	@echo "Run 'make signal-pipeline' to test signal processing"
+
+questdb-local: ## Setup QuestDB locally (no Docker required)
+	cd signal-engine && python scripts/setup_questdb_local.py
+
+questdb-docker: ## Setup QuestDB with Docker
+	docker-compose up -d questdb
+	@echo "Waiting for QuestDB to be ready..."
+	@timeout 60 bash -c 'until curl -f http://localhost:9000/status; do sleep 2; done'
+	@echo "QuestDB is ready!"

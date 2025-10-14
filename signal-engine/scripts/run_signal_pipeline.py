@@ -137,6 +137,7 @@ def main() -> None:
     if args.dry_run:
         signal_sink = ConsoleSignalSink()
         regime_sink = None
+        trade_sink = None
         if not args.skip_regime:
             console.print("[yellow]Regime sink disabled in dry-run mode[/yellow]")
     else:
@@ -154,12 +155,19 @@ def main() -> None:
                 user=settings.questdb_user,
                 password=settings.questdb_password,
             )
+        trade_sink = QuestDBSink.for_trades(
+            host=settings.questdb_host,
+            port=settings.questdb_port,
+            user=settings.questdb_user,
+            password=settings.questdb_password,
+        )
 
     flow = build_signal_dataflow(
         trades_source=trade_source,
         signal_sink=signal_sink,
         orderbook_source=orderbook_source,
         regime_sink=regime_sink,
+        trade_sink=trade_sink,
         cvd_config=settings.cvd_config(),
         tfi_config=settings.tfi_config(),
         ofi_config=settings.ofi_config(),

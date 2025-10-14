@@ -12,8 +12,7 @@ CREATE TABLE IF NOT EXISTS signals (
     spread_bps INT,
     bid_depth DOUBLE,
     ask_depth DOUBLE,
-    metadata STRING,
-    INDEX(symbol)
+    metadata STRING
 ) TIMESTAMP(ts) PARTITION BY DAY;
 
 CREATE TABLE IF NOT EXISTS trades_processed (
@@ -23,8 +22,7 @@ CREATE TABLE IF NOT EXISTS trades_processed (
     side SYMBOL,
     price DOUBLE,
     qty DOUBLE,
-    is_large BOOLEAN,
-    INDEX(symbol)
+    is_large BOOLEAN
 ) TIMESTAMP(ts) PARTITION BY DAY;
 
 CREATE TABLE IF NOT EXISTS orderbook_snapshots (
@@ -41,8 +39,7 @@ CREATE TABLE IF NOT EXISTS orderbook_snapshots (
     ask4_price DOUBLE, ask4_qty DOUBLE,
     ask5_price DOUBLE, ask5_qty DOUBLE,
     mid_price DOUBLE,
-    spread_bps INT,
-    INDEX(symbol)
+    spread_bps INT
 ) TIMESTAMP(ts) PARTITION BY DAY;
 
 CREATE TABLE IF NOT EXISTS paper_trades (
@@ -61,8 +58,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     cvd_value DOUBLE,
     tfi_value DOUBLE,
     ofi_value DOUBLE,
-    regime STRING,
-    INDEX(symbol)
+    regime STRING
 ) TIMESTAMP(ts) PARTITION BY DAY;
 
 CREATE TABLE IF NOT EXISTS regime_log (
@@ -72,5 +68,5 @@ CREATE TABLE IF NOT EXISTS regime_log (
     atr DOUBLE,
     spread_bps INT,
     funding_rate DOUBLE,
-    INDEX(symbol)
+    should_trade BOOLEAN
 ) TIMESTAMP(ts) PARTITION BY HOUR;

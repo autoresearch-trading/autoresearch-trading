@@ -5,7 +5,7 @@ services:
     image: questdb/questdb:latest
     ports:
       - "9000:9000"  # HTTP
-      - "9009:9009"  # PostgreSQL wire protocol
+      - "8812:8812"  # PostgreSQL wire protocol
     environment:
       QDB_CAIRO_DEFAULT_TYPE: LINUX
     volumes:
@@ -25,7 +25,7 @@ services:
       - ./logs:/app/logs
     environment:
       - QUESTDB_HOST=questdb
-      - QUESTDB_PORT=9009
+      - QUESTDB_PORT=8812
       - QUESTDB_USER=admin
       - QUESTDB_PASSWORD=quest
     depends_on:
@@ -41,7 +41,7 @@ services:
       - ./data:/app/data
     environment:
       - QUESTDB_HOST=questdb
-      - QUESTDB_PORT=9009
+      - QUESTDB_PORT=8812
       - QUESTDB_USER=admin
       - QUESTDB_PASSWORD=quest
     depends_on:

@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: Simple CI (No QuestDB)
 
 on:
   push:
@@ -7,23 +7,9 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  test-unit:
     runs-on: ubuntu-latest
     
-    services:
-      questdb:
-        image: questdb/questdb:latest
-        ports:
-          - 9000:9000
-          - 8812:8812
-        env:
-          QDB_CAIRO_DEFAULT_TYPE: LINUX
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/status || exit 1"
-          --health-interval 30s
-          --health-timeout 10s
-          --health-retries 3
-
     steps:
     - uses: actions/checkout@v4
     
@@ -61,20 +47,6 @@ jobs:
         cd signal-engine
         pip install -r requirements.txt
     
-    - name: Wait for QuestDB to be ready
-      run: |
-        timeout 60 bash -c 'until curl -f http://localhost:9000/status; do sleep 2; done'
-    
-    - name: Setup QuestDB schema
-      run: |
-        cd signal-engine
-        python scripts/setup_questdb.py
-      env:
-        QUESTDB_HOST: localhost
-        QUESTDB_PORT: 8812
-        QUESTDB_USER: admin
-        QUESTDB_PASSWORD: quest
-    
     - name: Run data collector tests
       run: |
         python -m pytest tests/ -v
@@ -84,25 +56,10 @@ jobs:
         cd signal-engine
         python -m pytest tests/unit/ -v
     
-    - name: Run signal engine integration tests
-      run: |
-        cd signal-engine
-        python -m pytest tests/integration/ -v
-      env:
-        QUESTDB_HOST: localhost
-        QUESTDB_PORT: 8812
-        QUESTDB_USER: admin
-        QUESTDB_PASSWORD: quest
-    
-    - name: Test signal pipeline (dry run)
+    - name: Test signal pipeline (dry run only)
       run: |
         cd signal-engine
         python scripts/run_signal_pipeline.py --symbols BTC --date 2025-10-08 --dry-run --skip-regime
-      env:
-        QUESTDB_HOST: localhost
-        QUESTDB_PORT: 8812
-        QUESTDB_USER: admin
-        QUESTDB_PASSWORD: quest
 
   lint:
     runs-on: ubuntu-latest
