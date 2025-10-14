@@ -26,7 +26,7 @@ class APIClient:
             backoff_factor=0.3,
             status_forcelist=(429, 500, 502, 503, 504),
             raise_on_status=False,
-            allowed_methods=("GET",),
+            allowed_methods=frozenset({"GET"}),
         )
         adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=20)
         self.session.mount("https://", adapter)

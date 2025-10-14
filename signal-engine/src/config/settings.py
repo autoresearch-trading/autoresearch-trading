@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import List
 
@@ -38,7 +39,14 @@ class Settings(BaseSettings):
     @classmethod
     def _split_symbols(cls, value):
         if isinstance(value, str):
-            return [sym.strip().upper() for sym in value.split(",") if sym.strip()]
+            text = value.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = ast.literal_eval(text)
+                    return [str(sym).strip().upper() for sym in parsed if str(sym).strip()]
+                except Exception:
+                    pass
+            return [sym.strip().upper() for sym in text.split(",") if sym.strip()]
         if isinstance(value, list):
             return [str(sym).upper() for sym in value]
         return value

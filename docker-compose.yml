@@ -51,7 +51,7 @@ services:
       - QUESTDB_PORT=8812
       - QUESTDB_USER=admin
       - QUESTDB_PASSWORD=quest
-      - SYMBOLS=["BTC"]
+      - SYMBOLS=BTC
     depends_on:
       questdb:
         condition: service_healthy
