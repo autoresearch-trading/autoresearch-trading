@@ -13,6 +13,23 @@ Bootstrap project for harvesting public market data from the [Pacifica REST API]
 - Install dependencies:  
   `pip install -r requirements.txt`
 
+### Apple Silicon (M1/M2/M3)
+
+If you're working on Apple Silicon, rebuild the environment with the native toolchain:
+
+```bash
+./setup-arm64.sh
+```
+
+The script installs TA-Lib via Homebrew, recreates `.venv/`, and verifies key imports using Apple Silicon wheels. Alternatively, run the Makefile overrides manually:
+
+```bash
+make -f Makefile.local install
+source .envrc.arm64  # loads TA-Lib paths for the current shell
+```
+
+Avoid reusing Intel-built virtual environments—remove `.venv/` before installing dependencies on Apple Silicon to prevent `bad CPU type` errors.
+
 ## Configuration
 
 1. Copy `.env.example` to `.env`.

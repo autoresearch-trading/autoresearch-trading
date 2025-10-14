@@ -45,7 +45,7 @@ clean: ## Clean up generated files
 docker-up: ## Start services with Docker Compose
 	docker-compose up -d questdb
 	@echo "Waiting for QuestDB to be ready..."
-	@timeout 60 bash -c 'until curl -f http://localhost:9000/status; do sleep 2; done'
+	@bash -c 'for i in {1..30}; do if curl -f http://localhost:9000/status 2>/dev/null; then exit 0; fi; sleep 2; done; exit 1'
 	@echo "QuestDB is ready!"
 
 docker-down: ## Stop Docker services
@@ -72,5 +72,5 @@ questdb-local: ## Setup QuestDB locally (no Docker required)
 questdb-docker: ## Setup QuestDB with Docker
 	docker-compose up -d questdb
 	@echo "Waiting for QuestDB to be ready..."
-	@timeout 60 bash -c 'until curl -f http://localhost:9000/status; do sleep 2; done'
+	@bash -c 'for i in {1..30}; do if curl -f http://localhost:9000/status 2>/dev/null; then exit 0; fi; sleep 2; done; exit 1'
 	@echo "QuestDB is ready!"

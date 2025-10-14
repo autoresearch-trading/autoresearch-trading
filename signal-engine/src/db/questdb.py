@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Callable, Iterable, Sequence
 
 import psycopg
+from psycopg import ProgrammingError
 from psycopg.rows import dict_row
 
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
@@ -19,6 +20,39 @@ class QuestDBClient:
         self.conn_string = (
             f"host={host} port={port} user={user} password={password} dbname=qdb"
         )
+
+    def _copy_with_fallback(
+        self,
+        copy_sql: str,
+        rows: Sequence[Sequence[Any]],
+        insert_sql: str,
+    ) -> None:
+        if not rows:
+            return
+
+        with psycopg.connect(self.conn_string) as conn:
+            try:
+                with conn.cursor() as cur:
+                    with cur.copy(copy_sql) as copy:
+                        for row in rows:
+                            copy.write_row(row)
+            except Exception as exc:  # COPY can be disabled or unsupported
+                error_msg = str(exc).lower()
+                is_copy_failure = (
+                    isinstance(exc, ProgrammingError)
+                    or "copy" in error_msg
+                    or "command_ok" in error_msg
+                )
+
+                if not is_copy_failure:
+                    raise
+
+                conn.rollback()
+                try:
+                    with conn.cursor() as cur:
+                        cur.executemany(insert_sql, rows)
+                except Exception as insert_exc:
+                    raise exc from insert_exc
 
     def write_signal(self, signal: Signal) -> None:
         """Insert a single signal row."""
@@ -54,34 +88,44 @@ class QuestDBClient:
         if not signals:
             return
 
-        with psycopg.connect(self.conn_string) as conn:
-            with conn.cursor() as cur:
-                with cur.copy(
-                    """
-                    COPY signals (
-                        ts, recv_ts, symbol, signal_type, value, confidence, direction,
-                        price, spread_bps, bid_depth, ask_depth, metadata
-                    )
-                    FROM STDIN
-                    """
-                ) as copy:
-                    for signal in signals:
-                        copy.write_row(
-                            [
-                                signal.ts,
-                                signal.recv_ts,
-                                signal.symbol,
-                                signal.signal_type.value,
-                                signal.value,
-                                signal.confidence,
-                                signal.direction.value,
-                                signal.price,
-                                signal.spread_bps,
-                                signal.bid_depth,
-                                signal.ask_depth,
-                                json.dumps(signal.metadata),
-                            ]
-                        )
+        rows: list[list[Any]] = []
+        for signal in signals:
+            signal_type = getattr(signal.signal_type, "value", signal.signal_type)
+            direction = getattr(signal.direction, "value", signal.direction)
+            rows.append(
+                [
+                    signal.ts,
+                    signal.recv_ts,
+                    signal.symbol,
+                    signal_type,
+                    signal.value,
+                    signal.confidence,
+                    direction,
+                    signal.price,
+                    signal.spread_bps,
+                    signal.bid_depth,
+                    signal.ask_depth,
+                    json.dumps(signal.metadata),
+                ]
+            )
+
+        copy_sql = """
+            COPY signals (
+                ts, recv_ts, symbol, signal_type, value, confidence, direction,
+                price, spread_bps, bid_depth, ask_depth, metadata
+            )
+            FROM STDIN
+        """
+        insert_sql = """
+            INSERT INTO signals (
+                ts, recv_ts, symbol, signal_type, value, confidence, direction,
+                price, spread_bps, bid_depth, ask_depth, metadata
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+        """
+        self._copy_with_fallback(copy_sql, rows, insert_sql)
 
     def query_signals(
         self,
@@ -130,28 +174,34 @@ class QuestDBClient:
         if not regimes:
             return
 
-        with psycopg.connect(self.conn_string) as conn:
-            with conn.cursor() as cur:
-                with cur.copy(
-                    """
-                    COPY regime_log (
-                        ts, symbol, regime, atr, spread_bps, funding_rate, should_trade
-                    )
-                    FROM STDIN
-                    """
-                ) as copy:
-                    for regime in regimes:
-                        copy.write_row(
-                            [
-                                regime.ts,
-                                regime.symbol,
-                                regime.regime.value,
-                                regime.atr,
-                                regime.spread_bps,
-                                regime.funding_rate,
-                                regime.should_trade,
-                            ]
-                        )
+        rows: list[list[Any]] = []
+        for regime in regimes:
+            regime_value = getattr(regime.regime, "value", regime.regime)
+            rows.append(
+                [
+                    regime.ts,
+                    regime.symbol,
+                    regime_value,
+                    regime.atr,
+                    regime.spread_bps,
+                    regime.funding_rate,
+                    regime.should_trade,
+                ]
+            )
+
+        copy_sql = """
+            COPY regime_log (
+                ts, symbol, regime, atr, spread_bps, funding_rate, should_trade
+            )
+            FROM STDIN
+        """
+        insert_sql = """
+            INSERT INTO regime_log (
+                ts, symbol, regime, atr, spread_bps, funding_rate, should_trade
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        self._copy_with_fallback(copy_sql, rows, insert_sql)
 
     def query_regimes(
         self,
@@ -166,6 +216,7 @@ class QuestDBClient:
             FROM regime_log
             WHERE symbol = %(symbol)s
               AND ts BETWEEN %(start_ts)s AND %(end_ts)s
+              AND atr IS NOT NULL
             ORDER BY ts ASC
         """
         params = {
@@ -184,26 +235,31 @@ class QuestDBClient:
         if not trades:
             return
 
-        with psycopg.connect(self.conn_string) as conn:
-            with conn.cursor() as cur:
-                with cur.copy(
-                    """
-                    COPY trades_processed (ts, symbol, trade_id, side, price, qty, is_large)
-                    FROM STDIN
-                    """
-                ) as copy:
-                    for trade in trades:
-                        copy.write_row(
-                            [
-                                trade.ts,
-                                trade.symbol,
-                                trade.trade_id,
-                                trade.side,
-                                trade.price,
-                                trade.qty,
-                                trade.is_large,
-                            ]
-                        )
+        rows: list[list[Any]] = []
+        for trade in trades:
+            rows.append(
+                [
+                    trade.ts,
+                    trade.symbol,
+                    trade.trade_id,
+                    trade.side,
+                    trade.price,
+                    trade.qty,
+                    trade.is_large,
+                ]
+            )
+
+        copy_sql = """
+            COPY trades_processed (ts, symbol, trade_id, side, price, qty, is_large)
+            FROM STDIN
+        """
+        insert_sql = """
+            INSERT INTO trades_processed (
+                ts, symbol, trade_id, side, price, qty, is_large
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        self._copy_with_fallback(copy_sql, rows, insert_sql)
 
     def query_trades(
         self,

@@ -1,92 +1,56 @@
 #!/usr/bin/env python3
-"""Setup QuestDB locally without Docker - for development only."""
+"""
+Initialize QuestDB schema for local development (non-Docker).
 
-import subprocess
-import sys
-import time
+This wrapper adds friendlier guidance around `setup_questdb.py` for engineers
+who want to target a locally running QuestDB instance.
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
+import sys
 
-def check_questdb_installed():
-    """Check if QuestDB is installed locally."""
+try:
+    import psycopg  # type: ignore
+except ImportError:
+    print("Error: psycopg package not found. Install requirements first:")
+    print("  cd signal-engine && pip install -r requirements.txt")
+    sys.exit(1)
+
+
+def main() -> None:
+    schema_path = Path(__file__).resolve().parent.parent / "src" / "db" / "schema.sql"
+
+    if not schema_path.exists():
+        print(f"Error: Schema file not found at {schema_path}")
+        sys.exit(1)
+
+    sql = schema_path.read_text()
+
+    conn_string = "host=localhost port=8812 user=admin password=quest dbname=qdb"
+
+    print("Connecting to local QuestDB at localhost:8812...")
+
     try:
-        result = subprocess.run(['questdb', '--version'], capture_output=True, text=True)
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+        with psycopg.connect(conn_string, connect_timeout=5) as conn:
+            print("Connected successfully. Creating tables...")
+            conn.execute(sql)
+            conn.commit()
+            print("✓ QuestDB tables created successfully!")
+            print("\nYou can access QuestDB at:")
+            print("  HTTP Console: http://localhost:9000")
+            print("  PostgreSQL:   localhost:8812")
+    except psycopg.OperationalError as exc:
+        print(f"\n✗ Failed to connect to QuestDB: {exc}")
+        print("\nMake sure QuestDB is running:")
+        print("  1. Download from: https://questdb.io/download/")
+        print("  2. Or use Docker: make questdb-docker")
+        sys.exit(1)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"\n✗ Error creating tables: {exc}")
+        sys.exit(1)
 
-def install_questdb():
-    """Install QuestDB using Homebrew."""
-    print("Installing QuestDB...")
-    try:
-        subprocess.run(['brew', 'install', 'questdb'], check=True)
-        print("✓ QuestDB installed successfully")
-        return True
-    except subprocess.CalledProcessError:
-        print("✗ Failed to install QuestDB")
-        return False
-
-def start_questdb():
-    """Start QuestDB service."""
-    print("Starting QuestDB...")
-    try:
-        # Start QuestDB in background
-        subprocess.Popen(['questdb', 'start'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(5)  # Wait for QuestDB to start
-        
-        # Check if it's running
-        result = subprocess.run(['questdb', 'status'], capture_output=True, text=True)
-        if result.returncode == 0:
-            print("✓ QuestDB started successfully")
-            return True
-        else:
-            print("✗ QuestDB failed to start")
-            return False
-    except Exception as e:
-        print(f"✗ Error starting QuestDB: {e}")
-        return False
-
-def setup_schema():
-    """Setup QuestDB schema."""
-    print("Setting up QuestDB schema...")
-    try:
-        subprocess.run([sys.executable, 'scripts/setup_questdb.py'], check=True)
-        print("✓ QuestDB schema created")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"✗ Failed to setup schema: {e}")
-        return False
-
-def main():
-    """Main setup function."""
-    print("Setting up QuestDB for local development...")
-    
-    # Check if QuestDB is installed
-    if not check_questdb_installed():
-        print("QuestDB not found. Installing...")
-        if not install_questdb():
-            print("Please install QuestDB manually: brew install questdb")
-            return False
-    
-    # Start QuestDB
-    if not start_questdb():
-        print("Please start QuestDB manually: questdb start")
-        return False
-    
-    # Setup schema
-    if not setup_schema():
-        print("Please setup schema manually: python scripts/setup_questdb.py")
-        return False
-    
-    print("\n🎉 QuestDB setup complete!")
-    print("QuestDB is running on:")
-    print("  - HTTP: http://localhost:9000")
-    print("  - PostgreSQL: localhost:8812")
-    print("\nYou can now run:")
-    print("  - make signal-pipeline")
-    print("  - make test")
-    
-    return True
 
 if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+    main()

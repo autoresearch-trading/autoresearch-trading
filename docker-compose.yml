@@ -11,15 +11,21 @@ services:
     volumes:
       - questdb_data:/var/lib/questdb
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c 'exec 3<>/dev/tcp/localhost/9000 &&
+          printf "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n" >&3 &&
+          timeout 2 cat <&3 | grep -Eq "HTTP/1\\.[01] (200|301)"'
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
 
   data-collector:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.arm64
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -36,18 +42,20 @@ services:
   signal-engine:
     build:
       context: ./signal-engine
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.arm64
     volumes:
       - ./data:/app/data
     environment:
+      - DATA_ROOT=/app/data
       - QUESTDB_HOST=questdb
       - QUESTDB_PORT=8812
       - QUESTDB_USER=admin
       - QUESTDB_PASSWORD=quest
+      - SYMBOLS=["BTC"]
     depends_on:
       questdb:
         condition: service_healthy
-    command: python scripts/run_signal_pipeline.py --symbols BTC --dry-run --skip-regime
+    command: python scripts/run_signal_pipeline.py --dry-run --skip-regime
 
 volumes:
   questdb_data:

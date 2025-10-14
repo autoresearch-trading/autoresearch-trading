@@ -1,5 +1,0 @@
-Collecting pyarrow
-  Using cached pyarrow-21.0.0-cp311-cp311-macosx_12_0_arm64.whl.metadata (3.3 kB)
-Using cached pyarrow-21.0.0-cp311-cp311-macosx_12_0_arm64.whl (31.2 MB)
-Installing collected packages: pyarrow
-Successfully installed pyarrow-21.0.0
