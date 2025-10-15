@@ -12,13 +12,21 @@ echo "📥 Syncing data from Fly.io..."
 # Create temp directory
 mkdir -p "$TEMP_DIR"
 
-# SSH into Fly and create tar archive
+# SSH into Fly and create tar archive (using a more reliable approach)
 echo "📦 Creating archive on Fly.io..."
-flyctl ssh console --app "$APP_NAME" -C "cd /app/data && tar czf /tmp/data-backup.tar.gz trades/ orderbook/ prices/ funding/ candles/ 2>/dev/null || true"
+flyctl ssh console --app "$APP_NAME" << 'ENDSSH'
+cd /app/data
+if [ -d "candles" ]; then
+  tar czf /tmp/data-backup.tar.gz trades orderbook prices funding candles
+else
+  tar czf /tmp/data-backup.tar.gz trades orderbook prices funding
+fi
+exit
+ENDSSH
 
 # Download the archive
 echo "⬇️  Downloading archive..."
-flyctl ssh sftp get /tmp/data-backup.tar.gz "$TEMP_DIR/" --app "$APP_NAME"
+flyctl ssh sftp get /tmp/data-backup.tar.gz "$TEMP_DIR/data-backup.tar.gz" --app "$APP_NAME"
 
 # Extract locally
 echo "📦 Extracting data..."
