@@ -84,6 +84,7 @@ def build_signal_dataflow(
     if trade_sink is not None:
         op.output("write_trades", trades_stream, trade_sink)
 
+    # Partition trades per symbol so calculators keep isolated state.
     keyed_trades = op.key_on("trades_by_symbol", trades_stream, lambda trade: trade.symbol)
 
     signal_streams: List[Stream[Signal]] = []
@@ -124,6 +125,7 @@ def build_signal_dataflow(
     ) -> tuple[_MinuteState, Optional[CandleEvent]]:
         minute_bucket = trade.ts.replace(second=0, microsecond=0)
         if state is None:
+            # Initialize candle state on the first trade seen for this minute.
             state = _MinuteState(
                 minute=minute_bucket, high=trade.price, low=trade.price, close=trade.price
             )
@@ -220,6 +222,7 @@ def build_signal_dataflow(
                 return state, regime
 
             if isinstance(event, OrderbookContextEvent):
+                # Context events adjust thresholds without emitting a regime immediately.
                 detector.update_orderbook_context(
                     event.spread_bps, event.bid_depth, event.ask_depth
                 )

@@ -43,3 +43,17 @@ class FundingRow(BaseModel):
     rate: float
     interval_sec: conint(gt=0)
     recv_ms: conint(ge=0)
+
+
+class CandleRow(BaseModel):
+    ts_ms: conint(ge=0)
+    symbol: str
+    interval: str
+    open: confloat(gt=0)
+    high: confloat(gt=0)
+    low: confloat(gt=0)
+    close: confloat(gt=0)
+    volume: confloat(ge=0)
+    start_ms: conint(ge=0)
+    end_ms: conint(ge=0)
+    recv_ms: conint(ge=0)

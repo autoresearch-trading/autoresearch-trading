@@ -1,11 +1,17 @@
 # Virtual environments and local config
 .venv/
+venv/
+ENV/
+env/
 .env
 
-# Runtime data directories
-data/
-logs/
+# Runtime data directories (keep folders, ignore contents)
+data/**/*
+!data/.gitkeep
+logs/**/*
+!logs/.gitkeep
 *.parquet
+*.log
 
 # Python caches & artifacts
 __pycache__/
@@ -40,3 +46,13 @@ dmypy.json
 *.swp
 *.swo
 *~
+
+# Cursor AI
+.cursor/
+
+# QuestDB data
+questdb_data/
+
+# Temporary files
+*.tmp
+.tmp/

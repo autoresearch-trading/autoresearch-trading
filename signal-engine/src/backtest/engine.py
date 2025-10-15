@@ -115,6 +115,7 @@ class BacktestEngine:
             timeline = sorted({signal.ts for signal in signals_sorted})
 
         for ts in timeline:
+            # Replay events in chronological order to maintain deterministic outcomes.
             self._update_prices_from_data(ts, price_map)
             self._update_prices_from_signals(ts, signals_by_ts)
             self._update_regimes(ts, regimes_by_ts)
@@ -166,6 +167,7 @@ class BacktestEngine:
             self.current_regime[regime.symbol] = regime
 
     def _evaluate_open_positions(self, ts: datetime) -> None:
+        # Iterate over a snapshot to allow safe removal during the loop.
         for symbol, position in list(self.positions.items()):
             price = self._latest_price.get(symbol)
             regime = self.current_regime.get(symbol)
@@ -195,6 +197,7 @@ class BacktestEngine:
             return
 
         by_symbol: dict[str, list[Signal]] = defaultdict(list)
+        # Group by symbol so long/short aggregations see the full local context.
         for signal in signals:
             by_symbol[signal.symbol].append(signal)
 
@@ -287,6 +290,7 @@ class BacktestEngine:
                 margin = position.entry_price * position.qty
                 pnl = (position.entry_price - mark_price) * position.qty
                 equity += margin + pnl
+        # Avoid duplicate timestamps so downstream plotting remains stable.
         if not self._equity_curve or self._equity_curve[-1][0] != ts:
             self._equity_curve.append((ts, equity))
         else:

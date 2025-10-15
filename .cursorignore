@@ -1,0 +1,63 @@
+# Cursor AI should ignore these directories and files
+
+# Data and logs (too large, contains sensitive info)
+data/
+logs/
+*.parquet
+*.log
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment
+.env
+
+# Test coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Deployment artifacts (sensitive)
+fly.toml
+.deployment-checklist.txt
+
+# Generated documentation
+site/
+docs/_build/
+
+# Large binary files
+*.tar.gz
+*.zip
+*.pkl
+*.h5
+
+# QuestDB data
+questdb_data/

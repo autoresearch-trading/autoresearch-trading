@@ -1,0 +1,94 @@
+# Cursor AI Assistant Rules for Pacifica Trading Bot
+# This file configures how Cursor's AI should interact with this codebase
+
+[Project Context]
+- This is a production trading bot for Pacifica perpetual DEX on Solana
+- Two main components: data-collector (API polling) and signal-engine (signal processing)
+- Python 3.11+, uses TA-Lib, Bytewax, QuestDB, and Parquet for storage
+- Deployed on Fly.io with 24/7 data collection
+- Critical: Never suggest changes that could lose historical data
+
+[Code Style]
+- Follow PEP 8 for Python
+- Use type hints on all function signatures
+- Prefer dataclasses over plain dicts for structured data
+- Use pathlib.Path instead of string paths
+- Import order: stdlib, third-party, local (separated by blank lines)
+- Max line length: 100 characters
+- Use f-strings for string formatting
+
+[Architecture Rules]
+- Keep data-collector and signal-engine separate - they're independent packages
+- Data collector writes to Parquet partitioned by symbol= and date=
+- Signal engine reads Parquet and writes to QuestDB
+- Never mix business logic into storage/API layers
+- All new signals must inherit from signals.base.Signal
+- Backtest engine must remain deterministic (no randomness)
+
+[Testing Requirements]
+- Every new signal calculator MUST have unit tests
+- Test file structure mirrors src/ structure
+- Use pytest fixtures from tests/fixtures/sample_data.py
+- Mock QuestDB in unit tests (use SKIP_QUESTDB_TESTS=true)
+- Integration tests only run when QuestDB is available
+
+[Security Rules]
+- Never log API keys, even partially
+- Never commit .env files (only .env.example)
+- Use environment variables for ALL configuration
+- Validate all external inputs (API responses, file data)
+- Use parameterized queries for all database operations
+
+[Data Handling]
+- NEVER delete data/ or logs/ directories
+- Parquet files are immutable once written
+- Use atomic writes (write to .tmp then rename)
+- Partition data by symbol and date for queryability
+- Keep in-memory buffers under 5000 rows before flushing
+
+[Dependencies]
+- Check package compatibility before adding new dependencies
+- TA-Lib requires system-level installation (brew/apt)
+- Pin all versions in requirements.txt
+- Test on both x86_64 and arm64 before committing
+
+[Deployment]
+- Changes to collect_all_symbols_cloud.py affect production immediately
+- Test deployment configs locally with Docker first
+- Fly.io free tier has 3GB storage limit - be mindful
+- Health check endpoint MUST always respond within 5s
+
+[Common Pitfalls to Avoid]
+- Don't use localStorage/sessionStorage in HTML artifacts (not supported)
+- Don't assume QuestDB COPY command works (has fallback to INSERT)
+- Don't use blocking I/O in Bytewax dataflows
+- Don't modify signal state during should_exit() checks
+- Don't use mutable default arguments in Python
+- Don't forget to update both Dockerfile AND Dockerfile.arm64
+
+[File Modification Guidelines]
+- When modifying signal logic, update corresponding tests
+- When adding new signals, add to __all__ in signals/__init__.py
+- When changing schemas, update both schema.sql AND models
+- When modifying collectors, test with monitoring/check_collector.sh
+- When changing deployment, update BOTH deployment docs
+
+[Questions to Ask Before Making Changes]
+1. Will this break existing backtests? (determinism required)
+2. Will this affect data collection in production?
+3. Does this require schema migration in QuestDB?
+4. Have I tested on the target architecture (arm64 for M1/M2)?
+5. Is this change documented in the appropriate README?
+
+[Helpful Context Locations]
+- Architecture overview: /signal-engine/src/backtest/README.md (if exists)
+- API endpoints: src/collector/pacifica_rest.py
+- Signal implementations: signal-engine/src/signals/
+- Deployment guide: DEPLOYMENT_GUIDE.md
+- Current deployment status: .collection-status.md
+
+[When Uncertain]
+- Check recent git history for similar changes
+- Verify against production logs (if available)
+- Test changes with --dry-run flags when available
+- Ask for human review if touching deployment configs

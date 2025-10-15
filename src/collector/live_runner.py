@@ -69,6 +69,7 @@ class LiveRunner:
         tasks: List[asyncio.Task] = []
         try:
             if poll_config.get("prices"):
+                # Run each poller on its own task so slow endpoints cannot starve others.
                 tasks.append(asyncio.create_task(self._poll_prices(symbols, poll_config["prices"]), name="prices"))
             if poll_config.get("trades"):
                 tasks.append(asyncio.create_task(self._poll_trades(symbols, poll_config["trades"]), name="trades"))
@@ -128,6 +129,7 @@ class LiveRunner:
         while not self._stop_event.is_set():
             started = time.perf_counter()
             for symbol in symbols:
+                # Sequential per-symbol polling respects exchange limits without extra timers.
                 if self._stop_event.is_set():
                     break
                 try:
@@ -145,6 +147,7 @@ class LiveRunner:
         while not self._stop_event.is_set():
             started = time.perf_counter()
             for symbol in symbols:
+                # Orderbook depth can be large; bail early if shutdown requested mid-loop.
                 if self._stop_event.is_set():
                     break
                 try:

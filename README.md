@@ -2,6 +2,12 @@
 
 Bootstrap project for harvesting public market data from the [Pacifica REST API](https://docs.pacifica.fi/api-documentation/api).
 
+## Documentation
+
+- `docs/DEPLOY_NOW.md` – 10-minute production deploy guide
+- `docs/DEPLOYMENT_GUIDE.md` – detailed Fly.io setup walkthrough
+- `docs/PROJECT_STRUCTURE.md` – full layout and workflow reference
+
 ## Setup
 
 - Create the virtual environment (already prepared in `.venv/`):  
@@ -54,6 +60,9 @@ python collect_data.py prices --out prices.json
 # Candles (timestamps accept ms since epoch or ISO-8601)
 python collect_data.py kline --symbol BTC --interval 1m \
   --start 2024-09-01T00:00:00Z --end 2024-09-01T01:00:00Z
+
+# Historical candle backfill (writes Parquet under ./data/candles)
+python collect_data.py backfill --symbols BTC,ETH --interval 1m --days 30
 
 # Order book snapshot with aggregation
 python collect_data.py orderbook --symbol BTC --agg-level 5

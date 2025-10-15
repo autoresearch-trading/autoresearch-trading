@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,12 +19,16 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from collector.api_client import APIClient
+from collector.backfill import BackfillOptions, KlineBackfillRunner
 from collector.config import PACIFICA_BASE_URLS, APISettings
 from collector.live_runner import LiveRunner
 from collector.pacifica_rest import PacificaREST
 from collector.utils import parse_duration
 
 logger = structlog.get_logger(__name__)
+
+KLINE_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d"]
+MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000
 
 
 def parse_params(pairs: List[str]) -> Dict[str, str]:
@@ -129,7 +133,7 @@ def configure_parser() -> argparse.ArgumentParser:
     kline.add_argument(
         "--interval",
         required=True,
-        choices=["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d"],
+        choices=KLINE_INTERVALS,
         help="Candlestick interval.",
     )
     kline.add_argument(
@@ -249,6 +253,59 @@ def configure_parser() -> argparse.ArgumentParser:
     )
     live.set_defaults(handler=run_live)
 
+    backfill = subparsers.add_parser(
+        "backfill",
+        help="Backfill historical kline data into Parquet datasets.",
+    )
+    backfill.add_argument(
+        "--symbols",
+        required=True,
+        help="Comma-separated list of symbols (e.g. BTC,ETH).",
+    )
+    backfill.add_argument(
+        "--interval",
+        default="1m",
+        choices=KLINE_INTERVALS,
+        help="Candlestick interval to backfill.",
+    )
+    backfill.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Number of trailing days to backfill when --start is not provided.",
+    )
+    backfill.add_argument(
+        "--start",
+        help="Optional explicit start time (ms since epoch or ISO-8601). Overrides --days when set.",
+    )
+    backfill.add_argument(
+        "--end",
+        help="Optional explicit end time (ms since epoch or ISO-8601). Defaults to now.",
+    )
+    backfill.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1440,
+        help="Number of candles to request per API call.",
+    )
+    backfill.add_argument(
+        "--out-root",
+        default="data",
+        help="Destination root directory for Parquet datasets.",
+    )
+    backfill.add_argument(
+        "--dataset",
+        default="candles",
+        help="Dataset name under the output root.",
+    )
+    backfill.add_argument(
+        "--max-rps",
+        type=int,
+        default=4,
+        help="Rate limit in requests per second.",
+    )
+    backfill.set_defaults(handler=run_backfill)
+
     return parser
 
 
@@ -323,6 +380,44 @@ def run_live(_: PacificaREST, client: APIClient, args: argparse.Namespace) -> Di
         runner.request_stop()
         logger.info("live_run_interrupted")
     return {"success": True, "mode": "live", "symbols": symbols}
+
+
+def _resolve_backfill_window(args: argparse.Namespace) -> tuple[int, int]:
+    end_ms = parse_timestamp(args.end) if args.end else int(datetime.now(timezone.utc).timestamp() * 1000)
+    if args.start:
+        start_ms = parse_timestamp(args.start)
+    else:
+        trailing_days = max(int(args.days), 1)
+        start_ms = end_ms - trailing_days * MILLISECONDS_PER_DAY
+    if start_ms >= end_ms:
+        raise ValueError("Backfill start time must be earlier than end time.")
+    return start_ms, end_ms
+
+
+def run_backfill(rest: PacificaREST, _: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+    symbols = parse_symbols_arg(args.symbols)
+    start_ms, end_ms = _resolve_backfill_window(args)
+    options = BackfillOptions(
+        interval=args.interval,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        chunk_size=max(int(args.chunk_size), 1),
+        out_root=args.out_root,
+        dataset=args.dataset,
+        max_rps=max(int(args.max_rps), 1),
+    )
+    logger.info("starting_backfill", symbols=symbols, options=asdict(options))
+    runner = KlineBackfillRunner(rest, options)
+    asyncio.run(runner.run(symbols))
+    return {
+        "success": True,
+        "mode": "backfill",
+        "symbols": symbols,
+        "interval": args.interval,
+        "start_ms": options.start_ms,
+        "end_ms": options.end_ms,
+        "dataset": options.dataset,
+    }
 
 
 def emit(payload: Dict[str, Any], output_path: Optional[str]) -> None:

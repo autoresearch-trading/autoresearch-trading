@@ -1,0 +1,32 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.cloud"
+
+[deploy]
+startCommand = "python collect_all_symbols_cloud.py"
+restartPolicyType = "ALWAYS"
+
+[[environmentVariables]]
+PACIFICA_NETWORK = "mainnet"
+
+[[environmentVariables]]
+MAX_RPS = "3"
+
+[[environmentVariables]]
+POLL_TRADES = "1s"
+
+[[environmentVariables]]
+POLL_ORDERBOOK = "3s"
+
+[[environmentVariables]]
+POLL_PRICES = "2s"
+
+[[environmentVariables]]
+POLL_FUNDING = "60s"
+
+[[environmentVariables]]
+BOOK_DEPTH = "25"
+
+[[environmentVariables]]
+OUT_ROOT = "/app/data"
+

@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-from collector.transform import (
-    to_funding_rows,
-    to_orderbook_rows,
-    to_price_rows,
-    to_trade_rows,
-)
+from collector.transform import to_candle_rows, to_funding_rows, to_orderbook_rows, to_price_rows, to_trade_rows
 
 
 def test_to_price_rows_filters_symbols() -> None:
@@ -82,3 +77,54 @@ def test_to_funding_rows_casts_fields() -> None:
     assert len(rows) == 2
     assert rows[0]["rate"] == 0.0001
     assert rows[1]["interval_sec"] == 3600
+
+
+def test_to_candle_rows_handles_dict_payload() -> None:
+    payload = {
+        "data": [
+            {
+                "symbol": "btc",
+                "start_time": 1710000000000,
+                "end_time": 1710000060000,
+                "open": "100",
+                "high": "110",
+                "low": "95",
+                "close": 105,
+                "volume": "12.5",
+            }
+        ]
+    }
+    rows = to_candle_rows(payload, recv_ms=1710000065000, symbol="BTC", interval="1m", interval_ms=60_000)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "BTC"
+    assert row["interval"] == "1m"
+    assert row["open"] == 100.0
+    assert row["end_ms"] == 1710000060000
+
+
+def test_to_candle_rows_handles_list_payload() -> None:
+    payload = {"data": [[1710000000000, "100", "110", "95", "105", "12.5", 1710000060000]]}
+    rows = to_candle_rows(payload, recv_ms=1710000065000, symbol="ETH", interval="1m", interval_ms=60_000)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "ETH"
+    assert row["volume"] == 12.5
+
+
+def test_to_candle_rows_accepts_zero_start_time() -> None:
+    payload = {
+        "data": [
+            {
+                "start_time": 0,
+                "end_time": 60_000,
+                "open": 100,
+                "high": 110,
+                "low": 90,
+                "close": 105,
+                "volume": 1,
+            }
+        ]
+    }
+    rows = to_candle_rows(payload, recv_ms=100_000, symbol="btc", interval="1m", interval_ms=60_000)
+    assert rows[0]["ts_ms"] == 0

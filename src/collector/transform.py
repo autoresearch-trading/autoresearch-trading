@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Sequence, Set
+import math
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set
 
-from .models import FundingRow, OrderbookLevel, OrderbookRow, PriceRow, TradeRow
+from .models import CandleRow, FundingRow, OrderbookLevel, OrderbookRow, PriceRow, TradeRow
 
 
 def _extract_data(payload: Any) -> Any:
@@ -160,4 +161,125 @@ def to_funding_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") 
             recv_ms=recv_ms,
         )
         rows.append(row.model_dump())
+    return rows
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    numeric: float
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+    elif isinstance(value, str) and value.strip():
+        try:
+            numeric = float(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if math.isnan(numeric):
+        return None
+    ms = int(round(numeric))
+    if ms < 0:
+        return None
+    return ms
+
+
+def _normalize_symbol(value: Any, default: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip().upper()
+    return default.upper()
+
+
+def _pick_first(mapping: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        if key in mapping:
+            value = mapping[key]
+            if value is not None:
+                return value
+    return None
+
+
+def to_candle_rows(
+    payload: Dict[str, Any],
+    *,
+    recv_ms: int,
+    symbol: str,
+    interval: str,
+    interval_ms: int,
+) -> List[Dict[str, Any]]:
+    data = _extract_data(payload)
+    if not isinstance(data, Sequence):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    default_symbol = symbol.upper()
+
+    for entry in data:
+        entry_symbol = default_symbol
+        open_price = high_price = low_price = close_price = None
+        volume = None
+        start_ms = end_ms = None
+
+        if isinstance(entry, dict):
+            entry_symbol = _normalize_symbol(entry.get("symbol"), default_symbol)
+            open_price = _to_float(entry.get("open") or entry.get("o"))
+            high_price = _to_float(entry.get("high") or entry.get("h"))
+            low_price = _to_float(entry.get("low") or entry.get("l"))
+            close_price = _to_float(entry.get("close") or entry.get("c"))
+            volume = _to_float(entry.get("volume") or entry.get("v") or entry.get("amount") or entry.get("qty"))
+            start_ms = _to_int_ms(
+                _pick_first(entry, ("t", "start_time", "open_time", "open_ts", "timestamp", "ts_ms"))
+            )
+            end_ms = _to_int_ms(_pick_first(entry, ("T", "end_time", "close_time", "close_ts")))
+        elif isinstance(entry, Sequence):
+            # Binance-style tuples: [open_time, open, high, low, close, volume, close_time, ...]
+            if len(entry) >= 6:
+                start_ms = _to_int_ms(entry[0])
+                open_price = _to_float(entry[1])
+                high_price = _to_float(entry[2])
+                low_price = _to_float(entry[3])
+                close_price = _to_float(entry[4])
+                volume = _to_float(entry[5]) if len(entry) >= 6 else None
+                end_ms = _to_int_ms(entry[6]) if len(entry) >= 7 else None
+        else:
+            continue
+
+        if open_price is None or high_price is None or low_price is None or close_price is None:
+            continue
+
+        if start_ms is None and end_ms is not None:
+            start_ms = end_ms - interval_ms
+        if start_ms is None:
+            continue
+
+        if end_ms is None:
+            end_ms = start_ms + interval_ms
+
+        volume_value = volume if volume is not None and not math.isnan(volume) else 0.0
+        row = CandleRow(
+            ts_ms=start_ms,
+            symbol=entry_symbol,
+            interval=interval,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            close=close_price,
+            volume=max(volume_value, 0.0),
+            start_ms=start_ms,
+            end_ms=max(end_ms, start_ms + interval_ms),
+            recv_ms=recv_ms,
+        )
+        rows.append(row.model_dump())
+
+    rows.sort(key=lambda item: item["ts_ms"])
     return rows
