@@ -21,6 +21,27 @@ class QuestDBClient:
             f"host={host} port={port} user={user} password={password} dbname=qdb"
         )
 
+    def list_symbols(self) -> list[str]:
+        """Return distinct symbols that have signals stored in QuestDB."""
+        sql = "SELECT DISTINCT symbol FROM signals"
+        with psycopg.connect(self.conn_string, row_factory=dict_row) as conn:
+            rows = conn.execute(sql).fetchall()
+
+        symbols: set[str] = set()
+        for row in rows:
+            value: object | None
+            if isinstance(row, dict):
+                value = row.get("symbol")
+            else:
+                value = row[0] if row else None
+            if not value:
+                continue
+            symbol = str(value).strip().upper()
+            if symbol:
+                symbols.add(symbol)
+
+        return sorted(symbols)
+
     def _copy_with_fallback(
         self,
         copy_sql: str,
