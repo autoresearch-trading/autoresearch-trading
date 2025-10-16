@@ -28,7 +28,7 @@ echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
 # 2. Archive data on the Fly.io instance
 ARCHIVE_FILENAME="data-backup-$(date +%Y-%m-%d).tar.gz"
 echo "📦 Archiving data on Fly.io instance..."
-flyctl ssh console -q -a "$APP_NAME" -C "tar -czf /tmp/${ARCHIVE_FILENAME} -C ${REMOTE_DATA_PATH} ."
+flyctl ssh console -q -a "$APP_NAME" -C "tar --ignore-failed-read -czf /tmp/${ARCHIVE_FILENAME} -C ${REMOTE_DATA_PATH} ."
 echo "✅ Remote archive created: /tmp/${ARCHIVE_FILENAME}"
 
 # 3. Download the archive
