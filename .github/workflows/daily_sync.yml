@@ -16,35 +16,18 @@ jobs:
     - name: Install Fly.io CLI
       uses: superfly/flyctl-actions/setup-flyctl@master
 
-    - name: Install Cloud Storage CLI
+    - name: Install AWS CLI (for R2)
       run: |
         sudo apt-get update
-        sudo apt-get install -y awscli # This works for both S3 and S3-compatible R2
-
-    - name: Configure Cloud Storage Credentials
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.STORAGE_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.STORAGE_SECRET_ACCESS_KEY }}
-        AWS_DEFAULT_REGION: 'auto' # For R2. For S3, use your region e.g., 'us-east-1'
-        S3_ENDPOINT_URL: ${{ secrets.STORAGE_ENDPOINT_URL }} # For R2, leave empty for S3
-      run: |
-        # Configure AWS CLI for R2 or S3
-        if [ -n "$S3_ENDPOINT_URL" ]; then
-          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-          echo "Configured for S3-compatible storage (R2)."
-        else
-          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-          aws configure set region $AWS_DEFAULT_REGION
-          echo "Configured for AWS S3."
-        fi
+        sudo apt-get install -y awscli
 
     - name: Run Sync and Purge Script
       env:
         FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-        S3_ENDPOINT_URL: ${{ secrets.STORAGE_ENDPOINT_URL }} # Required for R2
+        S3_ENDPOINT_URL: ${{ secrets.STORAGE_ENDPOINT_URL }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.STORAGE_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.STORAGE_SECRET_ACCESS_KEY }}
       run: |
         chmod +x ./scripts/sync_cloud_data.sh
         ./scripts/sync_cloud_data.sh
