@@ -16,13 +16,6 @@ jobs:
     - name: Install Fly.io CLI
       uses: superfly/flyctl-actions/setup-flyctl@master
 
-    - name: Install AWS CLI (for R2)
-      run: |
-        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-        unzip awscliv2.zip
-        sudo ./aws/install
-        aws --version
-
     - name: Run Sync and Purge Script
       env:
         FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -31,5 +24,6 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.STORAGE_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.STORAGE_SECRET_ACCESS_KEY }}
       run: |
+        aws --version
         chmod +x ./scripts/sync_cloud_data.sh
         ./scripts/sync_cloud_data.sh
