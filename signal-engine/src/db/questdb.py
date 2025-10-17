@@ -10,7 +10,7 @@ from psycopg.rows import dict_row
 
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
-from signals.base import MarketRegime, Signal, Trade
+from signals.base import MarketRegime, PaperTrade, Signal, Trade
 
 
 class QuestDBClient:
@@ -250,6 +250,68 @@ class QuestDBClient:
             rows = conn.execute(sql, params).fetchall()
 
         return [MarketRegime(**row) for row in rows]
+
+    def write_paper_trade(self, trade: PaperTrade) -> None:
+        """Persist a single closed paper trade."""
+        with psycopg.connect(self.conn_string) as conn:
+            conn.execute(
+                """
+                INSERT INTO paper_trades (
+                    ts,
+                    symbol,
+                    trade_id,
+                    side,
+                    entry_price,
+                    qty,
+                    stop_loss,
+                    take_profit,
+                    exit_price,
+                    exit_ts,
+                    pnl,
+                    pnl_pct,
+                    cvd_value,
+                    tfi_value,
+                    ofi_value,
+                    regime
+                )
+                VALUES (
+                    %(ts)s,
+                    %(symbol)s,
+                    %(trade_id)s,
+                    %(side)s,
+                    %(entry_price)s,
+                    %(qty)s,
+                    %(stop_loss)s,
+                    %(take_profit)s,
+                    %(exit_price)s,
+                    %(exit_ts)s,
+                    %(pnl)s,
+                    %(pnl_pct)s,
+                    %(cvd_value)s,
+                    %(tfi_value)s,
+                    %(ofi_value)s,
+                    %(regime)s
+                )
+                """,
+                {
+                    "ts": trade.ts,
+                    "symbol": trade.symbol,
+                    "trade_id": trade.trade_id,
+                    "side": trade.side,
+                    "entry_price": trade.entry_price,
+                    "qty": trade.qty,
+                    "stop_loss": trade.stop_loss,
+                    "take_profit": trade.take_profit,
+                    "exit_price": trade.exit_price,
+                    "exit_ts": trade.exit_ts,
+                    "pnl": trade.pnl,
+                    "pnl_pct": trade.pnl_pct,
+                    "cvd_value": trade.cvd_value,
+                    "tfi_value": trade.tfi_value,
+                    "ofi_value": trade.ofi_value,
+                    "regime": trade.regime,
+                },
+            )
 
     def write_trades_batch(self, trades: Sequence[Trade]) -> None:
         """Bulk insert processed trades."""
