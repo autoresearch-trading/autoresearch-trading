@@ -41,8 +41,12 @@ echo "☁️ Uploading data to bucket: s3://${S3_BUCKET}"
 mkdir -p "${LOCAL_TEMP_DIR}/extracted"
 tar -xzf "${LOCAL_TEMP_DIR}/${ARCHIVE_FILENAME}" -C "${LOCAL_TEMP_DIR}/extracted"
 
+# Count files to upload
+FILE_COUNT=$(find "${LOCAL_TEMP_DIR}/extracted" -type f -name "*.parquet" | wc -l)
+echo "📊 Found ${FILE_COUNT} parquet files to upload"
+
 # The `aws s3 sync` command is smart and efficient
-aws s3 sync "${LOCAL_TEMP_DIR}/extracted" "s3://${S3_BUCKET}" ${S3_ARGS}
+aws s3 sync "${LOCAL_TEMP_DIR}/extracted" "s3://${S3_BUCKET}" ${S3_ARGS} --only-show-errors
 echo "✅ Upload complete."
 
 # 5. Purge old data on the Fly.io instance
