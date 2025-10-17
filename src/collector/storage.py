@@ -35,8 +35,8 @@ class ParquetWriter:
         (self.root / dataset).mkdir(parents=True, exist_ok=True)
 
         self._buffer: List[Dict[str, object]] = []
-        self._max_rows = 5_000
-        self._max_seconds = 5.0
+        self._max_rows = 50_000  # Increased from 5k to reduce file count
+        self._max_seconds = 300.0  # 5 minutes instead of 5 seconds
         self._last_flush = time.time()
 
     async def append(self, rows: List[Dict[str, object]]) -> None:
