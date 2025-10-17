@@ -141,6 +141,8 @@ data-collector/
 - Event-driven backtesting with position management
 - QuestDB for time-series storage
 
+**Setup Guide**: See [`SIGNAL_ENGINE_QUICKSTART.md`](./SIGNAL_ENGINE_QUICKSTART.md) for complete setup instructions.
+
 ### Deployment
 **Purpose**: Run data collector 24/7 in the cloud  
 **Primary Platform**: Fly.io (free tier: 3GB storage, 512MB RAM)
@@ -171,6 +173,8 @@ Performance Reports
 ```
 
 ## Development Workflow
+
+> **Quick Start:** For a faster signal engine setup, see [`SIGNAL_ENGINE_QUICKSTART.md`](./SIGNAL_ENGINE_QUICKSTART.md) - complete QuestDB and signal processing setup in 5 minutes.
 
 ### 1. Local Development Setup
 ```bash

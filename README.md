@@ -4,8 +4,8 @@ Bootstrap project for harvesting public market data from the [Pacifica REST API]
 
 ## Documentation
 
+- `docs/SIGNAL_ENGINE_QUICKSTART.md` – Quick setup guide for signal processing with QuestDB
 - `docs/DEPLOY_NOW.md` – 10-minute production deploy guide
-- `docs/DEPLOYMENT_GUIDE.md` – detailed Fly.io setup walkthrough
 - `docs/PROJECT_STRUCTURE.md` – full layout and workflow reference
 
 ## Setup
