@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar
 
 import pandas as pd
-from bytewax.inputs import (FixedPartitionedSource, StatefulSourcePartition,
-                            StatelessSourcePartition)
+from bytewax.inputs import (
+    FixedPartitionedSource,
+    StatefulSourcePartition,
+    StatelessSourcePartition,
+)
 from signals.base import OrderbookSnapshot, Trade
 
 T = TypeVar("T")

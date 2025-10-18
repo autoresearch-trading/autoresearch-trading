@@ -3,8 +3,14 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set
 
-from .models import (CandleRow, FundingRow, OrderbookLevel, OrderbookRow,
-                     PriceRow, TradeRow)
+from .models import (
+    CandleRow,
+    FundingRow,
+    OrderbookLevel,
+    OrderbookRow,
+    PriceRow,
+    TradeRow,
+)
 
 
 def _extract_data(payload: Any) -> Any:
