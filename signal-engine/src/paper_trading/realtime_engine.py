@@ -109,28 +109,36 @@ class RealtimePaperTradingEngine:
                 continue
             except asyncio.TimeoutError:
                 pass
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.error("aggregation_loop_error", error=str(exc), exc_info=True)
+                await asyncio.sleep(1.0)
+                continue
 
-            now = datetime.now(timezone.utc)
-            if self.risk_manager.should_reset_daily(now):
-                self.risk_manager.reset_daily_limits()
+            try:
+                now = datetime.now(timezone.utc)
+                if self.risk_manager.should_reset_daily(now):
+                    self.risk_manager.reset_daily_limits()
 
-            symbols_payload = await self._pop_signal_buffers()
-            for symbol, signals in symbols_payload.items():
-                if not signals:
-                    continue
+                symbols_payload = await self._pop_signal_buffers()
+                for symbol, signals in symbols_payload.items():
+                    if not signals:
+                        continue
 
-                current_price = await self._get_price(symbol)
-                if current_price is None:
-                    log.debug("realtime_price_unavailable", symbol=symbol)
-                    continue
+                    current_price = await self._get_price(symbol)
+                    if current_price is None:
+                        log.debug("realtime_price_unavailable", symbol=symbol)
+                        continue
 
-                self.trade_executor.evaluate_entry(
-                    symbol=symbol,
-                    signals=signals,
-                    current_price=current_price,
-                    regime=None,
-                    now=now,
-                )
+                    self.trade_executor.evaluate_entry(
+                        symbol=symbol,
+                        signals=signals,
+                        current_price=current_price,
+                        regime=None,
+                        now=now,
+                    )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.error("aggregation_evaluation_error", error=str(exc), exc_info=True)
+                await asyncio.sleep(1.0)
 
     async def _position_monitor_loop(self) -> None:
         interval = 0.5
@@ -140,26 +148,34 @@ class RealtimePaperTradingEngine:
                 continue
             except asyncio.TimeoutError:
                 pass
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.error("position_monitor_loop_error", error=str(exc), exc_info=True)
+                await asyncio.sleep(1.0)
+                continue
 
-            now = datetime.now(timezone.utc)
-            positions = list(self.position_tracker.get_all_positions())
-            for position in positions:
-                current_price = await self._get_price(position.symbol)
-                decision = self.trade_executor.should_exit_position(
-                    position=position,
-                    current_price=current_price,
-                    regime=None,
-                    now=now,
-                )
-                if decision.should_exit and not self.dry_run:
-                    exit_price = current_price or position.entry_price
-                    self.trade_executor.close_position(
+            try:
+                now = datetime.now(timezone.utc)
+                positions = list(self.position_tracker.get_all_positions())
+                for position in positions:
+                    current_price = await self._get_price(position.symbol)
+                    decision = self.trade_executor.should_exit_position(
                         position=position,
-                        exit_price=exit_price,
-                        exit_reason=decision.reason or "unknown",
+                        current_price=current_price,
+                        regime=None,
+                        now=now,
                     )
-                elif current_price is not None:
-                    self.position_tracker.update_position_price(position.symbol, current_price)
+                    if decision.should_exit and not self.dry_run:
+                        exit_price = current_price or position.entry_price
+                        self.trade_executor.close_position(
+                            position=position,
+                            exit_price=exit_price,
+                            exit_reason=decision.reason or "unknown",
+                        )
+                    elif current_price is not None:
+                        self.position_tracker.update_position_price(position.symbol, current_price)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                log.error("position_monitor_error", error=str(exc), exc_info=True)
+                await asyncio.sleep(1.0)
 
     async def _get_price(self, symbol: str) -> float | None:
         now = datetime.now(timezone.utc)
