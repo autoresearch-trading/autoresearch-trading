@@ -69,8 +69,9 @@ def test_can_open_position_limits_exposure() -> None:
         make_position(notional=1_600.0, symbol="ETH"),
     ]
 
+    # Try to open SOL position (different symbol) - should hit exposure limit
     allowed, reason = manager.can_open_position(
-        symbol="BTC",
+        symbol="SOL",
         side="long",
         qty=10.0,
         price=100.0,
@@ -80,6 +81,26 @@ def test_can_open_position_limits_exposure() -> None:
 
     assert allowed is False
     assert reason in {"total_exposure_limit_hit", "concentration_limit_hit"}
+
+
+def test_can_open_position_blocks_duplicate_symbol() -> None:
+    config = {"initial_capital": 10_000.0}
+    manager = RiskManager(config)
+
+    existing = [make_position(notional=1_000.0, symbol="BTC")]
+
+    # Try to open another BTC position - should be rejected
+    allowed, reason = manager.can_open_position(
+        symbol="BTC",
+        side="long",
+        qty=1.0,
+        price=100.0,
+        current_capital=9_000.0,
+        existing_positions=existing,
+    )
+
+    assert allowed is False
+    assert reason == "position_already_open"
 
 
 def test_record_trade_updates_loss_streak() -> None:

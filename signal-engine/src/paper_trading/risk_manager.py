@@ -75,6 +75,12 @@ class RiskManager:
         if price <= 0 or qty <= 0:
             return False, "invalid_position_size"
 
+        # Check if position already exists for this symbol
+        symbol_upper = symbol.upper()
+        for pos in existing_positions:
+            if pos.symbol == symbol_upper:
+                return False, "position_already_open"
+
         if self.metrics.daily_pnl <= -self.metrics.max_daily_loss:
             return False, "daily_loss_limit_hit"
 
@@ -97,7 +103,7 @@ class RiskManager:
         symbol_exposure = sum(
             pos.entry_price * pos.qty
             for pos in existing_positions
-            if pos.symbol == symbol.upper()
+            if pos.symbol == symbol_upper
         )
         if (symbol_exposure + notional) > current_capital * self.max_concentration_pct:
             return False, "concentration_limit_hit"
