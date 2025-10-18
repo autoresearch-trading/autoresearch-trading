@@ -22,11 +22,13 @@ for path in SRC_PATHS:
         sys.path.insert(0, str(path))
 
 from bytewax.testing import run_main  # noqa: E402
-from config import Settings  # noqa: E402
-from paper_trading.realtime_engine import RealtimePaperTradingEngine  # noqa: E402
+from paper_trading.realtime_engine import \
+    RealtimePaperTradingEngine  # noqa: E402
 from persistence.async_writer import writer_loop  # noqa: E402
 from stream.realtime_dataflow import build_realtime_dataflow  # noqa: E402
 from stream.signal_router import SignalRouter  # noqa: E402
+
+from config import Settings  # noqa: E402
 
 console = Console()
 

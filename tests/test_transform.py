@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from collector.transform import (
-    to_candle_rows,
-    to_funding_rows,
-    to_orderbook_rows,
-    to_price_rows,
-    to_trade_rows,
-)
+from collector.transform import (to_candle_rows, to_funding_rows,
+                                 to_orderbook_rows, to_price_rows,
+                                 to_trade_rows)
 
 
 def test_to_price_rows_filters_symbols() -> None:
