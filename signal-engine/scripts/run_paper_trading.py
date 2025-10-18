@@ -62,7 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_engine(settings: Settings, *, poll_interval: float, dry_run: bool) -> None:
+async def run_engine(
+    settings: Settings, *, poll_interval: float, dry_run: bool
+) -> None:
     engine = PaperTradingEngine(settings, dry_run=dry_run, poll_interval=poll_interval)
 
     try:

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from bytewax.testing import TestingSink, TestingSource, run_main
-
 from signals.base import Trade
 from stream.dataflow import build_signal_dataflow
 

@@ -8,7 +8,6 @@ import bytewax.operators as op
 from bytewax.dataflow import Dataflow, Stream
 from bytewax.inputs import Source
 from bytewax.outputs import DynamicSink
-
 from regime.detectors import ATRRegimeDetector
 from signals.base import MarketRegime, OrderbookSnapshot, Signal, Trade
 from signals.cvd import CVDCalculator
@@ -85,7 +84,9 @@ def build_signal_dataflow(
         op.output("write_trades", trades_stream, trade_sink)
 
     # Partition trades per symbol so calculators keep isolated state.
-    keyed_trades = op.key_on("trades_by_symbol", trades_stream, lambda trade: trade.symbol)
+    keyed_trades = op.key_on(
+        "trades_by_symbol", trades_stream, lambda trade: trade.symbol
+    )
 
     signal_streams: List[Stream[Signal]] = []
 
@@ -101,7 +102,9 @@ def build_signal_dataflow(
     cvd_signals = op.filter(
         "cvd_non_null", cvd_stateful, lambda item: item[1] is not None
     )
-    cvd_signals = op.map("cvd_drop_key", cvd_signals, lambda item: cast(Signal, item[1]))
+    cvd_signals = op.map(
+        "cvd_drop_key", cvd_signals, lambda item: cast(Signal, item[1])
+    )
     signal_streams.append(cvd_signals)
 
     # --- TFI ---
@@ -116,7 +119,9 @@ def build_signal_dataflow(
     tfi_signals = op.filter(
         "tfi_non_null", tfi_stateful, lambda item: item[1] is not None
     )
-    tfi_signals = op.map("tfi_drop_key", tfi_signals, lambda item: cast(Signal, item[1]))
+    tfi_signals = op.map(
+        "tfi_drop_key", tfi_signals, lambda item: cast(Signal, item[1])
+    )
     signal_streams.append(tfi_signals)
 
     # --- Minute candles for regime detection ---
@@ -127,7 +132,10 @@ def build_signal_dataflow(
         if state is None:
             # Initialize candle state on the first trade seen for this minute.
             state = _MinuteState(
-                minute=minute_bucket, high=trade.price, low=trade.price, close=trade.price
+                minute=minute_bucket,
+                high=trade.price,
+                low=trade.price,
+                close=trade.price,
             )
             return state, None
 
@@ -234,7 +242,9 @@ def build_signal_dataflow(
 
             return state, None
 
-        regime_stateful = op.stateful_map("regime_detector", keyed_regime_events, regime_mapper)
+        regime_stateful = op.stateful_map(
+            "regime_detector", keyed_regime_events, regime_mapper
+        )
         regime_updates = op.filter(
             "regime_non_null", regime_stateful, lambda item: item[1] is not None
         )

@@ -94,9 +94,7 @@ class PositionManager:
             hold_duration_seconds=hold_seconds,
         )
 
-    def unrealized_pnl(
-        self, position: "Position", mark_price: float | None
-    ) -> float:
+    def unrealized_pnl(self, position: "Position", mark_price: float | None) -> float:
         if mark_price is None:
             return 0.0
         return self._realized_pnl(position, mark_price)
@@ -149,4 +147,3 @@ class PositionManager:
         if position.side == "long":
             return (price - position.entry_price) * position.qty
         return (position.entry_price - price) * position.qty
-

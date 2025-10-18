@@ -34,7 +34,9 @@ class PacificaREST:
             params["end_time"] = end_time
         return self._fetch("/kline", params=params)
 
-    def get_orderbook(self, *, symbol: str, agg_level: Optional[int] = None) -> Dict[str, Any]:
+    def get_orderbook(
+        self, *, symbol: str, agg_level: Optional[int] = None
+    ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"symbol": symbol}
         if agg_level is not None:
             params["agg_level"] = agg_level
@@ -57,7 +59,9 @@ class PacificaREST:
             params["offset"] = offset
         return self._fetch("/funding_rate/history", params=params)
 
-    def _fetch(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _fetch(
+        self, endpoint: str, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         payload = self.client.get(endpoint, params=params)
         if isinstance(payload, dict) and not payload.get("success", True):
             error = payload.get("error") or payload.get("code") or "Unknown error"

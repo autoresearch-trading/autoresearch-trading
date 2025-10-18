@@ -17,7 +17,8 @@ SRC_PATH = ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from backtest import BacktestConfig, BacktestEngine, BacktestReporter  # noqa: E402
+from backtest import (BacktestConfig, BacktestEngine,  # noqa: E402
+                      BacktestReporter)
 from config import Settings  # noqa: E402
 from db.questdb import QuestDBClient  # noqa: E402
 
@@ -220,7 +221,9 @@ def main() -> None:
         processed += 1
 
     if not processed:
-        console.print("[red]No symbols produced results for the requested window.[/red]")
+        console.print(
+            "[red]No symbols produced results for the requested window.[/red]"
+        )
         raise SystemExit(1)
 
     if skipped:

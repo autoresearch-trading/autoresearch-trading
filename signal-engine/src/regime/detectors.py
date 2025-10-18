@@ -5,7 +5,6 @@ from datetime import datetime
 
 import numpy as np
 import talib
-
 from signals.base import MarketRegime, RegimeState
 
 
@@ -81,9 +80,7 @@ class ATRRegimeDetector:
         highs = np.fromiter(self.high_prices, dtype=float)
         lows = np.fromiter(self.low_prices, dtype=float)
         closes = np.fromiter(self.close_prices, dtype=float)
-        atr = float(
-            talib.ATR(highs, lows, closes, timeperiod=self.atr_period)[-1]
-        )
+        atr = float(talib.ATR(highs, lows, closes, timeperiod=self.atr_period)[-1])
 
         typical_atr = float(np.median(closes) * 0.02)
         is_high_vol = atr > typical_atr * self.atr_threshold_multiplier
@@ -92,7 +89,9 @@ class ATRRegimeDetector:
             self.current_bid_depth < self.min_depth_threshold
             or self.current_ask_depth < self.min_depth_threshold
         )
-        is_extreme_funding = abs(self.current_funding_rate) > self.extreme_funding_threshold
+        is_extreme_funding = (
+            abs(self.current_funding_rate) > self.extreme_funding_threshold
+        )
 
         if is_extreme_funding:
             regime = RegimeState.RISK_OFF

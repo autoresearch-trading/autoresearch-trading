@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-
 from config import Settings
 from paper_trading.realtime_engine import RealtimePaperTradingEngine
 from signals.base import Signal, SignalDirection, SignalType

@@ -39,7 +39,6 @@ class Signal(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-
 class OrderbookSnapshot(BaseModel):
     """Top-N orderbook levels at a given timestamp."""
 

@@ -15,9 +15,9 @@ from rich.table import Table
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from signals.base import SignalDirection, Trade
 from signals.cvd import CVDCalculator
 from signals.tfi import TFICalculator
-from signals.base import SignalDirection, Trade
 
 console = Console()
 
@@ -117,7 +117,9 @@ def main() -> None:
     emitted: list[SignalRecord] = []
     for _, row in trades_df.iterrows():
         trade = to_trade(row)
-        for signal in filter(None, (cvd_calc.process_trade(trade), tfi_calc.process_trade(trade))):
+        for signal in filter(
+            None, (cvd_calc.process_trade(trade), tfi_calc.process_trade(trade))
+        ):
             emitted.append(
                 SignalRecord(
                     emitted_at=signal.ts.strftime("%H:%M:%S"),
@@ -129,7 +131,9 @@ def main() -> None:
             )
 
     if not emitted:
-        console.print("[yellow]No signals generated — adjust parameters or date[/yellow]")
+        console.print(
+            "[yellow]No signals generated — adjust parameters or date[/yellow]"
+        )
         return
 
     table = Table(title=f"Signals Found: {len(emitted)}")
@@ -156,17 +160,25 @@ def main() -> None:
     console.print(table)
 
     total = len(emitted)
-    bullish = sum(1 for record in emitted if record.direction == SignalDirection.BULLISH)
-    bearish = sum(1 for record in emitted if record.direction == SignalDirection.BEARISH)
+    bullish = sum(
+        1 for record in emitted if record.direction == SignalDirection.BULLISH
+    )
+    bearish = sum(
+        1 for record in emitted if record.direction == SignalDirection.BEARISH
+    )
 
     console.print("\n[bold]Summary:[/bold]")
     console.print(f"CVD Signals: {sum(1 for r in emitted if r.signal_type == 'cvd')}")
     console.print(f"TFI Signals: {sum(1 for r in emitted if r.signal_type == 'tfi')}")
     console.print(
-        f"Bullish: {bullish} ({(bullish / total) * 100:.1f}%)" if total else "Bullish: 0"
+        f"Bullish: {bullish} ({(bullish / total) * 100:.1f}%)"
+        if total
+        else "Bullish: 0"
     )
     console.print(
-        f"Bearish: {bearish} ({(bearish / total) * 100:.1f}%)" if total else "Bearish: 0"
+        f"Bearish: {bearish} ({(bearish / total) * 100:.1f}%)"
+        if total
+        else "Bearish: 0"
     )
 
 

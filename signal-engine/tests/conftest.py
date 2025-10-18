@@ -3,8 +3,9 @@
 import os
 import sys
 from pathlib import Path
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
 
 # Add tests directory to Python path so fixtures can be imported
 tests_dir = Path(__file__).parent
@@ -29,6 +30,7 @@ def questdb_available():
     """Check if QuestDB is available for integration tests."""
     try:
         import psycopg
+
         conn_string = "host=localhost port=8812 user=admin password=quest dbname=qdb"
         with psycopg.connect(conn_string, connect_timeout=5):
             return True
@@ -48,12 +50,13 @@ def pytest_collection_modifyitems(config, items):
     questdb_available = True
     try:
         import psycopg
+
         conn_string = "host=localhost port=8812 user=admin password=quest dbname=qdb"
         with psycopg.connect(conn_string, connect_timeout=5):
             pass
     except Exception:
         questdb_available = False
-    
+
     for item in items:
         if "questdb" in item.keywords and not questdb_available:
             item.add_marker(pytest.mark.skip(reason="QuestDB not available"))

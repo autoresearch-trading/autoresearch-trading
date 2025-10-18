@@ -6,7 +6,6 @@ from threading import Lock
 from typing import Awaitable, Callable, List, MutableMapping
 
 import structlog
-
 from signals.base import Signal
 
 log = structlog.get_logger(__name__)
@@ -33,7 +32,11 @@ class SignalRouter:
         """Register a callback invoked for the given symbol."""
         symbol = symbol.upper()
         cls._subscribers[symbol].append(callback)
-        log.debug("signal_router_subscribed", symbol=symbol, total=len(cls._subscribers[symbol]))
+        log.debug(
+            "signal_router_subscribed",
+            symbol=symbol,
+            total=len(cls._subscribers[symbol]),
+        )
 
     @classmethod
     def subscribe_all(cls, callback: SignalCallback) -> None:
@@ -50,7 +53,9 @@ class SignalRouter:
             return
         try:
             callbacks.remove(callback)
-            log.debug("signal_router_unsubscribed", symbol=symbol, remaining=len(callbacks))
+            log.debug(
+                "signal_router_unsubscribed", symbol=symbol, remaining=len(callbacks)
+            )
         except ValueError:
             pass
 
@@ -59,7 +64,9 @@ class SignalRouter:
         """Remove a callback from the global subscriber list."""
         try:
             cls._global_subscribers.remove(callback)
-            log.debug("signal_router_unsubscribed_all", remaining=len(cls._global_subscribers))
+            log.debug(
+                "signal_router_unsubscribed_all", remaining=len(cls._global_subscribers)
+            )
         except ValueError:
             pass
 

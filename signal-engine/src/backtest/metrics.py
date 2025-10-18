@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Sequence, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable, Sequence, Tuple
 
 import numpy as np
 
@@ -97,12 +97,8 @@ def calculate_backtest_results(
     total_pnl = float(pnl_values.sum())
     total_pnl_pct = total_pnl / initial_capital if initial_capital else 0.0
 
-    avg_win = (
-        float(pnl_values[winning_mask].mean()) if winning_trades else 0.0
-    )
-    avg_loss = (
-        float(pnl_values[losing_mask].mean()) if losing_trades else 0.0
-    )
+    avg_win = float(pnl_values[winning_mask].mean()) if winning_trades else 0.0
+    avg_loss = float(pnl_values[losing_mask].mean()) if losing_trades else 0.0
     largest_win = float(pnl_values.max(initial=0.0)) if winning_trades else 0.0
     largest_loss = float(pnl_values.min(initial=0.0)) if losing_trades else 0.0
 

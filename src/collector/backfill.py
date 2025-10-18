@@ -116,7 +116,9 @@ class KlineBackfillRunner:
 
         log.info("backfill_complete_symbol", symbol=symbol)
 
-    async def _fetch(self, symbol: str, start_ms: int, end_ms: int) -> Dict[str, object]:
+    async def _fetch(
+        self, symbol: str, start_ms: int, end_ms: int
+    ) -> Dict[str, object]:
         async with self.rate.throttle("kline"):
             return await asyncio.to_thread(
                 self.rest.get_kline,

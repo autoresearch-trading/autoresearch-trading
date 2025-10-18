@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set
 
-from .models import CandleRow, FundingRow, OrderbookLevel, OrderbookRow, PriceRow, TradeRow
+from .models import (CandleRow, FundingRow, OrderbookLevel, OrderbookRow,
+                     PriceRow, TradeRow)
 
 
 def _extract_data(payload: Any) -> Any:
@@ -12,7 +13,9 @@ def _extract_data(payload: Any) -> Any:
     return payload
 
 
-def to_price_rows(payload: Dict[str, Any], *, recv_ms: int, filter_symbols: Set[str]) -> List[Dict[str, Any]]:
+def to_price_rows(
+    payload: Dict[str, Any], *, recv_ms: int, filter_symbols: Set[str]
+) -> List[Dict[str, Any]]:
     data = _extract_data(payload)
     if not isinstance(data, dict):
         return []
@@ -36,7 +39,9 @@ def to_price_rows(payload: Dict[str, Any], *, recv_ms: int, filter_symbols: Set[
     return rows
 
 
-def to_trade_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") -> List[Dict[str, Any]]:
+def to_trade_rows(
+    payload: Dict[str, Any], *, recv_ms: int, symbol: str = ""
+) -> List[Dict[str, Any]]:
     data = _extract_data(payload)
     if not isinstance(data, Sequence):
         return []
@@ -44,7 +49,7 @@ def to_trade_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") ->
     for trade in data:
         if not isinstance(trade, dict):
             continue
-        
+
         # Handle missing fields with proper defaults
         qty_raw = trade.get("qty") or trade.get("amount")
         price_raw = trade.get("price")
@@ -52,11 +57,11 @@ def to_trade_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") ->
         symbol_raw = trade.get("symbol", symbol)
         trade_id_raw = trade.get("id", "")
         side_raw = trade.get("side", "")
-        
+
         # Skip if essential fields are missing
         if qty_raw is None or price_raw is None:
             continue
-            
+
         row = TradeRow(
             ts_ms=int(ts_raw or recv_ms),
             symbol=str(symbol_raw).upper(),
@@ -70,7 +75,9 @@ def to_trade_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") ->
     return rows
 
 
-def _normalize_levels(levels: Iterable[Sequence[Any]], depth: int) -> List[OrderbookLevel]:
+def _normalize_levels(
+    levels: Iterable[Sequence[Any]], depth: int
+) -> List[OrderbookLevel]:
     normalized: List[OrderbookLevel] = []
     for price_raw, qty_raw, *_ in levels:
         normalized.append(OrderbookLevel(price=float(price_raw), qty=float(qty_raw)))
@@ -79,7 +86,9 @@ def _normalize_levels(levels: Iterable[Sequence[Any]], depth: int) -> List[Order
     return normalized
 
 
-def _normalize_levels_kv(levels: Iterable[Dict[str, Any]], depth: int) -> List[OrderbookLevel]:
+def _normalize_levels_kv(
+    levels: Iterable[Dict[str, Any]], depth: int
+) -> List[OrderbookLevel]:
     normalized: List[OrderbookLevel] = []
     for level in levels:
         if not isinstance(level, dict):
@@ -119,8 +128,12 @@ def to_orderbook_rows(
         if not (isinstance(ladder, list) and len(ladder) == 2):
             return []
         raw_bids, raw_asks = ladder
-        bids = _normalize_levels_kv(raw_bids, depth) if isinstance(raw_bids, list) else []
-        asks = _normalize_levels_kv(raw_asks, depth) if isinstance(raw_asks, list) else []
+        bids = (
+            _normalize_levels_kv(raw_bids, depth) if isinstance(raw_bids, list) else []
+        )
+        asks = (
+            _normalize_levels_kv(raw_asks, depth) if isinstance(raw_asks, list) else []
+        )
         derived_ts = int(book.get("t") or recv_ms)
 
     row = OrderbookRow(
@@ -134,7 +147,9 @@ def to_orderbook_rows(
     return [row.model_dump()]
 
 
-def to_funding_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") -> List[Dict[str, Any]]:
+def to_funding_rows(
+    payload: Dict[str, Any], *, recv_ms: int, symbol: str = ""
+) -> List[Dict[str, Any]]:
     data = _extract_data(payload)
     if not isinstance(data, Sequence):
         return []
@@ -142,17 +157,17 @@ def to_funding_rows(payload: Dict[str, Any], *, recv_ms: int, symbol: str = "") 
     for item in data:
         if not isinstance(item, dict):
             continue
-        
+
         # Handle missing fields with proper defaults
         rate_raw = item.get("rate") or item.get("funding_rate")
         ts_raw = item.get("timestamp") or item.get("ts_ms") or item.get("created_at")
         symbol_raw = item.get("symbol", symbol)
         interval_raw = item.get("interval_sec") or item.get("interval") or 0
-        
+
         # Skip if essential fields are missing
         if rate_raw is None:
             continue
-            
+
         row = FundingRow(
             ts_ms=int(ts_raw or recv_ms),
             symbol=str(symbol_raw).upper(),
@@ -236,11 +251,21 @@ def to_candle_rows(
             high_price = _to_float(entry.get("high") or entry.get("h"))
             low_price = _to_float(entry.get("low") or entry.get("l"))
             close_price = _to_float(entry.get("close") or entry.get("c"))
-            volume = _to_float(entry.get("volume") or entry.get("v") or entry.get("amount") or entry.get("qty"))
-            start_ms = _to_int_ms(
-                _pick_first(entry, ("t", "start_time", "open_time", "open_ts", "timestamp", "ts_ms"))
+            volume = _to_float(
+                entry.get("volume")
+                or entry.get("v")
+                or entry.get("amount")
+                or entry.get("qty")
             )
-            end_ms = _to_int_ms(_pick_first(entry, ("T", "end_time", "close_time", "close_ts")))
+            start_ms = _to_int_ms(
+                _pick_first(
+                    entry,
+                    ("t", "start_time", "open_time", "open_ts", "timestamp", "ts_ms"),
+                )
+            )
+            end_ms = _to_int_ms(
+                _pick_first(entry, ("T", "end_time", "close_time", "close_ts"))
+            )
         elif isinstance(entry, Sequence):
             # Binance-style tuples: [open_time, open, high, low, close, volume, close_time, ...]
             if len(entry) >= 6:
@@ -254,7 +279,12 @@ def to_candle_rows(
         else:
             continue
 
-        if open_price is None or high_price is None or low_price is None or close_price is None:
+        if (
+            open_price is None
+            or high_price is None
+            or low_price is None
+            or close_price is None
+        ):
             continue
 
         if start_ms is None and end_ms is not None:

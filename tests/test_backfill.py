@@ -5,7 +5,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from collector.backfill import BackfillOptions, KlineBackfillRunner, interval_to_millis
+from collector.backfill import (BackfillOptions, KlineBackfillRunner,
+                                interval_to_millis)
 
 
 def test_interval_to_millis_known_values() -> None:

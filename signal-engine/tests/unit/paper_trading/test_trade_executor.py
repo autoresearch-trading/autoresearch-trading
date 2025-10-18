@@ -82,7 +82,9 @@ def test_trade_executor_opens_and_closes_position() -> None:
     assert position is not None
     assert position.qty > 0
 
-    executor.close_position(position=position, exit_price=110.0, exit_reason="take_profit")
+    executor.close_position(
+        position=position, exit_price=110.0, exit_reason="take_profit"
+    )
 
     assert tracker.get_position("BTC") is None
     assert risk_manager.metrics.daily_trade_count == 1

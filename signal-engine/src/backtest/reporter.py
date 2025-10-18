@@ -37,7 +37,9 @@ class BacktestReporter:
         summary.add_row("Sortino Ratio", f"{results.sortino_ratio:.2f}")
         summary.add_row("Avg Hold (s)", f"{results.avg_hold_time_seconds:.0f}")
 
-        exits = Table(title="Exit Reason Breakdown", show_header=True, header_style="bold")
+        exits = Table(
+            title="Exit Reason Breakdown", show_header=True, header_style="bold"
+        )
         exits.add_column("Reason", style="cyan")
         exits.add_column("Count", style="yellow")
 

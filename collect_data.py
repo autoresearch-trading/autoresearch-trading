@@ -83,7 +83,9 @@ def resolve_settings(args: argparse.Namespace) -> APISettings:
     timeout = args.timeout if args.timeout is not None else settings.timeout
     api_key = args.api_key or settings.api_key
 
-    return replace(settings, base_url=base_url, timeout=timeout, api_key=api_key, network=network)
+    return replace(
+        settings, base_url=base_url, timeout=timeout, api_key=api_key, network=network
+    )
 
 
 def configure_parser() -> argparse.ArgumentParser:
@@ -122,10 +124,14 @@ def configure_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    market_info = subparsers.add_parser("market-info", help="List exchange metadata for all symbols.")
+    market_info = subparsers.add_parser(
+        "market-info", help="List exchange metadata for all symbols."
+    )
     market_info.set_defaults(handler=run_market_info)
 
-    prices = subparsers.add_parser("prices", help="Get current pricing snapshot for all symbols.")
+    prices = subparsers.add_parser(
+        "prices", help="Get current pricing snapshot for all symbols."
+    )
     prices.set_defaults(handler=run_prices)
 
     kline = subparsers.add_parser("kline", help="Fetch historical candle data.")
@@ -147,8 +153,12 @@ def configure_parser() -> argparse.ArgumentParser:
     )
     kline.set_defaults(handler=run_kline)
 
-    orderbook = subparsers.add_parser("orderbook", help="Fetch current order book snapshot.")
-    orderbook.add_argument("--symbol", required=True, help="Trading pair symbol, e.g. BTC.")
+    orderbook = subparsers.add_parser(
+        "orderbook", help="Fetch current order book snapshot."
+    )
+    orderbook.add_argument(
+        "--symbol", required=True, help="Trading pair symbol, e.g. BTC."
+    )
     orderbook.add_argument(
         "--agg-level",
         type=int,
@@ -156,13 +166,21 @@ def configure_parser() -> argparse.ArgumentParser:
     )
     orderbook.set_defaults(handler=run_orderbook)
 
-    trades = subparsers.add_parser("recent-trades", help="Fetch recent public trades for a symbol.")
-    trades.add_argument("--symbol", required=True, help="Trading pair symbol, e.g. BTC.")
+    trades = subparsers.add_parser(
+        "recent-trades", help="Fetch recent public trades for a symbol."
+    )
+    trades.add_argument(
+        "--symbol", required=True, help="Trading pair symbol, e.g. BTC."
+    )
     trades.set_defaults(handler=run_recent_trades)
 
     funding = subparsers.add_parser("funding", help="Fetch historical funding rates.")
-    funding.add_argument("--symbol", required=True, help="Trading pair symbol, e.g. BTC.")
-    funding.add_argument("--limit", type=int, help="Number of records to fetch (max 4000).")
+    funding.add_argument(
+        "--symbol", required=True, help="Trading pair symbol, e.g. BTC."
+    )
+    funding.add_argument(
+        "--limit", type=int, help="Number of records to fetch (max 4000)."
+    )
     funding.add_argument("--offset", type=int, help="Pagination offset.")
     funding.set_defaults(handler=run_funding)
 
@@ -170,7 +188,9 @@ def configure_parser() -> argparse.ArgumentParser:
         "raw",
         help="Perform an ad-hoc GET request against the REST API. Useful for experimentation.",
     )
-    raw.add_argument("endpoint", help="Endpoint path, e.g. /trades?symbol=BTC or /info.")
+    raw.add_argument(
+        "endpoint", help="Endpoint path, e.g. /trades?symbol=BTC or /info."
+    )
     raw.add_argument(
         "--param",
         dest="params",
@@ -309,33 +329,51 @@ def configure_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_market_info(rest: PacificaREST, _: APIClient, __: argparse.Namespace) -> Dict[str, Any]:
+def run_market_info(
+    rest: PacificaREST, _: APIClient, __: argparse.Namespace
+) -> Dict[str, Any]:
     return rest.get_market_info()
 
 
-def run_prices(rest: PacificaREST, _: APIClient, __: argparse.Namespace) -> Dict[str, Any]:
+def run_prices(
+    rest: PacificaREST, _: APIClient, __: argparse.Namespace
+) -> Dict[str, Any]:
     return rest.get_prices()
 
 
-def run_kline(rest: PacificaREST, _: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+def run_kline(
+    rest: PacificaREST, _: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
     start = parse_timestamp(args.start)
     end = parse_timestamp(args.end) if args.end else None
-    return rest.get_kline(symbol=args.symbol, interval=args.interval, start_time=start, end_time=end)
+    return rest.get_kline(
+        symbol=args.symbol, interval=args.interval, start_time=start, end_time=end
+    )
 
 
-def run_orderbook(rest: PacificaREST, _: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+def run_orderbook(
+    rest: PacificaREST, _: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
     return rest.get_orderbook(symbol=args.symbol, agg_level=args.agg_level)
 
 
-def run_recent_trades(rest: PacificaREST, _: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+def run_recent_trades(
+    rest: PacificaREST, _: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
     return rest.get_recent_trades(symbol=args.symbol)
 
 
-def run_funding(rest: PacificaREST, _: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
-    return rest.get_historical_funding(symbol=args.symbol, limit=args.limit, offset=args.offset)
+def run_funding(
+    rest: PacificaREST, _: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
+    return rest.get_historical_funding(
+        symbol=args.symbol, limit=args.limit, offset=args.offset
+    )
 
 
-def run_raw_request(rest: PacificaREST, client: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+def run_raw_request(
+    rest: PacificaREST, client: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
     params = parse_params(args.params)
     # Allow users to pass inline query strings, otherwise rely on --param flags.
     endpoint = args.endpoint
@@ -346,7 +384,9 @@ def run_raw_request(rest: PacificaREST, client: APIClient, args: argparse.Namesp
     return payload
 
 
-def run_live(_: PacificaREST, client: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+def run_live(
+    _: PacificaREST, client: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
     settings = client.settings
     symbols = parse_symbols_arg(args.symbols)
     poll_config = {
@@ -383,7 +423,11 @@ def run_live(_: PacificaREST, client: APIClient, args: argparse.Namespace) -> Di
 
 
 def _resolve_backfill_window(args: argparse.Namespace) -> tuple[int, int]:
-    end_ms = parse_timestamp(args.end) if args.end else int(datetime.now(timezone.utc).timestamp() * 1000)
+    end_ms = (
+        parse_timestamp(args.end)
+        if args.end
+        else int(datetime.now(timezone.utc).timestamp() * 1000)
+    )
     if args.start:
         start_ms = parse_timestamp(args.start)
     else:
@@ -394,7 +438,9 @@ def _resolve_backfill_window(args: argparse.Namespace) -> tuple[int, int]:
     return start_ms, end_ms
 
 
-def run_backfill(rest: PacificaREST, _: APIClient, args: argparse.Namespace) -> Dict[str, Any]:
+def run_backfill(
+    rest: PacificaREST, _: APIClient, args: argparse.Namespace
+) -> Dict[str, Any]:
     symbols = parse_symbols_arg(args.symbols)
     start_ms, end_ms = _resolve_backfill_window(args)
     options = BackfillOptions(
@@ -465,7 +511,8 @@ def configure_logging(level_name: str, log_file: Optional[str]) -> None:
         root_logger.addHandler(handler)
 
     structlog.configure(
-        processors=processors + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        processors=processors
+        + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
@@ -479,7 +526,9 @@ def main() -> None:
 
     configure_logging(args.log_level, args.log_file)
     safe_args = {
-        key: value for key, value in vars(args).items() if key not in {"handler", "api_key"}
+        key: value
+        for key, value in vars(args).items()
+        if key not in {"handler", "api_key"}
     }
     logger.debug("parsed_arguments", arguments=safe_args)
 
@@ -493,7 +542,11 @@ def main() -> None:
         if args.log_payload:
             logger.info("response_payload", payload=payload)
     except Exception as exc:
-        logger.exception("command_failed", command=getattr(args, "command", "unknown"), error=str(exc))
+        logger.exception(
+            "command_failed",
+            command=getattr(args, "command", "unknown"),
+            error=str(exc),
+        )
         print(f"[collector] Error: {exc}", file=sys.stderr)
         sys.exit(1)
 

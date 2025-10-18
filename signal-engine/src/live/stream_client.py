@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import structlog
-
 from config import Settings
 from signals.base import OrderbookSnapshot, Trade
 
@@ -51,12 +50,17 @@ class PacificaStreamClient:
             log.error("pacifica_fetch_trades_failed", symbol=symbol, error=str(exc))
             return []
 
-        trades = [_dict_to_trade(item, default_symbol=symbol) for item in _extract_sequence(payload)]
+        trades = [
+            _dict_to_trade(item, default_symbol=symbol)
+            for item in _extract_sequence(payload)
+        ]
         trades = [trade for trade in trades if trade is not None]
         trades.sort(key=lambda trade: (trade.ts, trade.trade_id))
         return trades  # type: ignore[return-value]
 
-    def fetch_orderbook(self, symbol: str, depth: int = 5) -> Optional[OrderbookSnapshot]:
+    def fetch_orderbook(
+        self, symbol: str, depth: int = 5
+    ) -> Optional[OrderbookSnapshot]:
         """Return the latest orderbook snapshot."""
         if not self._rest:
             return None
@@ -112,7 +116,12 @@ def _dict_to_trade(item: Any, *, default_symbol: str) -> Trade | None:
     if not isinstance(item, dict):
         return None
 
-    ts_value = item.get("ts_ms") or item.get("ts") or item.get("time") or item.get("created_at")
+    ts_value = (
+        item.get("ts_ms")
+        or item.get("ts")
+        or item.get("time")
+        or item.get("created_at")
+    )
     ts = _to_datetime_ms(ts_value)
     if ts is None:
         return None
@@ -122,7 +131,12 @@ def _dict_to_trade(item: Any, *, default_symbol: str) -> Trade | None:
     if price is None or qty is None:
         return None
 
-    trade_id = str(item.get("trade_id") or item.get("id") or item.get("tid") or f"{int(ts.timestamp()*1000)}")
+    trade_id = str(
+        item.get("trade_id")
+        or item.get("id")
+        or item.get("tid")
+        or f"{int(ts.timestamp()*1000)}"
+    )
     side = str(item.get("side") or "").lower() or "buy"
     recv_ts = datetime.now(timezone.utc)
 
@@ -138,7 +152,9 @@ def _dict_to_trade(item: Any, *, default_symbol: str) -> Trade | None:
     )
 
 
-def _dict_to_orderbook(payload: Any, *, default_symbol: str, depth: int) -> OrderbookSnapshot | None:
+def _dict_to_orderbook(
+    payload: Any, *, default_symbol: str, depth: int
+) -> OrderbookSnapshot | None:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if isinstance(data, dict):
         snapshot = data
@@ -193,7 +209,11 @@ def _normalize_levels(levels: Iterable[Any], depth: int) -> List[Tuple[float, fl
         if isinstance(level, dict):
             price = _to_float(level.get("price") or level.get("p"))
             qty = _to_float(level.get("qty") or level.get("a"))
-        elif isinstance(level, Sequence) and not isinstance(level, (str, bytes)) and len(level) >= 2:
+        elif (
+            isinstance(level, Sequence)
+            and not isinstance(level, (str, bytes))
+            and len(level) >= 2
+        ):
             price = _to_float(level[0])
             qty = _to_float(level[1])
 

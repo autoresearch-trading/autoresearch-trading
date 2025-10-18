@@ -8,7 +8,6 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-
 st.set_page_config(page_title="Pacifica Live Dashboard", layout="wide")
 
 
@@ -16,7 +15,9 @@ def _parse_symbols(raw: str) -> List[str]:
     return [symbol.strip().upper() for symbol in raw.split(",") if symbol.strip()]
 
 
-def _collect_files(root: Path, dataset: str, symbol: str, per_partition: int) -> List[Path]:
+def _collect_files(
+    root: Path, dataset: str, symbol: str, per_partition: int
+) -> List[Path]:
     files: List[Path] = []
     symbol_dir = root / dataset / f"symbol={symbol}"
     if not symbol_dir.exists():
@@ -57,21 +58,31 @@ sidebar.header("Collector Settings")
 
 data_root = Path(sidebar.text_input("Data root", "./data")).expanduser()
 symbols_raw = sidebar.text_input("Symbols", "BTC,ETH")
-refresh_seconds = sidebar.slider("Auto-refresh (seconds)", min_value=1, max_value=30, value=5)
-trade_points = sidebar.slider("Trade samples", min_value=100, max_value=5000, value=1000, step=100)
-book_depth = sidebar.slider("Order book depth", min_value=5, max_value=50, value=25, step=5)
+refresh_seconds = sidebar.slider(
+    "Auto-refresh (seconds)", min_value=1, max_value=30, value=5
+)
+trade_points = sidebar.slider(
+    "Trade samples", min_value=100, max_value=5000, value=1000, step=100
+)
+book_depth = sidebar.slider(
+    "Order book depth", min_value=5, max_value=50, value=25, step=5
+)
 
 symbols = _parse_symbols(symbols_raw)
 
 if not data_root.exists():
-    st.warning(f"Data root '{data_root}' not found yet. Waiting for live collector to write Parquet files.")
+    st.warning(
+        f"Data root '{data_root}' not found yet. Waiting for live collector to write Parquet files."
+    )
     st.stop()
 
 if not symbols:
     st.warning("Enter at least one symbol to begin monitoring.")
     st.stop()
 
-st.caption(f"Streaming parquet files from `{data_root}` for symbols {', '.join(symbols)}")
+st.caption(
+    f"Streaming parquet files from `{data_root}` for symbols {', '.join(symbols)}"
+)
 
 upper_cols = st.columns(2)
 
@@ -136,7 +147,9 @@ else:
 funding = load_latest(data_root, "funding", symbols, tail=5000)
 if not funding.empty:
     funding["ts"] = pd.to_datetime(funding["ts_ms"], unit="ms")
-    fig_funding = px.bar(funding, x="ts", y="rate", color="symbol", title="Funding Rates")
+    fig_funding = px.bar(
+        funding, x="ts", y="rate", color="symbol", title="Funding Rates"
+    )
     lower_cols[1].plotly_chart(fig_funding, use_container_width=True)
 else:
     lower_cols[1].info("No funding data written yet.")

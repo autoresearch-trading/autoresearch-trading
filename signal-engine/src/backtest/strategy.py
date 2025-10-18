@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Iterable, List
 
 import numpy as np
-
 from signals.base import Signal, SignalDirection, SignalType
 
 
@@ -85,9 +84,7 @@ def _evaluate_signals(
     ):
         return False, 0.0
 
-    high_conf = [
-        s for s in directional if s.confidence >= min_confidence
-    ]
+    high_conf = [s for s in directional if s.confidence >= min_confidence]
     if len(high_conf) < min_signals:
         return False, 0.0
 

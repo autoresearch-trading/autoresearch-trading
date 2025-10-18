@@ -5,7 +5,6 @@ from queue import Empty, Full, Queue
 from typing import Any, List, Tuple
 
 import structlog
-
 from config import Settings
 from db.questdb import QuestDBClient
 from signals.base import PaperTrade, Signal

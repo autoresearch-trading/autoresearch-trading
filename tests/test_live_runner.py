@@ -26,8 +26,12 @@ class RecordingWriter:
 
 @pytest.mark.asyncio
 async def test_live_runner_polls_prices(monkeypatch, tmp_path: Path) -> None:
-    settings = APISettings(base_url="https://example.com", api_key=None, timeout=1.0, network="mainnet")
-    runner = LiveRunner(settings, max_rps=5, out_root=str(tmp_path), book_depth=5, agg_level=None)
+    settings = APISettings(
+        base_url="https://example.com", api_key=None, timeout=1.0, network="mainnet"
+    )
+    runner = LiveRunner(
+        settings, max_rps=5, out_root=str(tmp_path), book_depth=5, agg_level=None
+    )
 
     prices_writer = RecordingWriter()
     runner._writers["prices"] = prices_writer
@@ -39,7 +43,9 @@ async def test_live_runner_polls_prices(monkeypatch, tmp_path: Path) -> None:
         return httpx.Response(404, json={"error": "not found"})
 
     await runner._client.aclose()
-    runner._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=settings.base_url)
+    runner._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    )
 
     task = asyncio.create_task(runner._poll_prices(["BTC"], interval=0.05))
     await asyncio.wait_for(prices_writer.event.wait(), timeout=1)

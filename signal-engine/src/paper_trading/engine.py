@@ -5,12 +5,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional
 
 import structlog
-
+from api.live_data import LiveDataClient
 from config import Settings
 from db.questdb import QuestDBClient
 from signals.base import MarketRegime, Signal
-
-from api.live_data import LiveDataClient
 
 from .position_tracker import PositionTracker
 from .risk_manager import RiskManager
@@ -71,7 +69,9 @@ class PaperTradingEngine:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover - top-level safeguard
-            log.error("paper_trading_unhandled_exception", error=str(exc), exc_info=True)
+            log.error(
+                "paper_trading_unhandled_exception", error=str(exc), exc_info=True
+            )
         finally:
             await self.stop()
 
@@ -87,7 +87,11 @@ class PaperTradingEngine:
                 try:
                     current_price = await self._get_current_price(position.symbol)
                 except Exception as exc:  # pragma: no cover - defensive
-                    log.error("paper_close_price_fetch_failed", symbol=position.symbol, error=str(exc))
+                    log.error(
+                        "paper_close_price_fetch_failed",
+                        symbol=position.symbol,
+                        error=str(exc),
+                    )
                     current_price = None
 
                 if current_price is None:
@@ -142,7 +146,9 @@ class PaperTradingEngine:
                             exit_reason=decision.reason or "manual",
                         )
                     else:
-                        self.position_tracker.update_position_price(symbol, current_price)
+                        self.position_tracker.update_position_price(
+                            symbol, current_price
+                        )
                     continue
 
                 if not fresh_signals:
@@ -164,7 +170,12 @@ class PaperTradingEngine:
                     now=now,
                 )
             except Exception as exc:
-                log.error("paper_trading_cycle_error", symbol=symbol, error=str(exc), exc_info=True)
+                log.error(
+                    "paper_trading_cycle_error",
+                    symbol=symbol,
+                    error=str(exc),
+                    exc_info=True,
+                )
 
     async def _fetch_latest_signals(
         self,

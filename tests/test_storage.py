@@ -13,8 +13,18 @@ from collector.storage import ParquetWriter
 async def test_parquet_writer_creates_partition(tmp_path: Path) -> None:
     writer = ParquetWriter(str(tmp_path), "prices")
     rows = [
-        {"ts_ms": 1710000000000, "symbol": "BTC", "price": 50000.0, "recv_ms": 1710000001000},
-        {"ts_ms": 1710000005000, "symbol": "BTC", "price": 50010.0, "recv_ms": 1710000006000},
+        {
+            "ts_ms": 1710000000000,
+            "symbol": "BTC",
+            "price": 50000.0,
+            "recv_ms": 1710000001000,
+        },
+        {
+            "ts_ms": 1710000005000,
+            "symbol": "BTC",
+            "price": 50010.0,
+            "recv_ms": 1710000006000,
+        },
     ]
     await writer.append(rows)
     await writer.flush()
@@ -50,7 +60,9 @@ async def test_parquet_writer_batches_rows(tmp_path: Path) -> None:
     await writer.flush()
 
     files = list((tmp_path / "prices").rglob("*.parquet"))
-    assert len(files) == 1, "Buffered appends should coalesce into a single parquet file."
+    assert (
+        len(files) == 1
+    ), "Buffered appends should coalesce into a single parquet file."
 
     frame = pd.read_parquet(files[0])
     assert len(frame) == 3

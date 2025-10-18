@@ -13,8 +13,8 @@ env_file = Path(__file__).parent / ".env"
 print(f".env exists: {env_file.exists()}")
 if env_file.exists():
     content = env_file.read_text()
-    for i, line in enumerate(content.split('\n'), 1):
-        if 'SYMBOLS' in line.upper():
+    for i, line in enumerate(content.split("\n"), 1):
+        if "SYMBOLS" in line.upper():
             print(f"Line {i}: {repr(line)}")
 
 print("\n=== Loading Settings ===")
@@ -22,13 +22,15 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 try:
     from pydantic_settings import BaseSettings
+
     print(f"Pydantic settings loaded successfully")
-    
+
     from config import Settings
+
     settings = Settings()
     print(f"SUCCESS! Symbols: {settings.symbols}")
 except Exception as e:
     print(f"ERROR: {e}")
     import traceback
-    traceback.print_exc()
 
+    traceback.print_exc()

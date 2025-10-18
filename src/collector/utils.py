@@ -14,7 +14,9 @@ def parse_duration(raw: str, *, default_unit: str = "s") -> float:
     """Parse a duration string such as '250ms', '1.5s', or '2m' and return seconds."""
     match = _DURATION_PATTERN.match(raw)
     if not match:
-        raise ValueError(f"Invalid duration '{raw}'. Expected formats like '250ms', '1s', or '2m'.")
+        raise ValueError(
+            f"Invalid duration '{raw}'. Expected formats like '250ms', '1s', or '2m'."
+        )
     value = float(match.group(1))
     unit = (match.group(2) or default_unit).lower()
     if unit == "ms":

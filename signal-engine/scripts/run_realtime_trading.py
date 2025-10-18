@@ -23,7 +23,8 @@ for path in SRC_PATHS:
 
 from bytewax.testing import run_main  # noqa: E402
 from config import Settings  # noqa: E402
-from paper_trading.realtime_engine import RealtimePaperTradingEngine  # noqa: E402
+from paper_trading.realtime_engine import \
+    RealtimePaperTradingEngine  # noqa: E402
 from persistence.async_writer import writer_loop  # noqa: E402
 from stream.realtime_dataflow import build_realtime_dataflow  # noqa: E402
 from stream.signal_router import SignalRouter  # noqa: E402
@@ -32,7 +33,9 @@ console = Console()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the real-time paper trading system.")
+    parser = argparse.ArgumentParser(
+        description="Run the real-time paper trading system."
+    )
     parser.add_argument(
         "--symbols",
         nargs="*",
@@ -58,14 +61,18 @@ async def run_system(settings: Settings, *, dry_run: bool) -> None:
     console.print(f"Initial capital: ${settings.initial_capital:,.2f}")
 
     SignalRouter.initialize()
-    router_task = asyncio.create_task(SignalRouter.dispatch_loop(), name="signal_router_dispatch")
+    router_task = asyncio.create_task(
+        SignalRouter.dispatch_loop(), name="signal_router_dispatch"
+    )
     writer_task = asyncio.create_task(writer_loop(settings), name="questdb_writer")
 
     engine = RealtimePaperTradingEngine(settings, dry_run=dry_run)
     engine_task = asyncio.create_task(engine.start(), name="paper_trading_engine")
 
     flow = build_realtime_dataflow(settings)
-    dataflow_task = asyncio.create_task(asyncio.to_thread(run_main, flow), name="bytewax_flow")
+    dataflow_task = asyncio.create_task(
+        asyncio.to_thread(run_main, flow), name="bytewax_flow"
+    )
 
     tasks = [router_task, writer_task, engine_task, dataflow_task]
 

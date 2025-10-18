@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from typing import Iterable, List, Optional
 
 import structlog
-
 from backtest.strategy import SignalAggregator
 from signals.base import MarketRegime, PaperTrade, Signal, SignalType
 
@@ -99,9 +98,15 @@ class TradeExecutor:
         if side is None:
             return
 
-        qty = self._calculate_position_size(self.position_tracker.capital, current_price)
+        qty = self._calculate_position_size(
+            self.position_tracker.capital, current_price
+        )
         if qty <= 0:
-            log.warning("paper_entry_insufficient_capital", symbol=symbol, capital=self.position_tracker.capital)
+            log.warning(
+                "paper_entry_insufficient_capital",
+                symbol=symbol,
+                capital=self.position_tracker.capital,
+            )
             return
 
         allowed, reason = self.risk_manager.can_open_position(
@@ -119,8 +124,12 @@ class TradeExecutor:
         stop_loss = self._compute_stop_loss(current_price, side)
         take_profit = self._compute_take_profit(current_price, side)
 
-        cvd_value = SignalAggregator.latest_signal_value(symbol_signals, SignalType.CVD) or 0.0
-        tfi_value = SignalAggregator.latest_signal_value(symbol_signals, SignalType.TFI) or 0.0
+        cvd_value = (
+            SignalAggregator.latest_signal_value(symbol_signals, SignalType.CVD) or 0.0
+        )
+        tfi_value = (
+            SignalAggregator.latest_signal_value(symbol_signals, SignalType.TFI) or 0.0
+        )
         ofi_value = SignalAggregator.latest_signal_value(symbol_signals, SignalType.OFI)
 
         if self.dry_run:
@@ -204,7 +213,11 @@ class TradeExecutor:
         exit_reason: str,
     ) -> None:
         if exit_price <= 0:
-            log.error("paper_exit_invalid_price", symbol=position.symbol, exit_price=exit_price)
+            log.error(
+                "paper_exit_invalid_price",
+                symbol=position.symbol,
+                exit_price=exit_price,
+            )
             return
 
         if self.dry_run:
@@ -250,7 +263,9 @@ class TradeExecutor:
         try:
             self.db.write_paper_trade(trade)
         except Exception as exc:  # pragma: no cover - persistence errors logged
-            log.error("paper_trade_persist_failed", error=str(exc), trade_id=trade.trade_id)
+            log.error(
+                "paper_trade_persist_failed", error=str(exc), trade_id=trade.trade_id
+            )
 
         log.info(
             "paper_position_closed",

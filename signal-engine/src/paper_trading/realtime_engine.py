@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 import structlog
-
 from api.live_data import LiveDataClient
 from config import Settings
 from persistence.async_writer import enqueue_trade
@@ -56,7 +55,11 @@ class RealtimePaperTradingEngine:
         for symbol in self.settings.symbols:
             SignalRouter.subscribe(symbol, self._on_signal)
 
-        log.info("realtime_paper_trading_started", symbols=self.settings.symbols, dry_run=self.dry_run)
+        log.info(
+            "realtime_paper_trading_started",
+            symbols=self.settings.symbols,
+            dry_run=self.dry_run,
+        )
 
         self._tasks = [
             asyncio.create_task(self._aggregation_loop(), name="signal_aggregation"),
@@ -87,7 +90,9 @@ class RealtimePaperTradingEngine:
             SignalRouter.unsubscribe(symbol, self._on_signal)
 
         self._running = False
-        log.info("realtime_paper_trading_stopped", capital=self.position_tracker.capital)
+        log.info(
+            "realtime_paper_trading_stopped", capital=self.position_tracker.capital
+        )
 
     async def _on_signal(self, signal: Signal) -> None:
         async with self._buffer_lock:
@@ -105,7 +110,9 @@ class RealtimePaperTradingEngine:
         aggregation_window = 5.0
         while not self._stop_event.is_set():
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=aggregation_window)
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=aggregation_window
+                )
                 continue
             except asyncio.TimeoutError:
                 pass
@@ -172,7 +179,9 @@ class RealtimePaperTradingEngine:
                             exit_reason=decision.reason or "unknown",
                         )
                     elif current_price is not None:
-                        self.position_tracker.update_position_price(position.symbol, current_price)
+                        self.position_tracker.update_position_price(
+                            position.symbol, current_price
+                        )
             except Exception as exc:  # pragma: no cover - defensive logging
                 log.error("position_monitor_error", error=str(exc), exc_info=True)
                 await asyncio.sleep(1.0)

@@ -8,10 +8,9 @@ import sys
 from pathlib import Path
 from typing import List
 
+from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from dotenv import load_dotenv
 from rich.console import Console
-
-from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_PATH = ROOT / "src"
@@ -109,7 +108,9 @@ def main() -> None:
 
         trade_matches = discover_files(trades_root, "*.parquet", args.date)
         if not trade_matches:
-            console.print(f"[yellow]No trades for {symbol} (root={trades_root})[/yellow]")
+            console.print(
+                f"[yellow]No trades for {symbol} (root={trades_root})[/yellow]"
+            )
         trade_files.extend(trade_matches)
 
         if not args.skip_orderbook:

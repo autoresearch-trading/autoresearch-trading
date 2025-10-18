@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-
-from signals.cvd import CVDCalculator
 from signals.base import SignalDirection, SignalType
+from signals.cvd import CVDCalculator
+
 from tests.fixtures.sample_data import generate_trades
 
 
@@ -18,7 +18,9 @@ def test_cvd_requires_full_lookback():
     )
 
     outputs = [calc.process_trade(trade) for trade in trades]
-    assert all(signal is None for signal in outputs), "Signal emitted before lookback filled"
+    assert all(
+        signal is None for signal in outputs
+    ), "Signal emitted before lookback filled"
 
 
 def test_cvd_detects_bullish_divergence():

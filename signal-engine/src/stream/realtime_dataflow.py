@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import bytewax.operators as op
 from typing import cast
 
+import bytewax.operators as op
 from bytewax.dataflow import Dataflow
-
 from config import Settings
 from signals.base import Signal, Trade
 from signals.cvd import CVDCalculator
@@ -20,7 +19,9 @@ def build_realtime_dataflow(settings: Settings) -> Dataflow:
     flow = Dataflow("realtime_signal_processor")
 
     trades_stream = op.input("live_trades", flow, LiveTradeStream(settings))
-    keyed_trades = op.key_on("trades_by_symbol", trades_stream, lambda trade: trade.symbol)
+    keyed_trades = op.key_on(
+        "trades_by_symbol", trades_stream, lambda trade: trade.symbol
+    )
 
     signal_streams = [
         _build_cvd_branch(flow, keyed_trades, settings),
@@ -59,7 +60,9 @@ def build_realtime_dataflow(settings: Settings) -> Dataflow:
 
 def _build_cvd_branch(flow: Dataflow, keyed_trades, settings: Settings):
     def mapper(state: CVDCalculator | None, trade: Trade):
-        calculator = state or CVDCalculator(symbol=trade.symbol, **settings.cvd_config())
+        calculator = state or CVDCalculator(
+            symbol=trade.symbol, **settings.cvd_config()
+        )
         signal = calculator.process_trade(trade)
         return calculator, signal
 
@@ -70,7 +73,9 @@ def _build_cvd_branch(flow: Dataflow, keyed_trades, settings: Settings):
 
 def _build_tfi_branch(flow: Dataflow, keyed_trades, settings: Settings):
     def mapper(state: TFICalculator | None, trade: Trade):
-        calculator = state or TFICalculator(symbol=trade.symbol, **settings.tfi_config())
+        calculator = state or TFICalculator(
+            symbol=trade.symbol, **settings.tfi_config()
+        )
         signal = calculator.process_trade(trade)
         return calculator, signal
 
@@ -81,7 +86,9 @@ def _build_tfi_branch(flow: Dataflow, keyed_trades, settings: Settings):
 
 def _build_ofi_branch(flow: Dataflow, keyed_orderbook, settings: Settings):
     def mapper(state: OFICalculator | None, snapshot):
-        calculator = state or OFICalculator(symbol=snapshot.symbol, **settings.ofi_config())
+        calculator = state or OFICalculator(
+            symbol=snapshot.symbol, **settings.ofi_config()
+        )
         signal = calculator.process_snapshot(snapshot)
         return calculator, signal
 

@@ -328,13 +328,9 @@ class BacktestEngine:
 
         if isinstance(sample_value, dict):
             for symbol, series in price_data.items():
-                normalized[symbol] = {
-                    ts: float(price) for ts, price in series.items()
-                }
+                normalized[symbol] = {ts: float(price) for ts, price in series.items()}
         else:
             symbol = signals[0].symbol if signals else "symbol"
-            normalized[symbol] = {
-                ts: float(price) for ts, price in items
-            }
+            normalized[symbol] = {ts: float(price) for ts, price in items}
 
         return normalized

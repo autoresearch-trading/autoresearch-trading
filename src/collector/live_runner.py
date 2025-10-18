@@ -12,12 +12,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 from .config import APISettings
 from .rate import RateController
 from .storage import ParquetWriter
-from .transform import (
-    to_funding_rows,
-    to_orderbook_rows,
-    to_price_rows,
-    to_trade_rows,
-)
+from .transform import (to_funding_rows, to_orderbook_rows, to_price_rows,
+                        to_trade_rows)
 from .utils import now_ms
 
 PollConfig = Dict[str, float]
@@ -70,13 +66,31 @@ class LiveRunner:
         try:
             if poll_config.get("prices"):
                 # Run each poller on its own task so slow endpoints cannot starve others.
-                tasks.append(asyncio.create_task(self._poll_prices(symbols, poll_config["prices"]), name="prices"))
+                tasks.append(
+                    asyncio.create_task(
+                        self._poll_prices(symbols, poll_config["prices"]), name="prices"
+                    )
+                )
             if poll_config.get("trades"):
-                tasks.append(asyncio.create_task(self._poll_trades(symbols, poll_config["trades"]), name="trades"))
+                tasks.append(
+                    asyncio.create_task(
+                        self._poll_trades(symbols, poll_config["trades"]), name="trades"
+                    )
+                )
             if poll_config.get("orderbook"):
-                tasks.append(asyncio.create_task(self._poll_orderbook(symbols, poll_config["orderbook"]), name="orderbook"))
+                tasks.append(
+                    asyncio.create_task(
+                        self._poll_orderbook(symbols, poll_config["orderbook"]),
+                        name="orderbook",
+                    )
+                )
             if poll_config.get("funding"):
-                tasks.append(asyncio.create_task(self._poll_funding(symbols, poll_config["funding"]), name="funding"))
+                tasks.append(
+                    asyncio.create_task(
+                        self._poll_funding(symbols, poll_config["funding"]),
+                        name="funding",
+                    )
+                )
 
             if not tasks:
                 log.warning("No polling tasks were scheduled; exiting immediately")
@@ -99,7 +113,13 @@ class LiveRunner:
                 await task
 
     @retry(stop=stop_after_attempt(5), wait=wait_exponential_jitter(initial=0.5, max=5))
-    async def _fetch(self, endpoint: str, *, params: Optional[Dict[str, object]] = None, key: Optional[str] = None) -> Dict[str, object]:
+    async def _fetch(
+        self,
+        endpoint: str,
+        *,
+        params: Optional[Dict[str, object]] = None,
+        key: Optional[str] = None,
+    ) -> Dict[str, object]:
         async with self.rate.throttle(key):
             response = await self._client.get(endpoint, params=params)
         response.raise_for_status()
@@ -116,7 +136,9 @@ class LiveRunner:
             started = time.perf_counter()
             try:
                 payload = await self._fetch("/info/prices", key="prices")
-                rows = to_price_rows(payload, recv_ms=now_ms(), filter_symbols=symbol_set)
+                rows = to_price_rows(
+                    payload, recv_ms=now_ms(), filter_symbols=symbol_set
+                )
                 if rows:
                     await writer.append(rows)
                     log.debug("prices_written", count=len(rows))
@@ -133,7 +155,9 @@ class LiveRunner:
                 if self._stop_event.is_set():
                     break
                 try:
-                    payload = await self._fetch("/trades", params={"symbol": symbol}, key="trades")
+                    payload = await self._fetch(
+                        "/trades", params={"symbol": symbol}, key="trades"
+                    )
                     rows = to_trade_rows(payload, recv_ms=now_ms(), symbol=symbol)
                     if rows:
                         await writer.append(rows)
@@ -164,7 +188,11 @@ class LiveRunner:
                     )
                     if rows:
                         await writer.append(rows)
-                        log.debug("orderbook_written", symbol=symbol, depth=len(rows[0]["bids"]))
+                        log.debug(
+                            "orderbook_written",
+                            symbol=symbol,
+                            depth=len(rows[0]["bids"]),
+                        )
                 except Exception as exc:
                     log.warning("orderbook_poll_error", symbol=symbol, error=str(exc))
             await self._sleep_remaining(started, interval)
@@ -178,7 +206,9 @@ class LiveRunner:
                     break
                 try:
                     payload = await self._fetch(
-                        "/funding_rate/history", params={"symbol": symbol, "limit": 100}, key="funding"
+                        "/funding_rate/history",
+                        params={"symbol": symbol, "limit": 100},
+                        key="funding",
                     )
                     rows = to_funding_rows(payload, recv_ms=now_ms(), symbol=symbol)
                     if rows:

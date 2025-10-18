@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from signals.tfi import TFICalculator
 from signals.base import SignalDirection, SignalType
+from signals.tfi import TFICalculator
+
 from tests.fixtures.sample_data import generate_trades
 
 

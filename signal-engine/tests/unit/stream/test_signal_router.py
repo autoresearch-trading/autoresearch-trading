@@ -5,7 +5,6 @@ import contextlib
 from datetime import datetime, timezone
 
 import pytest
-
 from signals.base import Signal, SignalDirection, SignalType
 from stream.signal_router import SignalRouter
 

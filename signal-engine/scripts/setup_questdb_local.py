@@ -8,8 +8,8 @@ who want to target a locally running QuestDB instance.
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 try:
     import psycopg  # type: ignore

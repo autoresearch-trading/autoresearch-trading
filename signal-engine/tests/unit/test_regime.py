@@ -65,7 +65,9 @@ def test_regime_flags_low_liquidity():
 
 
 def test_regime_flags_extreme_funding():
-    detector = ATRRegimeDetector(symbol="BTC", atr_period=5, extreme_funding_threshold=0.0005)
+    detector = ATRRegimeDetector(
+        symbol="BTC", atr_period=5, extreme_funding_threshold=0.0005
+    )
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     _seed_prices(detector, start)
     detector.update_orderbook_context(spread_bps=5, bid_depth=20, ask_depth=20)

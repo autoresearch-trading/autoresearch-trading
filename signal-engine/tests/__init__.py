@@ -1,2 +1,1 @@
 """Signal engine tests."""
-

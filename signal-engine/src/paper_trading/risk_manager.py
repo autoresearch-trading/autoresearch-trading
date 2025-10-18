@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from typing import Iterable, Tuple
 
 import structlog
+from signals.base import PaperTrade
 
 from .models import PaperPosition
-from signals.base import PaperTrade
 
 log = structlog.get_logger(__name__)
 
@@ -38,15 +38,9 @@ class RiskManager:
         max_daily_loss_pct = float(config.get("max_daily_loss_pct", 0.05))
 
         self.initial_capital = initial_capital
-        self.max_position_size_pct = float(
-            config.get("max_position_size_pct", 0.10)
-        )
-        self.max_total_exposure_pct = float(
-            config.get("max_total_exposure_pct", 0.50)
-        )
-        self.max_concentration_pct = float(
-            config.get("max_concentration_pct", 0.30)
-        )
+        self.max_position_size_pct = float(config.get("max_position_size_pct", 0.10))
+        self.max_total_exposure_pct = float(config.get("max_total_exposure_pct", 0.50))
+        self.max_concentration_pct = float(config.get("max_concentration_pct", 0.30))
 
         now = datetime.now(timezone.utc)
         self.metrics = RiskMetrics(
@@ -94,9 +88,7 @@ class RiskManager:
         if notional > current_capital * self.max_position_size_pct:
             return False, "position_too_large"
 
-        exposure_used = sum(
-            pos.entry_price * pos.qty for pos in existing_positions
-        )
+        exposure_used = sum(pos.entry_price * pos.qty for pos in existing_positions)
         if (exposure_used + notional) > current_capital * self.max_total_exposure_pct:
             return False, "total_exposure_limit_hit"
 
@@ -168,6 +160,7 @@ class RiskManager:
             "max_drawdown_today": self.metrics.max_drawdown_today,
             "is_trading_allowed": (
                 self.metrics.daily_pnl > -self.metrics.max_daily_loss
-                and self.metrics.consecutive_losses < self.metrics.max_consecutive_losses
+                and self.metrics.consecutive_losses
+                < self.metrics.max_consecutive_losses
             ),
         }

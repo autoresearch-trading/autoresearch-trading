@@ -9,7 +9,9 @@ from aiolimiter import AsyncLimiter
 class RateController:
     """Helper that combines a global limiter with optional per-endpoint caps."""
 
-    def __init__(self, global_rps: int, per_endpoint: Optional[Dict[str, int]] = None) -> None:
+    def __init__(
+        self, global_rps: int, per_endpoint: Optional[Dict[str, int]] = None
+    ) -> None:
         self.global_limiter = AsyncLimiter(max(global_rps, 1), time_period=1.0)
         self.endpoint_limiters = {
             name: AsyncLimiter(max(limit, 1), time_period=1.0)

@@ -129,7 +129,9 @@ def test_record_trade_updates_loss_streak() -> None:
     manager.record_trade(losing_trade, current_capital=4_900.0)
     assert manager.metrics.consecutive_losses == 1
 
-    winning_trade = losing_trade.model_copy(update={"exit_price": 110.0, "pnl": 10.0, "pnl_pct": 0.10})
+    winning_trade = losing_trade.model_copy(
+        update={"exit_price": 110.0, "pnl": 10.0, "pnl_pct": 0.10}
+    )
     manager.record_trade(winning_trade, current_capital=5_100.0)
     assert manager.metrics.consecutive_losses == 0
 

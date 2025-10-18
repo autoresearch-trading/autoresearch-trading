@@ -5,11 +5,9 @@ from datetime import datetime
 from typing import Any, Callable, Iterable, Sequence
 
 import psycopg
+from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from psycopg import ProgrammingError
 from psycopg.rows import dict_row
-
-from bytewax.outputs import DynamicSink, StatelessSinkPartition
-
 from signals.base import MarketRegime, PaperTrade, Signal, Trade
 
 
@@ -401,7 +399,9 @@ class QuestDBSink(DynamicSink[Any]):
         self._writer = writer
 
     @classmethod
-    def for_signals(cls, *, host: str, port: int, user: str, password: str) -> "QuestDBSink":
+    def for_signals(
+        cls, *, host: str, port: int, user: str, password: str
+    ) -> "QuestDBSink":
         def writer(client: QuestDBClient, batch: Sequence[Any]) -> None:
             signals = [item for item in batch if isinstance(item, Signal)]
             if len(signals) != len(batch):
@@ -411,7 +411,9 @@ class QuestDBSink(DynamicSink[Any]):
         return cls(host=host, port=port, user=user, password=password, writer=writer)
 
     @classmethod
-    def for_regimes(cls, *, host: str, port: int, user: str, password: str) -> "QuestDBSink":
+    def for_regimes(
+        cls, *, host: str, port: int, user: str, password: str
+    ) -> "QuestDBSink":
         def writer(client: QuestDBClient, batch: Sequence[Any]) -> None:
             regimes = [item for item in batch if isinstance(item, MarketRegime)]
             if len(regimes) != len(batch):
@@ -421,7 +423,9 @@ class QuestDBSink(DynamicSink[Any]):
         return cls(host=host, port=port, user=user, password=password, writer=writer)
 
     @classmethod
-    def for_trades(cls, *, host: str, port: int, user: str, password: str) -> "QuestDBSink":
+    def for_trades(
+        cls, *, host: str, port: int, user: str, password: str
+    ) -> "QuestDBSink":
         def writer(client: QuestDBClient, batch: Sequence[Any]) -> None:
             trades = [item for item in batch if isinstance(item, Trade)]
             if len(trades) != len(batch):

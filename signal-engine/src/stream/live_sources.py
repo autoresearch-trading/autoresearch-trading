@@ -6,7 +6,6 @@ from typing import Dict, List, Tuple
 
 import structlog
 from bytewax.inputs import DynamicSource, StatelessSourcePartition
-
 from config import Settings
 from live.stream_client import PacificaStreamClient
 from signals.base import OrderbookSnapshot, Trade
@@ -85,13 +84,16 @@ class LiveTradePartition(StatelessSourcePartition[Trade]):
                 self._last_seen[symbol] = last_seen
 
         if self._buffer:
-            log.debug("live_trade_partition_fetched", symbols=len(self.symbols), trades=len(self._buffer))
+            log.debug(
+                "live_trade_partition_fetched",
+                symbols=len(self.symbols),
+                trades=len(self._buffer),
+            )
             return [self._buffer.pop(0)]
 
         # No trades available, sleep and return empty to continue polling
         time.sleep(self._idle_sleep)
         return []
-
 
     def _throttle(self) -> None:
         now = time.monotonic()
@@ -105,7 +107,9 @@ class LiveTradePartition(StatelessSourcePartition[Trade]):
 class LiveOrderbookStream(DynamicSource[OrderbookSnapshot]):
     """Bytewax source that streams orderbook snapshots."""
 
-    def __init__(self, settings: Settings, *, poll_interval: float = 3.0, depth: int = 5) -> None:
+    def __init__(
+        self, settings: Settings, *, poll_interval: float = 3.0, depth: int = 5
+    ) -> None:
         self.settings = settings
         self.poll_interval = poll_interval
         self.depth = depth
@@ -179,7 +183,6 @@ class LiveOrderbookPartition(StatelessSourcePartition[OrderbookSnapshot]):
         # No snapshots available, sleep and return empty to continue polling
         time.sleep(self._idle_sleep)
         return []
-
 
     def _throttle(self) -> None:
         now = time.monotonic()

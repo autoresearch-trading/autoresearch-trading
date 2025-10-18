@@ -64,7 +64,9 @@ class ParquetWriter:
         if df.empty:
             self._last_flush = time.time()
             return
-        df["date"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True).dt.strftime("%Y-%m-%d")
+        df["date"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True).dt.strftime(
+            "%Y-%m-%d"
+        )
         await asyncio.to_thread(self._write_groups, df)
         self._last_flush = time.time()
 
@@ -74,7 +76,9 @@ class ParquetWriter:
             descriptor = PartitionDescriptor(symbol=symbol, date=date)
             self._write_partition(descriptor, group.drop(columns=["date"]))
 
-    def _write_partition(self, descriptor: PartitionDescriptor, df: pd.DataFrame) -> None:
+    def _write_partition(
+        self, descriptor: PartitionDescriptor, df: pd.DataFrame
+    ) -> None:
         table = pa.Table.from_pandas(df, preserve_index=False)
         dataset_root = self.root / self.dataset
         partition_path = dataset_root / descriptor.path_fragment
