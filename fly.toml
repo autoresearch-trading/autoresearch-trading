@@ -5,8 +5,12 @@ primary_region = "sjc"  # San Jose - closest to Panama
   dockerfile = "Dockerfile.cloud"
 
 [env]
+  ENV = "cloud"
   PACIFICA_NETWORK = "mainnet"
-  API_TIMEOUT = "10"
+  PACIFICA_API_TIMEOUT = "10"
+  PACIFICA_MAX_RETRIES = "5"
+  DATA_ROOT = "/app/data"
+  LOGS_ROOT = "/app/logs"
   LOG_LEVEL = "INFO"
   POLL_PRICES = "2s"
   POLL_TRADES = "1s"
@@ -31,4 +35,3 @@ primary_region = "sjc"  # San Jose - closest to Panama
   source = "data_volume"
   destination = "/app/data"
   initial_size = "3gb"  # Free tier limit
-

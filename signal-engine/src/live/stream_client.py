@@ -29,11 +29,13 @@ class PacificaStreamClient:
 
     def _initialize_client(self) -> None:
         if APIClient and APISettings and PacificaREST:
+            api = self.settings.api
             api_settings = APISettings(
-                base_url=self.settings.pacifica_api_base_url.rstrip("/"),
-                api_key=self.settings.pacifica_api_key,
-                timeout=self.settings.pacifica_api_timeout,
-                network=self.settings.pacifica_network,
+                base_url=api.effective_base_url,
+                api_key=api.api_key,
+                timeout=api.timeout,
+                network=api.network,
+                max_retries=api.max_retries,
             )
             self._rest = PacificaREST(APIClient(api_settings))
         else:

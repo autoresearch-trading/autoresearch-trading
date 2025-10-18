@@ -7,7 +7,22 @@ startCommand = "python collect_all_symbols_cloud.py"
 restartPolicyType = "ALWAYS"
 
 [[environmentVariables]]
+ENV = "cloud"
+
+[[environmentVariables]]
 PACIFICA_NETWORK = "mainnet"
+
+[[environmentVariables]]
+PACIFICA_API_TIMEOUT = "10"
+
+[[environmentVariables]]
+PACIFICA_MAX_RETRIES = "5"
+
+[[environmentVariables]]
+DATA_ROOT = "/app/data"
+
+[[environmentVariables]]
+LOGS_ROOT = "/app/logs"
 
 [[environmentVariables]]
 MAX_RPS = "3"
@@ -29,4 +44,3 @@ BOOK_DEPTH = "25"
 
 [[environmentVariables]]
 OUT_ROOT = "/app/data"
-

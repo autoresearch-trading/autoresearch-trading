@@ -12,11 +12,14 @@ from typing import List
 
 import requests
 
+from config import PacificaAPISettings
 
-def get_all_symbols() -> List[str]:
+
+def get_all_symbols(api: PacificaAPISettings | None = None) -> List[str]:
     """Fetch all available symbols from Pacifica API."""
+    api = api or PacificaAPISettings()
     try:
-        response = requests.get("https://api.pacifica.fi/api/v1/info", timeout=10)
+        response = requests.get(f"{api.effective_base_url}/info", timeout=api.timeout)
         response.raise_for_status()
         data = response.json()
 
@@ -85,7 +88,8 @@ def main():
     print("=" * 50)
 
     # Get all available symbols
-    symbols = get_all_symbols()
+    api_config = PacificaAPISettings()
+    symbols = get_all_symbols(api_config)
 
     if not symbols:
         print("No symbols found!")

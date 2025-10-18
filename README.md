@@ -40,9 +40,10 @@ Avoid reusing Intel-built virtual environments—remove `.venv/` before installi
 
 1. Copy `.env.example` to `.env`.
 2. Set `PACIFICA_NETWORK` to `mainnet` or `testnet`.  
-   - Leave `API_BASE_URL` empty to follow the documented defaults (`https://api.pacifica.fi/api/v1` or `https://test-api.pacifica.fi/api/v1`).  
-   - Provide `API_BASE_URL` if you need to target a custom environment.
+   - Leave `PACIFICA_API_BASE_URL` empty to follow the documented defaults (`https://api.pacifica.fi/api/v1` or `https://test-api.pacifica.fi/api/v1`).  
+   - Provide `PACIFICA_API_BASE_URL` or `PACIFICA_BASE_URL` if you need to target a custom environment.
 3. Populate `PACIFICA_API_KEY` only if you plan to extend the collector with authenticated endpoints.
+4. Review the storage, QuestDB, trading, and signal thresholds in `.env`—they now map directly onto the shared `config/` package used by both services.
 
 The CLI also accepts `--network`, `--base-url`, `--timeout`, and `--api-key` flags to override `.env` values at runtime.
 

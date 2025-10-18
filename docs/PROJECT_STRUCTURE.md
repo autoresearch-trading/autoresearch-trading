@@ -282,21 +282,28 @@ flyctl logs
 ### Environment Variables
 All configuration via environment variables (see `.env.example`):
 
+**Shared**:
+- `PACIFICA_NETWORK`, `PACIFICA_API_BASE_URL`, `PACIFICA_API_TIMEOUT`, `PACIFICA_MAX_RETRIES`, `PACIFICA_API_KEY`
+- `DATA_ROOT`, `LOGS_ROOT`, `RETENTION_DAYS`, `PARQUET_BUFFER_MAX_ROWS`, `PARQUET_BUFFER_MAX_SECONDS`, `ARCHIVE_ENABLED`
+- `QUESTDB_HOST`, `QUESTDB_PORT`, `QUESTDB_USER`, `QUESTDB_PASSWORD`
+
 **Data Collector**:
-- `PACIFICA_NETWORK`: mainnet | testnet
 - `MAX_RPS`: Rate limit (requests per second)
 - `POLL_TRADES`, `POLL_ORDERBOOK`, `POLL_PRICES`, `POLL_FUNDING`: Intervals
 
-**Signal Engine**:
-- `QUESTDB_HOST`, `QUESTDB_PORT`, `QUESTDB_USER`, `QUESTDB_PASSWORD`
+**Signal Engine / Trading**:
+- `SYMBOLS`, `INITIAL_CAPITAL`, `POSITION_SIZE_PCT`, `MIN_CONFIDENCE`, `MIN_SIGNALS_AGREE`
+- `STOP_LOSS_PCT`, `TAKE_PROFIT_PCT`, `MAX_HOLD_SECONDS`
+- `MAX_DAILY_LOSS_PCT`, `MAX_DAILY_TRADES`, `MAX_CONSECUTIVE_LOSSES`
+- `MAX_TOTAL_EXPOSURE_PCT`, `MAX_CONCENTRATION_PCT`
 - `CVD_LOOKBACK_PERIODS`, `CVD_DIVERGENCE_THRESHOLD`
 - `TFI_WINDOW_SECONDS`, `TFI_SIGNAL_THRESHOLD`
 - `OFI_SIGNAL_THRESHOLD_SIGMA`
-- `ATR_PERIOD`, `ATR_THRESHOLD_MULTIPLIER`
+- `ATR_PERIOD`, `ATR_THRESHOLD_MULTIPLIER`, `SPREAD_THRESHOLD_BPS`, `MIN_DEPTH_THRESHOLD`, `EXTREME_FUNDING_THRESHOLD`
 
 ### Configuration Files
 - `.env`: Local overrides (gitignored, copy from `.env.example`)
-- `config/settings.py`: Pydantic settings with validation
+- `config/`: Shared Pydantic settings (`api.py`, `storage.py`, `signals.py`, `trading.py`, `deployment.py`)
 - `fly.toml`: Cloud deployment configuration
 
 ## Common Tasks

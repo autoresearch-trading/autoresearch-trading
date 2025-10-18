@@ -26,11 +26,13 @@ class LiveDataClient:
         self._rest: PacificaREST | None = None
 
         if APIClient and APISettings and PacificaREST:
+            api = settings.api
             api_settings = APISettings(
-                base_url=settings.pacifica_api_base_url.rstrip("/"),
-                api_key=settings.pacifica_api_key,
-                timeout=settings.pacifica_api_timeout,
-                network=settings.pacifica_network,
+                base_url=api.effective_base_url,
+                api_key=api.api_key,
+                timeout=api.timeout,
+                network=api.network,
+                max_retries=api.max_retries,
             )
             client = APIClient(api_settings)
             self._rest = PacificaREST(client)

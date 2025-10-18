@@ -24,17 +24,18 @@ if str(SRC_PATH) not in sys.path:
 
 from collector.api_client import APIClient
 from collector.config import APISettings
+from config import PacificaAPISettings
 from collector.live_runner import LiveRunner
 from collector.utils import parse_duration
 
 logger = structlog.get_logger(__name__)
 
 
-def get_all_symbols() -> list[str]:
+def get_all_symbols(api: PacificaAPISettings | None = None) -> list[str]:
     """Fetch all available symbols from Pacifica API."""
+    api = api or PacificaAPISettings()
     try:
-        base_url = os.getenv("PACIFICA_BASE_URL", "https://api.pacifica.fi")
-        response = requests.get(f"{base_url}/api/v1/info", timeout=10)
+        response = requests.get(f"{api.effective_base_url}/info", timeout=api.timeout)
         response.raise_for_status()
         data = response.json()
 
@@ -46,7 +47,11 @@ def get_all_symbols() -> list[str]:
         return symbols
 
     except Exception as e:
-        logger.error("failed_to_fetch_symbols", error=str(e))
+        logger.error(
+            "failed_to_fetch_symbols",
+            error=str(e),
+            base_url=api.effective_base_url,
+        )
         # Fallback to common symbols
         return ["BTC", "ETH", "SOL"]
 
@@ -135,7 +140,8 @@ async def main():
     setup_health_check()
 
     # Get all symbols
-    symbols = get_all_symbols()
+    api_config = PacificaAPISettings()
+    symbols = get_all_symbols(api_config)
     if not symbols:
         logger.error("no_symbols_available")
         sys.exit(1)

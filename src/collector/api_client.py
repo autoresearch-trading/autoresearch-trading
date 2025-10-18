@@ -24,7 +24,7 @@ class APIClient:
         self.session = session or requests.Session()
         self.session.headers.update(self._default_headers())
         retry = Retry(
-            total=5,
+            total=self.settings.max_retries,
             backoff_factor=0.3,
             status_forcelist=(429, 500, 502, 503, 504),
             raise_on_status=False,
