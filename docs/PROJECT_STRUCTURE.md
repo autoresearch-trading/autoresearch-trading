@@ -182,8 +182,8 @@ Performance Reports
 git clone <repo>
 cd data-collector
 
-# Create virtual environment (use Python 3.11+)
-python3.11 -m venv .venv
+# Create virtual environment (use Python 3.13+)
+python3.13 -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies

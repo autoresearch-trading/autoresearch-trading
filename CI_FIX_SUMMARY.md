@@ -119,7 +119,7 @@ repos:
     rev: 25.9.0
     hooks:
       - id: black
-        language_version: python3.11
+        language_version: python3.13
   
   - repo: https://github.com/pycqa/isort
     rev: 6.1.0

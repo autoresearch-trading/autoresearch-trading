@@ -4,7 +4,7 @@
 This guide walks through setting up and running the signal engine from scratch. Follow these steps to process historical trade data and generate trading signals using QuestDB.
 
 **Time to Complete:** ~5 minutes  
-**Prerequisites:** Docker, Python 3.11+, Homebrew (macOS)
+**Prerequisites:** Docker, Python 3.13+, Homebrew (macOS)
 
 ---
 
@@ -16,14 +16,14 @@ If you want to run everything in one go:
 # Start QuestDB
 make questdb-docker
 
-# Install dependencies (Python 3.11+)
-cd signal-engine && python3.11 -m pip install -r requirements.txt --user
+# Install dependencies (Python 3.13+)
+cd signal-engine && python3.13 -m pip install -r requirements.txt --user
 
 # Setup QuestDB schema
-python3.11 scripts/setup_questdb_local.py
+python3.13 scripts/setup_questdb_local.py
 
 # Run signal pipeline (dry-run mode)
-python3.11 scripts/run_signal_pipeline.py --symbols BTC ETH SOL --date 2025-10-17 --dry-run --skip-regime
+python3.13 scripts/run_signal_pipeline.py --symbols BTC ETH SOL --date 2025-10-17 --dry-run --skip-regime
 ```
 
 ---
@@ -65,18 +65,18 @@ nc -zv localhost 8812
 
 ### Step 2: Install Signal Engine Dependencies
 
-The signal engine requires Python 3.11+ because of `hftbacktest>=2.0.0`.
+The signal engine requires Python 3.13+ because of `hftbacktest>=2.0.0`.
 
-**Important:** Must use Python 3.11 or higher. The system Python 3.9 will fail.
+**Important:** Must use Python 3.13 or higher. The system Python 3.9 will fail.
 
 ```bash
 cd signal-engine
 
 # Check Python version
-/opt/homebrew/bin/python3.11 --version  # Should be 3.11.x or higher
+/opt/homebrew/bin/python3.13 --version  # Should be 3.13.x or higher
 
 # Install requirements
-/opt/homebrew/bin/python3.11 -m pip install -r requirements.txt --user
+/opt/homebrew/bin/python3.13 -m pip install -r requirements.txt --user
 ```
 
 **Key Dependencies Installed:**
@@ -96,8 +96,8 @@ If you get `hftbacktest` version errors:
 # Check your Python version
 python3 --version
 
-# If < 3.11, install Python 3.11 via Homebrew
-brew install python@3.11
+# If < 3.13, install Python 3.13 via Homebrew
+brew install python@3.13
 ```
 
 If you get permission errors:
@@ -112,7 +112,7 @@ Create the necessary tables in QuestDB for signals, trades, and regimes.
 
 ```bash
 cd signal-engine
-/opt/homebrew/bin/python3.11 scripts/setup_questdb_local.py
+/opt/homebrew/bin/python3.13 scripts/setup_questdb_local.py
 ```
 
 **Expected Output:**
@@ -160,7 +160,7 @@ Test the pipeline without writing to QuestDB:
 
 ```bash
 cd signal-engine
-/opt/homebrew/bin/python3.11 scripts/run_signal_pipeline.py \
+/opt/homebrew/bin/python3.13 scripts/run_signal_pipeline.py \
   --symbols BTC ETH SOL \
   --date 2025-10-17 \
   --dry-run \
@@ -178,7 +178,7 @@ Process and save signals to the database:
 
 ```bash
 cd signal-engine
-/opt/homebrew/bin/python3.11 scripts/run_signal_pipeline.py \
+/opt/homebrew/bin/python3.13 scripts/run_signal_pipeline.py \
   --symbols BTC ETH SOL \
   --date 2025-10-17 \
   --skip-regime
@@ -217,7 +217,7 @@ GROUP BY symbol, signal_type, direction;
 ### Pipeline Script Options
 
 ```bash
-python3.11 scripts/run_signal_pipeline.py --help
+python3.13 scripts/run_signal_pipeline.py --help
 ```
 
 **Available Flags:**
@@ -388,15 +388,15 @@ docker-compose restart questdb
 ### Python Version Issues
 
 ```bash
-# Verify Python 3.11 is installed
-which python3.11
-/opt/homebrew/bin/python3.11 --version
+# Verify Python 3.13 is installed
+which python3.13
+/opt/homebrew/bin/python3.13 --version
 
 # If not installed
-brew install python@3.11
+brew install python@3.13
 
 # Create alias (optional)
-alias python3.11='/opt/homebrew/bin/python3.11'
+alias python3.13='/opt/homebrew/bin/python3.13'
 ```
 
 ### Missing Dependencies
@@ -428,7 +428,7 @@ python3 collect_data.py live --symbols BTC,ETH --max-rps 2
 ```bash
 # Run with verbose output
 cd signal-engine
-python3.11 scripts/run_signal_pipeline.py \
+python3.13 scripts/run_signal_pipeline.py \
   --symbols BTC \
   --date 2025-10-17 \
   --dry-run \
@@ -450,7 +450,7 @@ For backtesting over multiple days, process in batches:
 ```bash
 # Process one symbol at a time
 for symbol in BTC ETH SOL; do
-  python3.11 scripts/run_signal_pipeline.py \
+  python3.13 scripts/run_signal_pipeline.py \
     --symbols $symbol \
     --date 2025-10-17 \
     --skip-regime
@@ -511,9 +511,9 @@ After running the signal engine:
 cd /Users/diego/Dev/data-collector
 make questdb-docker
 cd signal-engine
-/opt/homebrew/bin/python3.11 -m pip install -r requirements.txt --user
-/opt/homebrew/bin/python3.11 scripts/setup_questdb_local.py
-/opt/homebrew/bin/python3.11 scripts/run_signal_pipeline.py \
+/opt/homebrew/bin/python3.13 -m pip install -r requirements.txt --user
+/opt/homebrew/bin/python3.13 scripts/setup_questdb_local.py
+/opt/homebrew/bin/python3.13 scripts/run_signal_pipeline.py \
   --symbols BTC ETH SOL \
   --date 2025-10-17 \
   --dry-run \
@@ -530,5 +530,5 @@ make docker-down
 ---
 
 **Last Updated:** October 17, 2025  
-**Tested On:** macOS (arm64), Python 3.11, Docker Desktop
+**Tested On:** macOS (arm64), Python 3.13, Docker Desktop
 

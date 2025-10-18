@@ -193,10 +193,10 @@ Created `monitor_paper_trading.py` - a beautiful real-time dashboard using `rich
 
 ```bash
 # Start monitor with default settings (5s refresh, 24h window)
-python3.11 scripts/monitor_paper_trading.py
+python3.13 scripts/monitor_paper_trading.py
 
 # Custom refresh and time window
-python3.11 scripts/monitor_paper_trading.py --refresh 2 --hours 48
+python3.13 scripts/monitor_paper_trading.py --refresh 2 --hours 48
 
 # While paper trading runs in another terminal
 ```
@@ -317,7 +317,7 @@ REQUIRE_CVD = True  # Add volume confirmation
 
 1. **`scripts/monitor_paper_trading.py`** - Real-time dashboard
    - Dependencies: `rich`, `psycopg`, `config`
-   - Usage: `python3.11 scripts/monitor_paper_trading.py`
+   - Usage: `python3.13 scripts/monitor_paper_trading.py`
 
 ### Files Modified
 

@@ -29,8 +29,8 @@ cd "${PROJECT_ROOT}"
 echo "Removing existing virtual environment (if present)..."
 rm -rf .venv
 
-# Use Homebrew Python 3.11 which satisfies hftbacktest>=2.0.0 (requires Python >=3.10)
-PYTHON_BIN="${PYTHON_BIN:-/opt/homebrew/bin/python3.11}"
+# Use Homebrew Python 3.13 which satisfies hftbacktest>=2.0.0 (requires Python >=3.10)
+PYTHON_BIN="${PYTHON_BIN:-/opt/homebrew/bin/python3.13}"
 
 echo "Creating virtual environment with ${PYTHON_BIN}..."
 "${PYTHON_BIN}" -m venv .venv

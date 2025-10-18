@@ -334,7 +334,7 @@ The **real-time paper trading system is fully operational and production-ready**
 
 **Report Generated:** 2025-10-18  
 **System Version:** v1.0.0  
-**Python:** 3.11.13  
+**Python:** 3.13.9
 **Bytewax:** 0.20.1  
 **QuestDB:** 8.2.0
 

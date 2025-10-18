@@ -4,7 +4,7 @@
 [Project Context]
 - This is a production trading bot for Pacifica perpetual DEX on Solana
 - Two main components: data-collector (API polling) and signal-engine (signal processing)
-- Python 3.11+, uses TA-Lib, Bytewax, QuestDB, and Parquet for storage
+- Python 3.13+, uses TA-Lib, Bytewax, QuestDB, and Parquet for storage
 - Deployed on Fly.io with 24/7 data collection
 - Critical: Never suggest changes that could lose historical data
 

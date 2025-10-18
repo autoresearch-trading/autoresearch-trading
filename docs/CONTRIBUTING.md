@@ -3,7 +3,7 @@
 ## Development Setup
 
 ### Prerequisites
-- Python 3.11 or higher
+- Python 3.13 or higher
 - TA-Lib system library
 - QuestDB (for signal engine development)
 - Docker (optional, for containerized QuestDB)
@@ -16,7 +16,7 @@ git clone <repository-url>
 cd data-collector
 
 # Setup virtual environment
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
