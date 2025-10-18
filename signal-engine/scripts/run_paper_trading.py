@@ -22,8 +22,9 @@ for path in SRC_PATHS:
     if path.exists() and str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from config import Settings  # noqa: E402
 from paper_trading.engine import PaperTradingEngine  # noqa: E402
+
+from config import Settings  # noqa: E402
 
 console = Console()
 

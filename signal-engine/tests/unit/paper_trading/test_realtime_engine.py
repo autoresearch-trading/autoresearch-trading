@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from config import Settings
 from paper_trading.realtime_engine import RealtimePaperTradingEngine
 from signals.base import Signal, SignalDirection, SignalType
+
+from config import Settings
 
 
 def _build_signal(symbol: str = "BTC", price: float = 100.0) -> Signal:

@@ -6,9 +6,10 @@ from typing import Dict, List, Tuple
 
 import structlog
 from bytewax.inputs import DynamicSource, StatelessSourcePartition
-from config import Settings
 from live.stream_client import PacificaStreamClient
 from signals.base import OrderbookSnapshot, Trade
+
+from config import Settings
 
 log = structlog.get_logger(__name__)
 

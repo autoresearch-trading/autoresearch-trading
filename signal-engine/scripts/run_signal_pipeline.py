@@ -17,10 +17,11 @@ SRC_PATH = ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from config import Settings
 from db.questdb import QuestDBSink
 from stream.dataflow import build_signal_dataflow
 from stream.sources import ParquetOrderbookSource, ParquetTradeSource
+
+from config import Settings
 
 console = Console()
 

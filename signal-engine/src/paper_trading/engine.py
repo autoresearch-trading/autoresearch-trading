@@ -6,9 +6,10 @@ from typing import Iterable, List, Optional
 
 import structlog
 from api.live_data import LiveDataClient
-from config import Settings
 from db.questdb import QuestDBClient
 from signals.base import MarketRegime, Signal
+
+from config import Settings
 
 from .position_tracker import PositionTracker
 from .risk_manager import RiskManager

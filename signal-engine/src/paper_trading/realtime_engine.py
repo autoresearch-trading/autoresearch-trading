@@ -7,10 +7,11 @@ from typing import Dict, List, Tuple
 
 import structlog
 from api.live_data import LiveDataClient
-from config import Settings
 from persistence.async_writer import enqueue_trade
 from signals.base import Signal
 from stream.signal_router import SignalRouter
+
+from config import Settings
 
 from .position_tracker import PositionTracker
 from .risk_manager import RiskManager

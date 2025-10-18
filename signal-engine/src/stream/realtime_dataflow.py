@@ -4,13 +4,14 @@ from typing import cast
 
 import bytewax.operators as op
 from bytewax.dataflow import Dataflow
-from config import Settings
 from signals.base import Signal, Trade
 from signals.cvd import CVDCalculator
 from signals.ofi import OFICalculator
 from signals.tfi import TFICalculator
 from stream.live_sources import LiveOrderbookStream, LiveTradeStream
 from stream.signal_router import SignalRouter
+
+from config import Settings
 
 
 def build_realtime_dataflow(settings: Settings) -> Dataflow:
