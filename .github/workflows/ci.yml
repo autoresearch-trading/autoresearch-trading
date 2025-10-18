@@ -83,17 +83,17 @@ jobs:
     
     - name: Run data collector tests
       run: |
-        python -m pytest tests/ -v
+        python -m pytest tests/ -v -o addopts=""
     
     - name: Run signal engine unit tests
       run: |
         cd signal-engine
-        python -m pytest tests/unit/ -v
+        python -m pytest tests/unit/ -v -o addopts=""
     
     - name: Run signal engine integration tests
       run: |
         cd signal-engine
-        python -m pytest tests/integration/ -v
+        python -m pytest tests/integration/ -v -o addopts=""
       env:
         QUESTDB_HOST: localhost
         QUESTDB_PORT: 8812

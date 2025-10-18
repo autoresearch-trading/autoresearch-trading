@@ -49,12 +49,12 @@ jobs:
     
     - name: Run data collector tests
       run: |
-        python -m pytest tests/ -v
+        python -m pytest tests/ -v -o addopts=""
     
     - name: Run signal engine unit tests
       run: |
         cd signal-engine
-        python -m pytest tests/unit/ -v
+        python -m pytest tests/unit/ -v -o addopts=""
     
     - name: Test signal pipeline (dry run only)
       run: |
