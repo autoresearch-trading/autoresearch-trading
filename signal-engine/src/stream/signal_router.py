@@ -69,8 +69,8 @@ class SignalRouter:
         return bool(cls._global_subscribers or any(cls._subscribers.values()))
 
     @classmethod
-    def route_signal(cls, signal: Signal) -> None:
-        """Enqueue a signal for asynchronous dispatch."""
+    def route_signal(cls, step_id: str, signal: Signal) -> None:
+        """Enqueue a signal for asynchronous dispatch (bytewax inspect callback)."""
         queue = cls._signal_queue
         if queue is None:
             log.warning("signal_router_queue_uninitialized", symbol=signal.symbol)

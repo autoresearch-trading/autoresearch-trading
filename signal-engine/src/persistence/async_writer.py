@@ -17,8 +17,8 @@ _BATCH_SIZE = 1_000
 _QUEUE: Queue[Tuple[str, Any]] = Queue(maxsize=_QUEUE_MAXSIZE)
 
 
-def enqueue_signal(signal: Signal) -> None:
-    """Enqueue a signal for asynchronous persistence."""
+def enqueue_signal(step_id: str, signal: Signal) -> None:
+    """Enqueue a signal for asynchronous persistence (bytewax inspect callback)."""
     _enqueue(("signal", signal))
 
 

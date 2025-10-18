@@ -96,7 +96,7 @@ class RealtimePaperTradingEngine:
         log.debug(
             "realtime_signal_received",
             symbol=signal.symbol,
-            signal_type=signal.signal_type.value,
+            signal_type=signal.signal_type,
             price=signal.price,
             confidence=signal.confidence,
         )

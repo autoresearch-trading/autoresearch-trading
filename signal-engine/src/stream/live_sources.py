@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 import structlog
-from bytewax.inputs import DynamicSource, StatefulSourcePartition
+from bytewax.inputs import DynamicSource, StatelessSourcePartition
 
 from config import Settings
 from live.stream_client import PacificaStreamClient
@@ -26,7 +26,7 @@ class LiveTradeStream(DynamicSource[Trade]):
         step_id: str,
         worker_index: int,
         worker_count: int,
-    ) -> StatefulSourcePartition[Trade, dict]:
+    ) -> StatelessSourcePartition[Trade]:
         symbols = self.settings.symbols[worker_index::worker_count]
         return LiveTradePartition(
             settings=self.settings,
@@ -35,7 +35,7 @@ class LiveTradeStream(DynamicSource[Trade]):
         )
 
 
-class LiveTradePartition(StatefulSourcePartition[Trade, dict]):
+class LiveTradePartition(StatelessSourcePartition[Trade]):
     """Fetch new trades for the assigned symbols."""
 
     def __init__(
@@ -52,21 +52,25 @@ class LiveTradePartition(StatefulSourcePartition[Trade, dict]):
         self._last_seen: Dict[str, Tuple[datetime, str]] = {}
         self._last_poll = 0.0
         self._idle_sleep = 0.25
+        self._buffer: List[Trade] = []
 
     def next_batch(self) -> List[Trade]:
+        # Emit buffered items one at a time
+        if self._buffer:
+            return [self._buffer.pop(0)]
+
         if not self.symbols:
             time.sleep(self.poll_interval)
             return []
 
         self._throttle()
 
-        batch: List[Trade] = []
+        # Fetch new trades and populate buffer
         for symbol in self.symbols:
             trades = self._client.fetch_trades(symbol)
             if not trades:
                 continue
             last_seen = self._last_seen.get(symbol)
-            new_trades: List[Trade] = []
             for trade in trades:
                 if last_seen:
                     last_ts, last_id = last_seen
@@ -74,37 +78,20 @@ class LiveTradePartition(StatefulSourcePartition[Trade, dict]):
                         continue
                     if trade.ts == last_ts and trade.trade_id <= last_id:
                         continue
-                new_trades.append(trade)
+                self._buffer.append(trade)
                 last_seen = (trade.ts, trade.trade_id)
 
             if last_seen:
                 self._last_seen[symbol] = last_seen
 
-            if new_trades:
-                batch.extend(new_trades)
+        if self._buffer:
+            log.debug("live_trade_partition_fetched", symbols=len(self.symbols), trades=len(self._buffer))
+            return [self._buffer.pop(0)]
 
-        if not batch:
-            time.sleep(self._idle_sleep)
-        else:
-            log.debug("live_trade_partition_batch", symbols=len(self.symbols), trades=len(batch))
+        # No trades available, sleep and return empty to continue polling
+        time.sleep(self._idle_sleep)
+        return []
 
-        return batch
-
-    def snapshot(self) -> dict:
-        serializable: Dict[str, dict[str, str]] = {}
-        for symbol, (ts, trade_id) in self._last_seen.items():
-            serializable[symbol] = {"ts": ts.isoformat(), "trade_id": trade_id}
-        return {"last_seen": serializable}
-
-    def restore(self, state: dict) -> None:  # pragma: no cover - restart recovery path
-        last_seen = state.get("last_seen", {})
-        restored: Dict[str, Tuple[datetime, str]] = {}
-        for symbol, payload in last_seen.items():
-            try:
-                restored[symbol] = (datetime.fromisoformat(payload["ts"]), payload["trade_id"])
-            except Exception:
-                continue
-        self._last_seen = restored
 
     def _throttle(self) -> None:
         now = time.monotonic()
@@ -128,7 +115,7 @@ class LiveOrderbookStream(DynamicSource[OrderbookSnapshot]):
         step_id: str,
         worker_index: int,
         worker_count: int,
-    ) -> StatefulSourcePartition[OrderbookSnapshot, dict]:
+    ) -> StatelessSourcePartition[OrderbookSnapshot]:
         symbols = self.settings.symbols[worker_index::worker_count]
         return LiveOrderbookPartition(
             settings=self.settings,
@@ -138,7 +125,7 @@ class LiveOrderbookStream(DynamicSource[OrderbookSnapshot]):
         )
 
 
-class LiveOrderbookPartition(StatefulSourcePartition[OrderbookSnapshot, dict]):
+class LiveOrderbookPartition(StatelessSourcePartition[OrderbookSnapshot]):
     def __init__(
         self,
         *,
@@ -155,15 +142,20 @@ class LiveOrderbookPartition(StatefulSourcePartition[OrderbookSnapshot, dict]):
         self._last_poll = 0.0
         self._idle_sleep = 0.5
         self._last_ts: Dict[str, datetime] = {}
+        self._buffer: List[OrderbookSnapshot] = []
 
     def next_batch(self) -> List[OrderbookSnapshot]:
+        # Emit buffered items one at a time
+        if self._buffer:
+            return [self._buffer.pop(0)]
+
         if not self.symbols:
             time.sleep(self.poll_interval)
             return []
 
         self._throttle()
 
-        batch: List[OrderbookSnapshot] = []
+        # Fetch new orderbook snapshots and populate buffer
         for symbol in self.symbols:
             snapshot = self._client.fetch_orderbook(symbol, depth=self.depth)
             if snapshot is None:
@@ -174,30 +166,20 @@ class LiveOrderbookPartition(StatefulSourcePartition[OrderbookSnapshot, dict]):
                 continue
 
             self._last_ts[symbol] = snapshot.ts
-            batch.append(snapshot)
+            self._buffer.append(snapshot)
 
-        if not batch:
-            time.sleep(self._idle_sleep)
-        else:
+        if self._buffer:
             log.debug(
-                "live_orderbook_partition_batch",
+                "live_orderbook_partition_fetched",
                 symbols=len(self.symbols),
-                snapshots=len(batch),
+                snapshots=len(self._buffer),
             )
+            return [self._buffer.pop(0)]
 
-        return batch
+        # No snapshots available, sleep and return empty to continue polling
+        time.sleep(self._idle_sleep)
+        return []
 
-    def snapshot(self) -> dict:
-        return {"last_ts": {symbol: ts.isoformat() for symbol, ts in self._last_ts.items()}}
-
-    def restore(self, state: dict) -> None:  # pragma: no cover - restart recovery path
-        restored: Dict[str, datetime] = {}
-        for symbol, value in state.get("last_ts", {}).items():
-            try:
-                restored[symbol] = datetime.fromisoformat(value)
-            except Exception:
-                continue
-        self._last_ts = restored
 
     def _throttle(self) -> None:
         now = time.monotonic()

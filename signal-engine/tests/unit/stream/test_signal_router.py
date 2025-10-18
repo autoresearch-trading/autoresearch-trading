@@ -42,7 +42,7 @@ async def test_signal_router_dispatches_to_subscriber():
 
     task = asyncio.create_task(SignalRouter.dispatch_loop())
     try:
-        SignalRouter.route_signal(_make_signal("BTC"))
+        SignalRouter.route_signal("test_step", _make_signal("BTC"))
         await asyncio.sleep(0.05)
         assert len(received) == 1
         assert received[0].symbol == "BTC"
