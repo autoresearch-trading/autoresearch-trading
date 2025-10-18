@@ -12,8 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 from .config import APISettings
 from .rate import RateController
 from .storage import ParquetWriter
-from .transform import (to_funding_rows, to_orderbook_rows, to_price_rows,
-                        to_trade_rows)
+from .transform import to_funding_rows, to_orderbook_rows, to_price_rows, to_trade_rows
 from .utils import now_ms
 
 PollConfig = Dict[str, float]
