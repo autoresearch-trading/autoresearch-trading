@@ -7,7 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class SignalSettings(BaseSettings):
     """Signal calculation parameters shared across services."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     cvd_lookback_periods: int = Field(
         default=20,
@@ -98,4 +100,3 @@ class SignalSettings(BaseSettings):
             "min_depth_threshold": self.min_depth_threshold,
             "extreme_funding_threshold": self.extreme_funding_threshold,
         }
-

@@ -10,7 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class TradingSettings(BaseSettings):
     """Backtest and paper-trading parameters."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     symbols: List[str] = Field(
         default_factory=lambda: ["BTC"],
@@ -104,7 +106,11 @@ class TradingSettings(BaseSettings):
             if text.startswith("[") and text.endswith("]"):
                 try:
                     parsed = ast.literal_eval(text)
-                    return [str(item).strip().upper() for item in parsed if str(item).strip()]
+                    return [
+                        str(item).strip().upper()
+                        for item in parsed
+                        if str(item).strip()
+                    ]
                 except Exception:
                     pass
             return [item.strip().upper() for item in text.split(",") if item.strip()]
@@ -122,4 +128,3 @@ class TradingSettings(BaseSettings):
             "max_total_exposure_pct": self.max_total_exposure_pct,
             "max_concentration_pct": self.max_concentration_pct,
         }
-

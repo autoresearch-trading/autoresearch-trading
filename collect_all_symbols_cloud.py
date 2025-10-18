@@ -24,9 +24,9 @@ if str(SRC_PATH) not in sys.path:
 
 from collector.api_client import APIClient
 from collector.config import APISettings
-from config import PacificaAPISettings
 from collector.live_runner import LiveRunner
 from collector.utils import parse_duration
+from config import PacificaAPISettings
 
 logger = structlog.get_logger(__name__)
 

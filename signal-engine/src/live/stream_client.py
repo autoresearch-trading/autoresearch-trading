@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import structlog
-from config import Settings
 from signals.base import OrderbookSnapshot, Trade
+
+from config import Settings
 
 try:  # pragma: no cover - optional dependency
     from collector.api_client import APIClient

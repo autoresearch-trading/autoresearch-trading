@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Optional
 
 import structlog
+
 from config import Settings
 
 try:  # Import lazily to allow running without collector package installed.

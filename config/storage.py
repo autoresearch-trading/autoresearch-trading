@@ -9,7 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class StorageSettings(BaseSettings):
     """Data and log storage configuration."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     data_root: Path = Field(default=Path("./data"), validation_alias="DATA_ROOT")
     logs_root: Path = Field(default=Path("./logs"), validation_alias="LOGS_ROOT")

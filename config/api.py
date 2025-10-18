@@ -100,4 +100,3 @@ class PacificaAPISettings(BaseSettings):
         if trimmed.endswith("/api"):
             return f"{trimmed}/v1"
         return f"{trimmed}/api/v1"
-
