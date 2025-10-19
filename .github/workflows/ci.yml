@@ -24,12 +24,6 @@ jobs:
           - 9009:9009     # ILP
         env:
           QDB_CAIRO_DEFAULT_TYPE: LINUX
-        # Healthcheck makes Actions wait until QuestDB is ready
-        options: >-
-          --health-cmd="bash -c 'curl -sf http://localhost:9000/ -o /dev/null'"
-          --health-interval=5s
-          --health-timeout=2s
-          --health-retries=50
 
     steps:
     - uses: actions/checkout@v4
@@ -39,18 +33,38 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl
 
-    - name: Wait for QuestDB SQL endpoint
+    - name: Wait for QuestDB to be ready
       run: |
-        echo "Waiting for QuestDB SQL engine to be ready..."
-        for i in {1..60}; do
-          if curl -sf "http://localhost:9000/exec?query=select%201" | grep -q '"dataset":'; then
-            echo "✅ QuestDB SQL engine is ready!"
-            exit 0
+        echo "Waiting for QuestDB to be ready..."
+        
+        # First, wait for the basic HTTP interface
+        echo "Step 1: Waiting for QuestDB HTTP interface..."
+        for i in {1..30}; do
+          if curl -sf http://localhost:9000/ > /dev/null 2>&1; then
+            echo "✅ QuestDB HTTP interface is responding!"
+            break
           fi
-          echo "Waiting for QuestDB SQL engine... ($i/60)"
+          echo "HTTP interface not ready... ($i/30)"
           sleep 2
         done
-        echo "❌ QuestDB SQL engine never became ready"
+        
+        # Then, wait for the SQL engine
+        echo "Step 2: Waiting for QuestDB SQL engine..."
+        for i in {1..30}; do
+          if curl -sf "http://localhost:9000/exec?query=select%201" | grep -q '"dataset":'; then
+            echo "✅ QuestDB SQL engine is ready!"
+            echo "🎉 QuestDB is fully operational!"
+            exit 0
+          fi
+          echo "SQL engine not ready... ($i/30)"
+          sleep 2
+        done
+        
+        echo "❌ QuestDB never became fully ready"
+        echo "Container status:"
+        docker ps -a
+        echo "QuestDB logs:"
+        docker logs $(docker ps -aqf "ancestor=questdb/questdb") 2>/dev/null || echo "No logs available"
         exit 1
     
     - name: Set up Python ${{ matrix.python-version }} (${{ matrix.architecture }})
