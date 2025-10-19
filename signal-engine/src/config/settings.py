@@ -34,6 +34,12 @@ class Settings:
     position_size_pct: float = 0.1
     stop_loss_pct: float = 0.02
     take_profit_pct: float = 0.04
+    min_confidence: float = 0.6
+    min_signals_agree: int = 2
+    require_cvd: bool = True
+    require_tfi: bool = True
+    require_ofi: bool = True
+    max_hold_seconds: int = 180
 
     def __post_init__(self):
         if self.symbols is None:
@@ -58,11 +64,11 @@ class Settings:
             "max_consecutive_losses": 3,
             "max_total_exposure_pct": 0.2,
             "max_concentration_pct": 0.1,
-            "min_confidence": 0.6,
-            "min_signals_agree": 2,
-            "require_cvd": True,
-            "require_tfi": True,
-            "require_ofi": True,
+            "min_confidence": self.min_confidence,
+            "min_signals_agree": self.min_signals_agree,
+            "require_cvd": self.require_cvd,
+            "require_tfi": self.require_tfi,
+            "require_ofi": self.require_ofi,
         }
 
     def cvd_config(self) -> Dict[str, Any]:
