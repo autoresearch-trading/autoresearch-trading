@@ -15,23 +15,32 @@ jobs:
         python-version: ['3.12']
         architecture: ['x64']
     
-    services:
-      questdb:
-        image: questdb/questdb:8.2
-        ports:
-          - 8812:8812     # Postgres wire protocol
-          - 9000:9000     # REST/console
-          - 9009:9009     # ILP
-        env:
-          QDB_CAIRO_DEFAULT_TYPE: LINUX
+    # Removed QuestDB service - will start manually for better control
 
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install curl
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y curl
+        sudo apt-get install -y curl docker.io
+
+    - name: Start QuestDB manually
+      run: |
+        echo "Starting QuestDB container manually..."
+        docker run -d \
+          --name questdb-ci \
+          -p 8812:8812 \
+          -p 9000:9000 \
+          -p 9009:9009 \
+          -e QDB_CAIRO_DEFAULT_TYPE=LINUX \
+          questdb/questdb:8.2
+        
+        echo "QuestDB container started, waiting for it to be ready..."
+        sleep 10
+        
+        echo "Container status:"
+        docker ps -a
 
     - name: Debug QuestDB startup
       run: |
@@ -205,10 +214,9 @@ jobs:
         echo "==== QuestDB Container Status ===="
         docker ps -a
         echo ""
-        QID=$(docker ps -aqf "ancestor=questdb/questdb")
-        if [ -n "$QID" ]; then
-          echo "==== QuestDB logs ===="
-          docker logs "$QID" || true
-        else
-          echo "No QuestDB container found"
-        fi
+        echo "==== QuestDB logs ===="
+        docker logs questdb-ci 2>/dev/null || echo "No QuestDB container logs available"
+        echo ""
+        echo "==== Cleanup QuestDB container ===="
+        docker stop questdb-ci 2>/dev/null || true
+        docker rm questdb-ci 2>/dev/null || true
