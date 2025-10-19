@@ -33,32 +33,52 @@ jobs:
         docker ps -a
         echo ""
         echo "Waiting for QuestDB to start..."
+        
+        # First, wait a bit for the container to fully start
+        echo "Waiting 10 seconds for QuestDB to initialize..."
+        sleep 10
+        
         for i in {1..60}; do
-          # Try to get the response
-          RESPONSE=$(curl -s http://localhost:9000/ 2>&1 || echo "connection_failed")
-          echo "Attempt $i: Response length: ${#RESPONSE} bytes"
+          # Try multiple endpoints to check QuestDB health
+          echo "Attempt $i: Testing QuestDB endpoints..."
           
-          # Check if we got actual content (not just error)
-          if [ "${#RESPONSE}" -gt 100 ]; then
-            echo "QuestDB is responding with content!"
-            echo "Response preview: ${RESPONSE:0:200}"
-            exit 0
+          # Test the main web interface
+          if curl -s -f http://localhost:9000/ > /dev/null 2>&1; then
+            echo "✅ QuestDB web interface is responding!"
+            # Test the REST API endpoint
+            if curl -s -f http://localhost:9000/status > /dev/null 2>&1; then
+              echo "✅ QuestDB REST API is responding!"
+              echo "QuestDB is fully ready!"
+              exit 0
+            else
+              echo "⚠️ Web interface works but REST API not ready yet..."
+            fi
+          else
+            echo "❌ QuestDB not responding yet..."
           fi
           
-          # Show what we're getting
-          if [ "$i" -eq 1 ] || [ "$i" -eq 10 ] || [ "$i" -eq 30 ]; then
-            echo "Sample response: $RESPONSE"
+          # Show container status every 10 attempts
+          if [ $((i % 10)) -eq 0 ]; then
+            echo "Container status:"
+            docker ps -a
+            echo "Container logs (last 10 lines):"
+            docker logs --tail 10 $(docker ps -q --filter "ancestor=questdb/questdb:latest") 2>/dev/null || echo "No logs available"
           fi
           
           sleep 2
         done
+        
         echo ""
-        echo "ERROR: QuestDB failed to start within 120 seconds"
-        echo "Final check with verbose curl:"
-        curl -v http://localhost:9000/ || true
-        echo ""
-        echo "Checking QuestDB container logs:"
+        echo "❌ ERROR: QuestDB failed to start within 120 seconds"
+        echo "Final diagnostics:"
+        echo "Container status:"
         docker ps -a
+        echo ""
+        echo "Container logs:"
+        docker logs --tail 20 $(docker ps -q --filter "ancestor=questdb/questdb:latest") 2>/dev/null || echo "No logs available"
+        echo ""
+        echo "Network test:"
+        curl -v http://localhost:9000/ || true
         exit 1
     
     - name: Set up Python ${{ matrix.python-version }} (${{ matrix.architecture }})
