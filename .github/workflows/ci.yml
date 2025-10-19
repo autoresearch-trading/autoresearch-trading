@@ -23,10 +23,13 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y curl docker.io
+        sudo apt-get install -y curl
 
     - name: Start QuestDB manually
       run: |
+        echo "Checking Docker availability..."
+        docker --version
+        
         echo "Starting QuestDB container manually..."
         docker run -d \
           --name questdb-ci \
