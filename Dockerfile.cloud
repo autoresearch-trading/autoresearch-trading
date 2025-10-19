@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
+COPY config/ ./config/
 COPY collect_data.py .
 COPY collect_all_symbols.py .
 COPY collect_all_symbols_cloud.py .
