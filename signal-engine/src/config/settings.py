@@ -52,6 +52,7 @@ class Settings:
     def risk_config(self) -> Dict[str, Any]:
         """Return risk management configuration."""
         return {
+            "initial_capital": self.initial_capital,
             "max_daily_loss_pct": 0.05,
             "max_daily_trades": 10,
             "max_consecutive_losses": 3,
