@@ -82,7 +82,6 @@ def calculate_backtest_results(
         )
 
     pnl_values = np.array([trade.pnl for trade in trades], dtype=float)
-    trade_returns = np.array([trade.pnl_pct for trade in trades], dtype=float)
 
     winning_mask = pnl_values > 0
     losing_mask = pnl_values < 0

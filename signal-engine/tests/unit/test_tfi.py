@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from signals.base import SignalDirection, SignalType
 from signals.tfi import TFICalculator
 

@@ -22,7 +22,6 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from collector.api_client import APIClient
 from collector.config import APISettings
 from collector.live_runner import LiveRunner
 from collector.utils import parse_duration
@@ -82,7 +81,7 @@ def setup_health_check():
                             mtime = datetime.fromtimestamp(file.stat().st_mtime)
                             if mtime > cutoff:
                                 recent_files.append(str(file.name))
-                        except:
+                        except OSError:
                             pass
 
                     status["recent_files_count"] = len(recent_files)

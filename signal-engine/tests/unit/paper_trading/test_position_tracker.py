@@ -5,7 +5,7 @@ from paper_trading.position_tracker import PositionTracker
 
 def test_open_and_close_position_updates_capital() -> None:
     tracker = PositionTracker(initial_capital=10_000.0)
-    position = tracker.open_position(
+    tracker.open_position(
         symbol="BTC",
         side="long",
         entry_price=100.0,
@@ -28,7 +28,7 @@ def test_open_and_close_position_updates_capital() -> None:
 
 def test_update_position_price_tracks_unrealized_pnl() -> None:
     tracker = PositionTracker(initial_capital=1_000.0)
-    position = tracker.open_position(
+    tracker.open_position(
         symbol="ETH",
         side="short",
         entry_price=200.0,

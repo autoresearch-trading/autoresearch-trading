@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union, cast
+from typing import Any, Dict, List, Optional, Union, cast
 
 import bytewax.operators as op
 from bytewax.dataflow import Dataflow, Stream

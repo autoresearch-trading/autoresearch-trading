@@ -7,9 +7,9 @@ Displays live P&L, positions, and performance metrics from QuestDB
 import argparse
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import psycopg
 from rich.console import Console
@@ -41,11 +41,11 @@ class PaperTradingMonitor:
         try:
             with psycopg.connect(self.conn_string, connect_timeout=3) as conn:
                 query = f"""
-                    SELECT symbol, side, entry_price, exit_price, pnl, pnl_pct, 
+                    SELECT symbol, side, entry_price, exit_price, pnl, pnl_pct,
                            ts, exit_ts
-                    FROM paper_trades 
+                    FROM paper_trades
                     WHERE ts > dateadd('h', -{hours}, now())
-                    ORDER BY ts DESC 
+                    ORDER BY ts DESC
                     LIMIT 50
                 """
                 result = conn.execute(query)
@@ -75,7 +75,7 @@ class PaperTradingMonitor:
         try:
             with psycopg.connect(self.conn_string, connect_timeout=3) as conn:
                 query = f"""
-                    SELECT 
+                    SELECT
                         COUNT(*) as trade_count,
                         SUM(pnl) as total_pnl,
                         AVG(pnl) as avg_pnl,
@@ -122,7 +122,7 @@ class PaperTradingMonitor:
                 rows = result.fetchall()
 
                 return {row[0]: row[1] for row in rows}
-        except Exception as e:
+        except Exception:
             return {}
 
     def create_stats_table(self, stats: Dict) -> Table:

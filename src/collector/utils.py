@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import math
 import re
 import signal
 import time
 from contextlib import contextmanager
-from typing import Callable, Dict, Generator, Iterable, Optional
+from typing import Callable, Dict, Generator
 
 _DURATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)(ms|s|m)?\s*$")
 

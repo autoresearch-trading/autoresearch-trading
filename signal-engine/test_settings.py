@@ -21,9 +21,7 @@ print("\n=== Loading Settings ===")
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 try:
-    from pydantic_settings import BaseSettings
-
-    print(f"Pydantic settings loaded successfully")
+    print("Pydantic settings loaded successfully")
 
     from config import Settings
 

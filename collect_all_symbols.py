@@ -4,10 +4,8 @@ Script to collect data from all available symbols on Pacifica API.
 This script dynamically fetches all available symbols and collects data from them.
 """
 
-import json
 import subprocess
 import sys
-import time
 from typing import List
 
 import requests
@@ -71,7 +69,7 @@ def collect_data_for_symbols(symbols: List[str], **kwargs) -> None:
 
     try:
         # Run the collector
-        process = subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)
         print("Data collection completed successfully!")
 
     except KeyboardInterrupt:

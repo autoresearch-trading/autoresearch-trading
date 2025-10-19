@@ -13,7 +13,7 @@ for key, value in sorted(values.items()):
     if "SYMBOL" in key.upper():
         print(f"  {key}={repr(value)}")
 
-print(f"\nAll keys:")
+print("\nAll keys:")
 for key in sorted(values.keys()):
     print(f"  - {key}")
 
