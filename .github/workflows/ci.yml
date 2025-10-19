@@ -17,7 +17,7 @@ jobs:
     
     services:
       questdb:
-        image: questdb/questdb:latest
+        image: questdb/questdb:8.2
         ports:
           - 8812:8812     # Postgres wire protocol
           - 9000:9000     # REST/console
@@ -33,38 +33,73 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl
 
-    - name: Wait for QuestDB to be ready
+    - name: Debug QuestDB startup
       run: |
-        echo "Waiting for QuestDB to be ready..."
-        
-        # First, wait for the basic HTTP interface
-        echo "Step 1: Waiting for QuestDB HTTP interface..."
-        for i in {1..30}; do
-          if curl -sf http://localhost:9000/ > /dev/null 2>&1; then
-            echo "✅ QuestDB HTTP interface is responding!"
-            break
-          fi
-          echo "HTTP interface not ready... ($i/30)"
-          sleep 2
-        done
-        
-        # Then, wait for the SQL engine
-        echo "Step 2: Waiting for QuestDB SQL engine..."
-        for i in {1..30}; do
-          if curl -sf "http://localhost:9000/exec?query=select%201" | grep -q '"dataset":'; then
-            echo "✅ QuestDB SQL engine is ready!"
-            echo "🎉 QuestDB is fully operational!"
-            exit 0
-          fi
-          echo "SQL engine not ready... ($i/30)"
-          sleep 2
-        done
-        
-        echo "❌ QuestDB never became fully ready"
+        echo "=== QuestDB Debug Information ==="
         echo "Container status:"
         docker ps -a
+        echo ""
+        echo "Waiting 30 seconds for QuestDB to fully initialize..."
+        sleep 30
+        
+        echo "Container status after wait:"
+        docker ps -a
+        echo ""
+        
+        # Check if container is running
+        if ! docker ps | grep -q questdb; then
+          echo "❌ QuestDB container is not running!"
+          echo "Container logs:"
+          docker logs $(docker ps -aqf "ancestor=questdb/questdb") 2>/dev/null || echo "No logs available"
+          exit 1
+        fi
+        
+        echo "✅ QuestDB container is running, testing connectivity..."
+
+    - name: Wait for QuestDB to be ready
+      run: |
+        echo "Testing QuestDB connectivity..."
+        
+        # Simple connectivity test
+        for i in {1..60}; do
+          echo "Attempt $i: Testing QuestDB..."
+          
+          # Test basic HTTP response
+          if curl -s http://localhost:9000/ > /dev/null 2>&1; then
+            echo "✅ QuestDB HTTP interface is responding!"
+            
+            # Test SQL endpoint
+            if curl -s "http://localhost:9000/exec?query=select%201" | grep -q '"dataset":'; then
+              echo "✅ QuestDB SQL engine is ready!"
+              echo "🎉 QuestDB is fully operational!"
+              exit 0
+            else
+              echo "⚠️ HTTP works but SQL not ready yet..."
+            fi
+          else
+            echo "❌ QuestDB not responding yet..."
+          fi
+          
+          # Show progress every 10 attempts
+          if [ $((i % 10)) -eq 0 ]; then
+            echo "Progress: $i/60 attempts completed"
+            echo "Container status:"
+            docker ps | grep questdb || echo "No QuestDB container found"
+          fi
+          
+          sleep 2
+        done
+        
+        echo "❌ QuestDB never became ready after 120 seconds"
+        echo "Final diagnostics:"
+        echo "Container status:"
+        docker ps -a
+        echo ""
         echo "QuestDB logs:"
         docker logs $(docker ps -aqf "ancestor=questdb/questdb") 2>/dev/null || echo "No logs available"
+        echo ""
+        echo "Network test:"
+        curl -v http://localhost:9000/ || true
         exit 1
     
     - name: Set up Python ${{ matrix.python-version }} (${{ matrix.architecture }})
