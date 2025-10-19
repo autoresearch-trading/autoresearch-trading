@@ -123,8 +123,8 @@ def main() -> None:
             orderbook_files.extend(orderbook_matches)
 
     if not trade_files:
-        console.print("[red]No trade data located. Aborting.[/red]")
-        raise SystemExit(1)
+        console.print("[yellow]No trade data located. Nothing to replay.[/yellow]")
+        return
 
     console.print(f"Replaying {len(trade_files)} trade files")
     trade_source = ParquetTradeSource(trade_files)
