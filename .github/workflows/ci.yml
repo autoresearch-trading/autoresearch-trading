@@ -23,15 +23,23 @@ jobs:
           - 8812:8812
         env:
           QDB_CAIRO_DEFAULT_TYPE: LINUX
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/ || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 30s
 
     steps:
     - uses: actions/checkout@v4
+    
+    - name: Wait for QuestDB to be ready
+      run: |
+        echo "Waiting for QuestDB to start..."
+        for i in {1..30}; do
+          if curl -f http://localhost:9000/ > /dev/null 2>&1; then
+            echo "QuestDB is ready!"
+            break
+          fi
+          echo "Attempt $i: QuestDB not ready yet, waiting..."
+          sleep 2
+        done
+        # Verify QuestDB is accessible
+        curl -f http://localhost:9000/ || (echo "QuestDB failed to start" && exit 1)
     
     - name: Set up Python ${{ matrix.python-version }} (${{ matrix.architecture }})
       uses: actions/setup-python@v4
