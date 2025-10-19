@@ -30,6 +30,9 @@ jobs:
         echo "Checking Docker availability..."
         docker --version
         
+        echo "Pulling QuestDB image..."
+        docker pull questdb/questdb:latest
+        
         echo "Starting QuestDB container manually..."
         docker run -d \
           --name questdb-ci \
@@ -37,7 +40,7 @@ jobs:
           -p 9000:9000 \
           -p 9009:9009 \
           -e QDB_CAIRO_DEFAULT_TYPE=LINUX \
-          questdb/questdb:8.2
+          questdb/questdb:latest
         
         echo "QuestDB container started, waiting for it to be ready..."
         sleep 10
