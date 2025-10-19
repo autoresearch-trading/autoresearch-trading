@@ -67,8 +67,21 @@ data-collector/
 │   ├── check_all_symbols.sh  # Per-symbol data verification
 │   └── check-status.sh       # Quick deployment health snapshot
 │
-├── scripts/                   # Operational utilities
-│   └── sync_cloud_data.sh    # Cloud data sync helper
+├── scripts/                   # Operational utilities and Python entrypoints
+│   ├── collect_data.py        # CLI for manual/historical collection
+│   ├── collect_all_symbols.py # Enumerate symbols then trigger live run
+│   ├── collect_all_symbols_cloud.py  # Cloud collector with health checks
+│   ├── sync_cloud_data.sh     # Cloud data sync helper
+│   └── test_sync_local.sh     # Local sync smoke test
+│
+├── Dockerfile                 # Standard x86_64 build
+├── Dockerfile.arm64           # Apple Silicon build
+├── Dockerfile.cloud           # Production cloud build
+├── deploy/                    # Deployment manifests
+│   ├── docker-compose.yml     # Local development stack
+│   ├── fly.toml               # Fly.io deployment config
+- `deploy/railway.toml`: Railway.app config
+- `deploy/render.yaml`: Render.com config
 │
 ├── tests/                     # Data collector tests
 │   ├── test_storage.py
@@ -83,15 +96,6 @@ data-collector/
 │   └── funding/symbol=DOGE/date=2025-10-15/*.parquet
 │
 ├── logs/                      # Application logs (gitignored)
-│
-├── Deployment Files
-│   ├── Dockerfile             # Standard x86_64 build
-│   ├── Dockerfile.arm64       # Apple Silicon build
-│   ├── Dockerfile.cloud       # Production cloud build
-│   ├── docker-compose.yml     # Local development stack
-│   ├── fly.toml              # Fly.io deployment config
-│   ├── railway.toml          # Railway.app config
-│   └── render.yaml           # Render.com config
 │
 ├── README.md                 # Main project documentation
 ├── docs/                     # Extended documentation bundle
@@ -118,8 +122,9 @@ data-collector/
 ### Data Collector
 **Purpose**: Poll Pacifica API and persist market data to Parquet files  
 **Entry Points**:
-- `collect_data.py` - CLI for manual/historical collection
-- `collect_all_symbols_cloud.py` - Production collector for all symbols
+- `scripts/collect_data.py` - CLI for manual/historical collection
+- `scripts/collect_all_symbols.py` - Interactive runner that enumerates symbols locally
+- `scripts/collect_all_symbols_cloud.py` - Production collector for all symbols
 
 **Key Features**:
 - Rate-limited API client with exponential backoff
@@ -150,7 +155,7 @@ data-collector/
 **Deployment Flow**:
 1. Build with `Dockerfile.cloud`
 2. Deploy to Fly.io with persistent volume
-3. Collector runs `collect_all_symbols_cloud.py`
+3. Collector runs `scripts/collect_all_symbols_cloud.py`
 4. Health check on port 8080
 5. Weekly data sync to local machine
 
@@ -159,7 +164,7 @@ data-collector/
 ```
 Pacifica API
     ↓
-Data Collector (collect_all_symbols_cloud.py)
+Data Collector (`scripts/collect_all_symbols_cloud.py`)
     ↓
 Parquet Files (partitioned: symbol=X/date=Y/*.parquet)
     ↓
@@ -205,13 +210,13 @@ python scripts/setup_questdb.py
 ### 2. Running Collectors Locally
 ```bash
 # Collect specific symbols
-python collect_data.py live --symbols BTC,ETH --max-rps 2
+python scripts/collect_data.py live --symbols BTC,ETH --max-rps 2
 
 # Collect all available symbols
-python collect_all_symbols.py
+python scripts/collect_all_symbols.py
 
 # Backfill historical data
-python collect_data.py backfill --symbols BTC --interval 1m --days 30
+python scripts/collect_data.py backfill --symbols BTC --interval 1m --days 30
 ```
 
 ### 3. Testing Signals
@@ -251,7 +256,7 @@ python scripts/run_backtest.py \
 flyctl auth login
 flyctl apps create pacifica-collector
 flyctl volumes create data_volume --size 3 --region sjc
-flyctl deploy
+flyctl deploy -c deploy/fly.toml
 
 # Monitor deployment
 flyctl logs
@@ -304,7 +309,7 @@ All configuration via environment variables (see `.env.example`):
 ### Configuration Files
 - `.env`: Local overrides (gitignored, copy from `.env.example`)
 - `config/`: Shared Pydantic settings (`api.py`, `storage.py`, `signals.py`, `trading.py`, `deployment.py`)
-- `fly.toml`: Cloud deployment configuration
+- `deploy/fly.toml`: Cloud deployment configuration
 
 ## Common Tasks
 
@@ -323,9 +328,9 @@ All configuration via environment variables (see `.env.example`):
 4. Update QuestDB schema if persisting to database
 
 ### Deploy Configuration Changes
-1. Modify `fly.toml` or `collect_all_symbols_cloud.py`
+1. Modify `deploy/fly.toml` or `scripts/collect_all_symbols_cloud.py`
 2. Test locally: `docker build -f Dockerfile.cloud .`
-3. Deploy: `flyctl deploy`
+3. Deploy: `flyctl deploy -c deploy/fly.toml`
 4. Monitor: `flyctl logs` and `./monitoring/check_collector.sh`
 
 ## Troubleshooting

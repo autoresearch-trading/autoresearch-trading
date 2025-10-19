@@ -53,32 +53,32 @@ After activating the virtual environment, invoke the CLI subcommand that matches
 
 ```bash
 # Exchange metadata
-python collect_data.py market-info
+python scripts/collect_data.py market-info
 
 # Current pricing snapshot
-python collect_data.py prices --out prices.json
+python scripts/collect_data.py prices --out prices.json
 
 # Candles (timestamps accept ms since epoch or ISO-8601)
-python collect_data.py kline --symbol BTC --interval 1m \
+python scripts/collect_data.py kline --symbol BTC --interval 1m \
   --start 2024-09-01T00:00:00Z --end 2024-09-01T01:00:00Z
 
 # Historical candle backfill (writes Parquet under ./data/candles)
-python collect_data.py backfill --symbols BTC,ETH --interval 1m --days 30
+python scripts/collect_data.py backfill --symbols BTC,ETH --interval 1m --days 30
 
 # Order book snapshot with aggregation
-python collect_data.py orderbook --symbol BTC --agg-level 5
+python scripts/collect_data.py orderbook --symbol BTC --agg-level 5
 
 # Recent trades
-python collect_data.py recent-trades --symbol BTC
+python scripts/collect_data.py recent-trades --symbol BTC
 
 # Historical funding (paginated)
-python collect_data.py funding --symbol BTC --limit 200 --offset 0
+python scripts/collect_data.py funding --symbol BTC --limit 200 --offset 0
 
 # Ad-hoc calls when experimenting with new endpoints
-python collect_data.py raw /info/prices --param symbol=BTC
+python scripts/collect_data.py raw /info/prices --param symbol=BTC
 
 # Live polling to Parquet datasets (writes under ./data by default)
-python collect_data.py live --symbols BTC,ETH --max-rps 4 \
+python scripts/collect_data.py live --symbols BTC,ETH --max-rps 4 \
   --poll-prices 2s --poll-trades 1s --poll-orderbook 3s --poll-funding 60s
 ```
 
@@ -100,7 +100,7 @@ The `live` subcommand launches an async polling runner that:
 Example:
 
 ```bash
-python collect_data.py live \
+python scripts/collect_data.py live \
   --symbols BTC,ETH \
   --out-root ./data \
   --max-rps 4 \

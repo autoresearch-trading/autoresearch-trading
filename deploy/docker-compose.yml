@@ -11,10 +11,10 @@ services:
 
   data-collector:
     build:
-      context: .
+      context: ..
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - ../data:/app/data
+      - ../logs:/app/logs
     environment:
       - QUESTDB_HOST=questdb
       - QUESTDB_PORT=8812
@@ -22,13 +22,13 @@ services:
       - QUESTDB_PASSWORD=quest
     depends_on:
       - questdb
-    command: python collect_data.py live --symbols BTC,ETH --max-rps 2
+    command: python scripts/collect_data.py live --symbols BTC,ETH --max-rps 2
 
   signal-engine:
     build:
-      context: ./signal-engine
+      context: ../signal-engine
     volumes:
-      - ./data:/app/data
+      - ../data:/app/data
     environment:
       - DATA_ROOT=/app/data
       - QUESTDB_HOST=questdb

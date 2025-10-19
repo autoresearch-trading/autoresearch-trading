@@ -39,4 +39,4 @@ COPY . .
 RUN mkdir -p data logs
 
 # Default command
-CMD ["python", "collect_data.py", "live", "--symbols", "BTC", "--max-rps", "2"]
+CMD ["python", "scripts/collect_data.py", "live", "--symbols", "BTC", "--max-rps", "2"]

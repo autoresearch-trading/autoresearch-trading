@@ -382,7 +382,7 @@ lsof -i :8812
 docker logs data-collector-questdb-1 -f
 
 # Restart QuestDB
-docker-compose restart questdb
+docker compose -f deploy/docker-compose.yml restart questdb
 ```
 
 ### Python Version Issues
@@ -420,7 +420,7 @@ ls -R data/trades/ | head -20
 ls -la data/
 
 # Run data collector first
-python3 collect_data.py live --symbols BTC,ETH --max-rps 2
+python3 scripts/collect_data.py live --symbols BTC,ETH --max-rps 2
 ```
 
 ### Signal Pipeline Fails

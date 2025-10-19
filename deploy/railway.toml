@@ -1,9 +1,9 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile.cloud"
+dockerfilePath = "../Dockerfile.cloud"
 
 [deploy]
-startCommand = "python collect_all_symbols_cloud.py"
+startCommand = "python scripts/collect_all_symbols_cloud.py"
 restartPolicyType = "ALWAYS"
 
 [[environmentVariables]]

@@ -1,15 +1,15 @@
 ✅ DEPLOYMENT FILES CREATED
 
 Core Files:
-  ✅ fly.toml - Fly.io configuration
+  ✅ deploy/fly.toml - Fly.io configuration
   ✅ Dockerfile.cloud - Optimized cloud Docker image
-  ✅ collect_all_symbols_cloud.py - Cloud collector with health checks
+  ✅ scripts/collect_all_symbols_cloud.py - Cloud collector with health checks
   ✅ scripts/sync_cloud_data.sh - Data sync script
   ✅ monitoring/check_collector.sh - Health monitoring
 
 Alternative Platforms:
-  ✅ railway.toml - Railway.app config
-  ✅ render.yaml - Render.com config
+  ✅ deploy/railway.toml - Railway.app config
+  ✅ deploy/render.yaml - Render.com config
 
 Documentation:
   ✅ docs/DEPLOY_NOW.md - Quick start (10 min deploy)
@@ -27,7 +27,7 @@ NEXT STEP: Run these commands to deploy
 2. Deploy:
    flyctl apps create pacifica-collector
    flyctl volumes create data_volume --region sjc --size 3 --app pacifica-collector
-   flyctl deploy --app pacifica-collector
+   flyctl deploy -c deploy/fly.toml --app pacifica-collector
 
 3. Monitor:
    flyctl logs --app pacifica-collector

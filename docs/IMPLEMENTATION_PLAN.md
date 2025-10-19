@@ -434,7 +434,7 @@ class Settings(BaseSettings):
 **Step 4: Update Scripts** (2 hours)
 
 Update all scripts to use new config:
-- `collect_all_symbols_cloud.py`
+- `scripts/collect_all_symbols_cloud.py`
 - `signal-engine/scripts/run_backtest.py`
 - `signal-engine/scripts/run_paper_trading.py`
 - `signal-engine/scripts/run_signal_pipeline.py`
@@ -873,7 +873,7 @@ python signal-engine/scripts/run_signal_pipeline.py --symbols BTC
 
 **Step 1: Fix Health Check Function** (30 minutes)
 
-Update `collect_all_symbols_cloud.py:54-103`:
+Update `scripts/collect_all_symbols_cloud.py:54-103`:
 ```python
 def setup_health_check():
     """Start health check server in background."""
@@ -990,9 +990,9 @@ import pytest
 
 def test_health_check_timezone_aware():
     """Health check uses timezone-aware datetimes."""
-    from collect_all_symbols_cloud import check_collector_health
+    from scripts.collect_all_symbols_cloud import check_collector_health
     
-    with patch('collect_all_symbols_cloud.Path') as mock_path:
+    with patch('scripts.collect_all_symbols_cloud.Path') as mock_path:
         mock_path.return_value.exists.return_value = True
         mock_path.return_value.rglob.return_value = []
         
@@ -1006,7 +1006,7 @@ def test_health_check_timezone_aware():
 
 def test_health_check_freshness_logic(tmp_path):
     """Health check correctly identifies fresh files."""
-    from collect_all_symbols_cloud import check_collector_health
+    from scripts.collect_all_symbols_cloud import check_collector_health
     
     # Create test data structure
     trades_dir = tmp_path / "data" / "trades"
@@ -1024,7 +1024,7 @@ def test_health_check_freshness_logic(tmp_path):
     old_file.touch()
     # Set mtime to 1 hour ago (OS-dependent)
     
-    with patch('collect_all_symbols_cloud.Path') as mock_path:
+    with patch('scripts.collect_all_symbols_cloud.Path') as mock_path:
         mock_path.return_value = trades_dir
         mock_path.return_value.exists.return_value = True
         mock_path.return_value.rglob.return_value = [recent_file, old_file]

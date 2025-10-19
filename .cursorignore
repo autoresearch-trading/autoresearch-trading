@@ -46,7 +46,9 @@ htmlcov/
 coverage.xml
 
 # Deployment artifacts (sensitive)
-fly.toml
+deploy/fly.toml
+deploy/railway.toml
+deploy/render.yaml
 .deployment-checklist.txt
 
 # Generated documentation

@@ -26,7 +26,7 @@ The container showed "server is ready to be started" in its logs, but GitHub Act
 51 Python files were not formatted according to Black's style guide, causing the lint job to fail.
 
 **Files Affected**:
-- Data collector: `collect_all_symbols.py`, `collect_all_symbols_cloud.py`, `collect_data.py`
+- Data collector: `scripts/collect_all_symbols.py`, `scripts/collect_all_symbols_cloud.py`, `scripts/collect_data.py`
 - Dashboard: `dashboards/app.py`
 - Signal Engine: Multiple files across `/scripts`, `/src`, and `/tests`
 - Source modules: All files in `src/collector/`
@@ -162,7 +162,7 @@ Consider adding caching for TA-Lib installation in CI to speed up builds:
 If health check issues persist, consider:
 - Using a specific QuestDB version tag instead of `latest`
 - Adding a custom health check script that tests both HTTP and PostgreSQL ports
-- Using `docker-compose` for more control over startup sequence
+- Using `docker compose` for more control over startup sequence
 
 ---
 
@@ -208,7 +208,7 @@ This should resolve both the lint and test job failures.
 - `.github/workflows/ci.yml`
 
 **Python Code** (63 files):
-- Root: `collect_*.py`, `collect_data.py`
+- Root: `scripts/collect_*.py`, `scripts/collect_data.py`
 - Dashboards: `dashboards/app.py`
 - Signal Engine: Scripts, source files, and tests
 - Data Collector: All source and test files

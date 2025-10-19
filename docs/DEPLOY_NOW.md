@@ -17,7 +17,7 @@ flyctl apps create pacifica-collector
 flyctl volumes create data_volume --region sjc --size 3 --app pacifica-collector
 
 # Deploy!
-flyctl deploy --app pacifica-collector
+flyctl deploy -c deploy/fly.toml --app pacifica-collector
 ```
 
 ### 3️⃣ Verify (1 min)
@@ -71,9 +71,9 @@ crontab -e
 ## 📖 Full Documentation
 
 - **DEPLOYMENT_GUIDE.md** - Complete setup guide
-- **fly.toml** - Fly.io configuration
+- **deploy/fly.toml** - Fly.io configuration
 - **Dockerfile.cloud** - Cloud-optimized Docker image
-- **collect_all_symbols_cloud.py** - Cloud collector with health checks
+- **scripts/collect_all_symbols_cloud.py** - Cloud collector with health checks
 - **scripts/sync_cloud_data.sh** - Sync data to local machine
 - **monitoring/check_collector.sh** - Health monitoring script
 

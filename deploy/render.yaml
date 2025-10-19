@@ -2,7 +2,7 @@ services:
   - type: web
     name: pacifica-collector
     env: docker
-    dockerfilePath: ./Dockerfile.cloud
+    dockerfilePath: ../Dockerfile.cloud
     plan: free
     healthCheckPath: /health
     envVars:

@@ -1,5 +1,7 @@
 .PHONY: help install test lint clean docker-up docker-down
 
+COMPOSE_FILE := deploy/docker-compose.yml
+
 help: ## Show this help message
 	@echo "Available commands:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -43,22 +45,22 @@ clean: ## Clean up generated files
 	rm -rf build/ dist/ .coverage htmlcov/ coverage.xml
 
 docker-up: ## Start services with Docker Compose
-	docker-compose up -d questdb
+	docker compose -f $(COMPOSE_FILE) up -d questdb
 	@echo "Waiting for QuestDB to be ready..."
 	@bash -c 'for i in {1..30}; do if curl -fsS http://localhost:9000/ >/dev/null; then exit 0; fi; sleep 2; done; exit 1'
 	@echo "QuestDB is ready!"
 
 docker-down: ## Stop Docker services
-	docker-compose down
+	docker compose -f $(COMPOSE_FILE) down
 
 docker-test: ## Run tests in Docker
-	docker-compose up --build --abort-on-container-exit
+	docker compose -f $(COMPOSE_FILE) up --build --abort-on-container-exit
 
 signal-pipeline: ## Run signal pipeline with sample data
 	cd signal-engine && python scripts/run_signal_pipeline.py --symbols BTC --date 2025-10-08 --dry-run --skip-regime
 
 collect-data: ## Start data collection
-	python collect_data.py live --symbols BTC,ETH --max-rps 2
+	python scripts/collect_data.py live --symbols BTC,ETH --max-rps 2
 
 dev-setup: install questdb-local ## Complete development setup
 	@echo "Development environment ready!"
@@ -70,7 +72,7 @@ questdb-local: ## Setup QuestDB locally (no Docker required)
 	cd signal-engine && python scripts/setup_questdb_local.py
 
 questdb-docker: ## Setup QuestDB with Docker
-	docker-compose up -d questdb
+	docker compose -f $(COMPOSE_FILE) up -d questdb
 	@echo "Waiting for QuestDB to be ready..."
 	@bash -c 'for i in {1..30}; do if curl -fsS http://localhost:9000/ >/dev/null; then exit 0; fi; sleep 2; done; exit 1'
 	@echo "QuestDB is ready!"

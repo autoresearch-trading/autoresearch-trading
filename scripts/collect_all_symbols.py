@@ -6,7 +6,13 @@ This script dynamically fetches all available symbols and collects data from the
 
 import subprocess
 import sys
+from pathlib import Path
 from typing import List
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import requests
 
@@ -46,9 +52,10 @@ def collect_data_for_symbols(symbols: List[str], **kwargs) -> None:
 
     # Create the command
     symbols_str = ",".join(symbols)
+    collector_script = PROJECT_ROOT / "scripts" / "collect_data.py"
     cmd = [
         "python3",
-        "collect_data.py",
+        str(collector_script),
         "live",
         "--symbols",
         symbols_str,

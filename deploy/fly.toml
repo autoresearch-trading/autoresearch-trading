@@ -2,7 +2,7 @@ app = "pacifica-collector"
 primary_region = "sjc"  # San Jose - closest to Panama
 
 [build]
-  dockerfile = "Dockerfile.cloud"
+  dockerfile = "../Dockerfile.cloud"
 
 [env]
   ENV = "cloud"

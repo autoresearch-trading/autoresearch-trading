@@ -245,7 +245,7 @@ Before committing:
 2. Update CHANGELOG.md
 3. Run full test suite: `make test`
 4. Tag release: `git tag v1.0.0`
-5. Deploy to production: `flyctl deploy`
+5. Deploy to production: `flyctl deploy -c deploy/fly.toml`
 6. Monitor for 24 hours
 
 ### Getting Help
