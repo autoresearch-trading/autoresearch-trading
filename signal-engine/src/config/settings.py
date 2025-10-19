@@ -49,5 +49,47 @@ class Settings:
             "symbols": self.symbols,
         }.items()
 
+    def risk_config(self) -> Dict[str, Any]:
+        """Return risk management configuration."""
+        return {
+            "max_daily_loss_pct": 0.05,
+            "max_daily_trades": 10,
+            "max_consecutive_losses": 3,
+            "max_total_exposure_pct": 0.2,
+            "max_concentration_pct": 0.1,
+            "min_confidence": 0.6,
+            "min_signals_agree": 2,
+            "require_cvd": True,
+            "require_tfi": True,
+            "require_ofi": True,
+        }
+
+    def cvd_config(self) -> Dict[str, Any]:
+        """Return CVD signal configuration."""
+        return {
+            "lookback_periods": 20,
+            "divergence_threshold": 0.1,
+        }
+
+    def tfi_config(self) -> Dict[str, Any]:
+        """Return TFI signal configuration."""
+        return {
+            "window_seconds": 300,
+            "signal_threshold": 0.7,
+        }
+
+    def ofi_config(self) -> Dict[str, Any]:
+        """Return OFI signal configuration."""
+        return {
+            "signal_threshold_sigma": 2.0,
+        }
+
+    def atr_config(self) -> Dict[str, Any]:
+        """Return ATR configuration."""
+        return {
+            "period": 14,
+            "threshold_multiplier": 1.5,
+        }
+
 
 __all__ = ["Settings"]
