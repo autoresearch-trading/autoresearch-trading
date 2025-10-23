@@ -4,9 +4,9 @@ Bootstrap project for harvesting public market data from the [Pacifica REST API]
 
 ## Documentation
 
-- `docs/SIGNAL_ENGINE_QUICKSTART.md` – Quick setup guide for signal processing with QuestDB
-- `docs/DEPLOY_NOW.md` – 10-minute production deploy guide
-- `docs/PROJECT_STRUCTURE.md` – full layout and workflow reference
+- `docs/architecture/SIGNAL_ENGINE_QUICKSTART.md` – Quick setup guide for signal processing with QuestDB
+- `docs/operations/DEPLOY_NOW.md` – 10-minute production deploy guide
+- `docs/architecture/PROJECT_STRUCTURE.md` – full layout and workflow reference
 
 ## Setup
 
