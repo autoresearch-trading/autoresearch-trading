@@ -16,8 +16,8 @@ DAYS_TO_KEEP_ON_FLY=2 # Keep today's and yesterday's data
 S3_BUCKET="${S3_BUCKET_NAME}"
 # S3_ENDPOINT_URL is only needed for S3-compatible services like Cloudflare R2
 S3_ARGS=""
-if [ -n "${STORAGE_ENDPOINT_URL-}" ]; then
-  S3_ARGS="--endpoint-url ${STORAGE_ENDPOINT_URL}"
+if [ -n "${S3_ENDPOINT_URL-}" ]; then
+  S3_ARGS="--endpoint-url ${S3_ENDPOINT_URL}"
 fi
 
 # --- Main Logic ---
