@@ -25,96 +25,27 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl
 
-    - name: Start QuestDB manually
+    - name: Start QuestDB
       run: |
-        echo "Checking Docker availability..."
-        docker --version
-        
-        echo "Pulling QuestDB image..."
-        docker pull questdb/questdb:latest
-        
-        echo "Starting QuestDB container manually..."
         docker run -d \
           --name questdb-ci \
           -p 8812:8812 \
           -p 9000:9000 \
           -p 9009:9009 \
-          -e QDB_CAIRO_DEFAULT_TYPE=LINUX \
           questdb/questdb:latest
-        
-        echo "QuestDB container started, waiting for it to be ready..."
-        sleep 10
-        
-        echo "Container status:"
-        docker ps -a
 
-    - name: Debug QuestDB startup
-      run: |
-        echo "=== QuestDB Debug Information ==="
-        echo "Container status:"
-        docker ps -a
-        echo ""
-        echo "Waiting 30 seconds for QuestDB to fully initialize..."
-        sleep 30
-        
-        echo "Container status after wait:"
-        docker ps -a
-        echo ""
-        
-        # Check if container is running
-        if ! docker ps | grep -q questdb; then
-          echo "❌ QuestDB container is not running!"
-          echo "Container logs:"
-          docker logs $(docker ps -aqf "ancestor=questdb/questdb") 2>/dev/null || echo "No logs available"
-          exit 1
-        fi
-        
-        echo "✅ QuestDB container is running, testing connectivity..."
-
-    - name: Wait for QuestDB to be ready
-      run: |
-        echo "Testing QuestDB connectivity..."
-        
-        # Simple connectivity test
-        for i in {1..60}; do
-          echo "Attempt $i: Testing QuestDB..."
-          
-          # Test basic HTTP response
-          if curl -s http://localhost:9000/ > /dev/null 2>&1; then
-            echo "✅ QuestDB HTTP interface is responding!"
-            
-            # Test SQL endpoint
-            if curl -s "http://localhost:9000/exec?query=select%201" | grep -q '"dataset":'; then
-              echo "✅ QuestDB SQL engine is ready!"
-              echo "🎉 QuestDB is fully operational!"
-              exit 0
-            else
-              echo "⚠️ HTTP works but SQL not ready yet..."
-            fi
-          else
-            echo "❌ QuestDB not responding yet..."
+        # Wait for QuestDB to be ready (max 60 seconds)
+        echo "Waiting for QuestDB..."
+        for i in {1..30}; do
+          if curl -sf "http://localhost:9000/exec?query=select%201" | grep -q '"dataset"'; then
+            echo "QuestDB ready after $((i*2)) seconds"
+            exit 0
           fi
-          
-          # Show progress every 10 attempts
-          if [ $((i % 10)) -eq 0 ]; then
-            echo "Progress: $i/60 attempts completed"
-            echo "Container status:"
-            docker ps | grep questdb || echo "No QuestDB container found"
-          fi
-          
           sleep 2
         done
-        
-        echo "❌ QuestDB never became ready after 120 seconds"
-        echo "Final diagnostics:"
-        echo "Container status:"
-        docker ps -a
-        echo ""
-        echo "QuestDB logs:"
-        docker logs $(docker ps -aqf "ancestor=questdb/questdb") 2>/dev/null || echo "No logs available"
-        echo ""
-        echo "Network test:"
-        curl -v http://localhost:9000/ || true
+
+        echo "QuestDB failed to start"
+        docker logs questdb-ci
         exit 1
     
     - name: Set up Python ${{ matrix.python-version }} (${{ matrix.architecture }})
@@ -191,38 +122,30 @@ jobs:
         QUESTDB_USER: admin
         QUESTDB_PASSWORD: quest
 
+    - name: Cleanup QuestDB
+      if: always()
+      run: |
+        docker stop questdb-ci 2>/dev/null || true
+        docker rm questdb-ci 2>/dev/null || true
+
   lint:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    
+
     - name: Install linting tools
       run: |
         python -m pip install --upgrade pip
         pip install flake8 black isort mypy
-    
+
     - name: Run linting
       run: |
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         black --check .
         isort --check-only .
         mypy .
-
-    # Always collect QuestDB logs on failure
-    - name: Dump QuestDB logs
-      if: always()
-      run: |
-        echo "==== QuestDB Container Status ===="
-        docker ps -a
-        echo ""
-        echo "==== QuestDB logs ===="
-        docker logs questdb-ci 2>/dev/null || echo "No QuestDB container logs available"
-        echo ""
-        echo "==== Cleanup QuestDB container ===="
-        docker stop questdb-ci 2>/dev/null || true
-        docker rm questdb-ci 2>/dev/null || true
