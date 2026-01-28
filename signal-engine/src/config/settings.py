@@ -72,10 +72,17 @@ class Settings:
         }
 
     def cvd_config(self) -> Dict[str, Any]:
-        """Return CVD signal configuration."""
+        """Return CVD signal configuration.
+
+        Tuned for ~0.76 ticks/sec (46 trades/min) data density.
+        100 trades = ~130 seconds, captures meaningful price divergences.
+        price_change_threshold=0.0005 (0.05%) = ~$43 at $87k BTC.
+        """
         return {
-            "lookback_periods": 20,
+            "lookback_periods": 100,
             "divergence_threshold": 0.1,
+            "min_divergence_denom": 1.0,
+            "price_change_threshold": 0.0005,
         }
 
     def tfi_config(self) -> Dict[str, Any]:

@@ -106,8 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cvd-lookback",
         type=int,
-        default=20,
-        help="CVD lookback periods for divergence (default: 20).",
+        default=100,
+        help="CVD lookback periods for divergence. Default 100 (~2min at 46 trades/min).",
     )
     parser.add_argument(
         "--cvd-divergence",
@@ -120,6 +120,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="CVD minimum divergence denominator to prevent edge cases near zero.",
+    )
+    parser.add_argument(
+        "--cvd-price-threshold",
+        type=float,
+        default=0.0005,
+        help="CVD price change threshold for HH/LL detection (0.0005=0.05%%, ~$43 at $87k).",
     )
     parser.add_argument(
         "--min-depth",
@@ -299,9 +305,10 @@ def compute_signals(
     settings: Settings,
     tfi_window: int = 60,
     tfi_threshold: float = 0.5,
-    cvd_lookback: int = 20,
+    cvd_lookback: int = 100,
     cvd_divergence: float = 0.1,
     cvd_min_denom: float = 1.0,
+    cvd_price_threshold: float = 0.0005,
     min_depth: float = 1.0,
     spread_threshold: int = 15,
 ) -> tuple[List[Signal], List[MarketRegime]]:
@@ -311,12 +318,13 @@ def compute_signals(
 
     symbol = trades[0].symbol
 
-    # CVD with configurable parameters
+    # CVD with configurable parameters (tuned for tick data density)
     cvd_calc = CVDCalculator(
         symbol=symbol,
         lookback_periods=cvd_lookback,
         divergence_threshold=cvd_divergence,
         min_divergence_denom=cvd_min_denom,
+        price_change_threshold=cvd_price_threshold,
     )
 
     # TFI with tuned parameters (60s window per strategy doc)
@@ -557,6 +565,7 @@ def main() -> None:
             cvd_lookback=args.cvd_lookback,
             cvd_divergence=args.cvd_divergence,
             cvd_min_denom=args.cvd_min_denom,
+            cvd_price_threshold=args.cvd_price_threshold,
             min_depth=args.min_depth,
             spread_threshold=args.spread_threshold,
         )
