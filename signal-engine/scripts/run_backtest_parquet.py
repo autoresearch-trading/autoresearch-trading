@@ -130,8 +130,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-depth",
         type=float,
-        default=1.0,
-        help="Minimum orderbook depth (BTC) for trading (default: 1.0).",
+        default=0.1,
+        help="Minimum orderbook depth (BTC) for trading. Default 0.1 (top-5 level data).",
     )
     parser.add_argument(
         "--spread-threshold",
@@ -309,7 +309,7 @@ def compute_signals(
     cvd_divergence: float = 0.1,
     cvd_min_denom: float = 1.0,
     cvd_price_threshold: float = 0.0005,
-    min_depth: float = 1.0,
+    min_depth: float = 0.1,
     spread_threshold: int = 15,
 ) -> tuple[List[Signal], List[MarketRegime]]:
     """Compute CVD, TFI, OFI signals and market regimes from trades and orderbook."""
