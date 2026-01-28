@@ -65,14 +65,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stop-loss",
         type=float,
-        default=0.02,
-        help="Stop loss percentage (0-1).",
+        default=0.0005,
+        help="Stop loss percentage (0-1). Default 0.05%% tuned for 180s hold.",
     )
     parser.add_argument(
         "--take-profit",
         type=float,
-        default=0.04,
-        help="Take profit percentage (0-1). Default aligned with settings.py.",
+        default=0.002,
+        help="Take profit percentage (0-1). Default 0.2%% tuned for 180s hold.",
     )
     parser.add_argument(
         "--min-confidence",

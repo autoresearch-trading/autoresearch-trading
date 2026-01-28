@@ -32,8 +32,8 @@ class Settings:
     symbols: list[str] | None = None
     initial_capital: float = 10000.0
     position_size_pct: float = 0.1
-    stop_loss_pct: float = 0.02
-    take_profit_pct: float = 0.04
+    stop_loss_pct: float = 0.0005  # 0.05% tuned for 180s hold period
+    take_profit_pct: float = 0.002  # 0.2% tuned for 180s hold period
     min_confidence: float = 0.6
     min_signals_agree: int = 2
     require_cvd: bool = True
