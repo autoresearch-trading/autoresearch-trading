@@ -23,6 +23,9 @@ class TFICalculator:
         self.buy_volume: float = 0.0
         self.sell_volume: float = 0.0
         self.window_span = timedelta(seconds=window_seconds)
+        # Drift prevention: recalculate volumes periodically
+        self._eviction_count: int = 0
+        self._recalc_interval: int = 100
 
     def process_trade(self, trade: Trade) -> Optional[Signal]:
         """Process a trade, returning a signal when imbalance is high."""
@@ -74,3 +77,21 @@ class TFICalculator:
                 self.buy_volume -= old_trade.qty
             else:
                 self.sell_volume -= old_trade.qty
+            self._eviction_count += 1
+
+        # Periodic recalculation to prevent floating-point drift
+        if self._eviction_count >= self._recalc_interval:
+            self._recalculate_volumes()
+            self._eviction_count = 0
+
+    def _recalculate_volumes(self):
+        """Recalculate volumes from deque to correct floating-point drift."""
+        self.buy_volume = sum(t.qty for t in self.trade_window if t.side == "buy")
+        self.sell_volume = sum(t.qty for t in self.trade_window if t.side == "sell")
+
+    def reset(self) -> None:
+        """Reset internal state, e.g. when switching regimes."""
+        self.trade_window.clear()
+        self.buy_volume = 0.0
+        self.sell_volume = 0.0
+        self._eviction_count = 0

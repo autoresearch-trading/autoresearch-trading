@@ -11,8 +11,8 @@ from typing import Any, Dict
 class Settings:
     """Simple settings class for signal-engine compatibility."""
 
-    # Basic paths
-    data_root: Path = Path("/tmp/data")
+    # Basic paths - relative to project root
+    data_root: Path = Path(__file__).parent.parent.parent.parent / "data"
     logs_root: Path = Path("/tmp/logs")
 
     # QuestDB settings
@@ -29,7 +29,7 @@ class Settings:
     pacifica_api_max_retries: int = 3
 
     # Trading settings
-    symbols: list[str] = None
+    symbols: list[str] | None = None
     initial_capital: float = 10000.0
     position_size_pct: float = 0.1
     stop_loss_pct: float = 0.02
@@ -79,10 +79,14 @@ class Settings:
         }
 
     def tfi_config(self) -> Dict[str, Any]:
-        """Return TFI signal configuration."""
+        """Return TFI signal configuration.
+
+        Tuned for ~0.76 ticks/sec (46 trades/min) data density.
+        60s window = ~45 trades, aligned with 30-180s holding period.
+        """
         return {
-            "window_seconds": 300,
-            "signal_threshold": 0.7,
+            "window_seconds": 60,
+            "signal_threshold": 0.5,
         }
 
     def ofi_config(self) -> Dict[str, Any]:

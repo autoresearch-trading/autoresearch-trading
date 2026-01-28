@@ -10,17 +10,11 @@ from .base import OrderbookSnapshot, Signal, SignalDirection, SignalType
 
 @dataclass
 class _OFIStats:
+    """Statistics container for OFI z-score calculation."""
+
     mean: float = 0.0
     variance: float = 0.0
     count: int = 0
-
-    def update(self, value: float) -> None:
-        """Welford running variance."""
-        self.count += 1
-        delta = value - self.mean
-        self.mean += delta / self.count
-        delta2 = value - self.mean
-        self.variance += delta * delta2
 
     @property
     def std(self) -> float:
@@ -112,9 +106,17 @@ class OFICalculator:
 
     def _track(self, value: float) -> None:
         self._history.append(value)
-        self._stats.update(value)
         if len(self._history) > self.history_size:
             self._history.pop(0)
+
+        # Compute stats from bounded history (not accumulating Welford)
+        # This ensures z-score reflects only recent behavior
+        if len(self._history) >= 2:
+            self._stats.mean = float(np.mean(self._history))
+            self._stats.variance = float(np.var(self._history, ddof=1)) * (
+                len(self._history) - 1
+            )
+            self._stats.count = len(self._history)
 
     @staticmethod
     def _bid_component(
@@ -123,11 +125,20 @@ class OFICalculator:
         prev_price: float,
         prev_qty: float,
     ) -> float:
-        if curr_price >= prev_price:
+        """Compute bid-side OFI component.
+
+        Per MASTER_IDEA.md formula:
+        I{P^B_n >= P^B_{n-1}} * q^B_n - I{P^B_n <= P^B_{n-1}} * q^B_{n-1}
+        """
+        if curr_price > prev_price:
+            # Price improved: new buying pressure
             return curr_qty
-        if curr_price <= prev_price:
+        elif curr_price < prev_price:
+            # Price worsened: buying pressure left
             return -prev_qty
-        return 0.0
+        else:
+            # Price unchanged: net change in depth (both indicators = 1)
+            return curr_qty - prev_qty
 
     @staticmethod
     def _ask_component(
@@ -136,8 +147,17 @@ class OFICalculator:
         prev_price: float,
         prev_qty: float,
     ) -> float:
-        if curr_price <= prev_price:
+        """Compute ask-side OFI component.
+
+        Per MASTER_IDEA.md formula:
+        I{P^A_n <= P^A_{n-1}} * q^A_n - I{P^A_n >= P^A_{n-1}} * q^A_{n-1}
+        """
+        if curr_price < prev_price:
+            # Price improved (lower ask): new selling pressure
             return curr_qty
-        if curr_price >= prev_price:
+        elif curr_price > prev_price:
+            # Price worsened (higher ask): selling pressure left
             return -prev_qty
-        return 0.0
+        else:
+            # Price unchanged: net change in depth (both indicators = 1)
+            return curr_qty - prev_qty

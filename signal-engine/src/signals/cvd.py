@@ -16,10 +16,12 @@ class CVDCalculator:
         symbol: str,
         lookback_periods: int = 20,
         divergence_threshold: float = 0.15,
+        min_divergence_denom: float = 1.0,
     ) -> None:
         self.symbol = symbol
         self.lookback_periods = lookback_periods
         self.divergence_threshold = divergence_threshold
+        self.min_divergence_denom = min_divergence_denom
         self.cvd_cumulative: float = 0.0
         self.price_history: deque[float] = deque(maxlen=lookback_periods)
         self.cvd_history: deque[float] = deque(maxlen=lookback_periods)
@@ -76,14 +78,16 @@ class CVDCalculator:
         second_cvd_low = np.min(cvds[mid_point:])
 
         if second_high > first_high * 1.001:
-            denom = abs(first_cvd_high) or 1e-9
+            # Use min_divergence_denom to prevent extreme values when CVD near zero
+            denom = max(abs(first_cvd_high), self.min_divergence_denom)
             cvd_divergence = (first_cvd_high - second_cvd_high) / denom
             if cvd_divergence > self.divergence_threshold:
                 confidence = min(cvd_divergence / 0.3, 1.0)
                 return SignalDirection.BEARISH, confidence
 
         if second_low < first_low * 0.999:
-            denom = abs(first_cvd_low) or 1e-9
+            # Use min_divergence_denom to prevent extreme values when CVD near zero
+            denom = max(abs(first_cvd_low), self.min_divergence_denom)
             cvd_divergence = (second_cvd_low - first_cvd_low) / denom
             if cvd_divergence > self.divergence_threshold:
                 confidence = min(cvd_divergence / 0.3, 1.0)
