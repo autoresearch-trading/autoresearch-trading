@@ -1,8 +1,10 @@
 # autoresearch-trading
 
-Autonomous RL research for DEX perpetual futures trading. You are an AI researcher experimenting with RL trading agents. Your goal is to maximize out-of-sample Sharpe ratio by iterating on the training code.
+Autonomous RL research for DEX perpetual futures trading. You are an AI researcher experimenting with RL trading agents. Your goal is to maximize out-of-sample portfolio Sharpe ratio by iterating on the training code.
 
 **Git note:** Never use blind `git add -A` or `git add .`. Only stage the files you changed.
+
+**Compute:** RunPod RTX 4090 (CUDA), accessed via SSH from local machine. All training runs execute remotely.
 
 ## Setup (run once at start)
 
@@ -14,28 +16,34 @@ Autonomous RL research for DEX perpetual futures trading. You are an AI research
    ```bash
    git checkout -b autoresearch/<tag>
    ```
-5. Verify data is cached:
+6. Verify data is cached on the pod:
    ```bash
-   uv run python -c "from prepare import prepare_data, DEFAULT_SYMBOLS; prepare_data(DEFAULT_SYMBOLS)"
+   ssh runpod "ls /workspace/autoresearch-trading/.cache/*.npz | wc -l"
+   # Expected: 75 (25 symbols × 3 splits)
    ```
-6. Run the baseline and record it:
+7. Verify CUDA is available:
    ```bash
-   uv run train.py > run.log 2>&1
-   grep "^val_sharpe:" run.log
+   ssh runpod "cd /workspace/autoresearch-trading && uv run python -c 'import torch; print(torch.cuda.get_device_name(0))'"
    ```
-7. Initialize results log:
+8. Run the baseline and record it:
    ```bash
-   echo -e "commit\tval_sharpe\tnum_trades\tmax_drawdown\tstatus\tdescription" > results.tsv
+   rsync -az train.py runpod:/workspace/autoresearch-trading/train.py
+   ssh runpod "cd /workspace/autoresearch-trading && uv run train.py > run.log 2>&1"
+   ssh runpod "tail -20 /workspace/autoresearch-trading/run.log"
    ```
-8. Record baseline result in results.tsv
+9. Initialize results log:
+   ```bash
+   echo -e "commit\tval_sharpe\tnum_trades\tmax_drawdown\tsymbols_passing\tstatus\tdescription" > results.tsv
+   ```
+10. Record baseline result in results.tsv
 
 ## Data
 
-You have **36GB of DEX perpetual futures data** from 25 crypto symbols:
+You have **36GB of DEX perpetual futures data** from 25 crypto symbols, pre-computed as cached `.npz` feature files on the pod (~1.1GB).
 
 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
 
-Data sources (Hive-partitioned Parquet):
+Raw data sources (Hive-partitioned Parquet, local machine only):
 - **Trades**: `data/trades/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, symbol, side (open_long/open_short/close_long/close_short), price, qty
 - **Orderbook**: `data/orderbook/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, bids/asks (list of {price, qty}, up to 10 levels)
 - **Funding**: `data/funding/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, rate, interval_sec
@@ -116,8 +124,8 @@ Normalization is hybrid: **robust** = rolling median/IQR (resistant to outliers)
 - **Reward function**: Any function of the info dict (step_pnl, position, equity, drawdown, trade_count, hold_duration)
 - **Hyperparameters**: Learning rate, gamma, batch size, hidden dims, etc.
 - **State representation**: Reshape obs, add engineered features from raw obs, temporal encoding
-- **Training strategy**: Curriculum learning, multi-symbol training, ensemble methods
-- **Symbol selection**: Train on any symbol(s) via the SYMBOL variable (or loop over DEFAULT_SYMBOLS)
+- **Training strategy**: Curriculum learning, symbol sampling weights, ensemble methods
+- **Symbol selection**: Train on any subset of SYMBOLS or all DEFAULT_SYMBOLS
 
 ## What You CANNOT Do
 
@@ -129,12 +137,17 @@ Normalization is hybrid: **robust** = rolling median/IQR (resistant to outliers)
 
 ## Goal
 
-**Maximize `val_sharpe`** (out-of-sample Sharpe ratio on the test set).
+**Maximize portfolio `val_sharpe`** — mean Sharpe ratio across all symbols that pass guardrails.
 
-### Guardrails (automatic, enforced by evaluate())
+### Guardrails (automatic, enforced by evaluate() per symbol)
 - **Minimum 50 trades** — prevents "never trade" degenerate solutions
 - **Maximum 20% drawdown** — prevents reckless strategies
-- Violating either → val_sharpe = 0.0
+- Violating either → that symbol's val_sharpe = 0.0
+- Portfolio Sharpe = mean of passing symbols' Sharpes
+
+### Secondary metrics
+- **symbols_passing**: how many of 25 symbols pass guardrails (more = better generalization)
+- **worst drawdown**: max drawdown across all symbols
 
 ## Experiment Loop
 
@@ -144,36 +157,39 @@ This is the core loop. Repeat forever:
 Think about what might improve the score. Read research findings below for ideas.
 
 ### 2. Implement change
-Edit `train.py` with your modification. Keep changes focused — one idea per experiment.
+Edit `train.py` locally with your modification. Keep changes focused — one idea per experiment.
 
-### 3. Commit
+### 3. Commit and sync
 ```bash
 git add train.py
 git commit -m "experiment: <brief description of what changed>"
+rsync -az train.py runpod:/workspace/autoresearch-trading/train.py
 ```
 
-### 4. Run training
+### 4. Run training on pod
 ```bash
-uv run train.py > run.log 2>&1
+ssh runpod "cd /workspace/autoresearch-trading && uv run train.py > run.log 2>&1"
 ```
 
 ### 5. Extract results
 ```bash
-SHARPE=$(grep "^val_sharpe:" run.log | tail -1 | awk '{print $2}')
-TRADES=$(grep "^num_trades:" run.log | tail -1 | awk '{print $2}')
-DRAWDOWN=$(grep "^max_drawdown:" run.log | tail -1 | awk '{print $2}')
+ssh runpod "grep -E '^(val_sharpe|num_trades|max_drawdown|symbols_passing):' /workspace/autoresearch-trading/run.log | tail -4"
+SHARPE=$(ssh runpod "grep '^val_sharpe:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
+TRADES=$(ssh runpod "grep '^num_trades:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
+DRAWDOWN=$(ssh runpod "grep '^max_drawdown:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
+PASSING=$(ssh runpod "grep '^symbols_passing:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
 COMMIT=$(git rev-parse --short HEAD)
-echo "val_sharpe: $SHARPE, num_trades: $TRADES, max_drawdown: $DRAWDOWN"
+echo "val_sharpe: $SHARPE, num_trades: $TRADES, max_drawdown: $DRAWDOWN, symbols_passing: $PASSING"
 ```
 
 ### 6. Keep or discard
 ```bash
 # If score improved or is promising:
-echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\tkept\t<description>" >> results.tsv
+echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\t$PASSING\tkept\t<description>" >> results.tsv
 git add results.tsv && git commit --amend --no-edit
 
 # If score regressed or crashed:
-echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\tdiscarded\t<description>" >> results.tsv
+echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\t$PASSING\tdiscarded\t<description>" >> results.tsv
 git reset --hard HEAD~1   # discard the experiment commit cleanly
 ```
 
@@ -192,7 +208,7 @@ Ordered by expected impact. Based on deep research into RL for trading (2025-202
    ```
    See [DeepLOB guide](https://arxiv.org/html/2403.09267v4).
 
-3. **Multi-Symbol Training**: Train on all 25 symbols with shared encoder + per-symbol embedding. **Proportional sampling by liquidity** so BTC doesn't dominate. Use BTC features as cross-asset context for non-BTC symbols.
+3. **Per-Symbol Embedding**: Add a learnable embedding per symbol to condition the shared policy. Allows the network to specialize behavior per market while sharing the encoder.
 
 4. **Decision Transformer**: Reframe as offline sequence modeling — predict action conditioned on desired return-to-go. Handles non-stationarity via explicit regime labels. Try Critic-Guided DT for Q-value reweighting. Refs: [kzl/decision-transformer](https://github.com/kzl/decision-transformer), [critic-guided-decision-transformer](https://github.com/sharkwyf/critic-guided-decision-transformer).
 
@@ -212,19 +228,11 @@ Ordered by expected impact. Based on deep research into RL for trading (2025-202
 
 12. **Conservative Offline RL** (CQL/IQL): Penalizes over-estimation in unseen states. Good for extracting policies from historical data without reward shaping. Ref: [FinRL Contest 2025](https://github.com/Open-Finance-Lab/FinRL_Contest_2025).
 
-### MPS Notes
-Some PyTorch ops may fail on MPS. If you hit an unsupported op, fall back to CPU for that operation:
-```python
-# If MPS fails on a specific op:
-tensor_cpu = tensor.to("cpu")
-result = problematic_op(tensor_cpu)
-result = result.to(device)
-```
-
 ## Output Format
 
-`train.py` MUST print these lines (parsed by grep):
+`train.py` MUST print these lines in the PORTFOLIO SUMMARY section (parsed by grep):
 ```
+symbols_passing: N/25
 val_sharpe: X.XXXXXX
 num_trades: N
 max_drawdown: X.XXXX
@@ -237,7 +245,7 @@ num_updates: N
 
 Maintain `results.tsv` with columns:
 ```
-commit	val_sharpe	num_trades	max_drawdown	status	description
+commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
 ```
 
 Review this file periodically to identify patterns in what works.
