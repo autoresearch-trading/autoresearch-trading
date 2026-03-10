@@ -47,40 +47,65 @@ Date range: 2025-10-16 to 2026-03-09 (~145 days)
 - **Validation**: 2026-01-23 to 2026-02-17 (25 days)
 - **Test**: 2026-02-17 to 2026-03-09 (20 days) — used only by evaluate()
 
-### Feature Channels (24 features per step)
+### Feature Channels (33 features per step)
 
 Each step = 100 consecutive trades (~1-2 seconds for BTC).
 
-| # | Feature | Description |
-|---|---------|-------------|
-| 0 | vwap | Volume-weighted average price of batch |
-| 1 | returns | Log return vs previous batch VWAP |
-| 2 | net_volume | Buy volume - sell volume |
-| 3 | trade_count | Number of trades (always 100) |
-| 4 | buy_ratio | Fraction of buy trades |
-| 5 | cvd_delta | Cumulative volume delta change |
-| 6 | tfi | Trade flow imbalance: (buy-sell)/(buy+sell) |
-| 7 | large_trade_count | Trades > 95th percentile qty |
-| 8 | bid_depth_total | Total bid-side liquidity |
-| 9 | ask_depth_total | Total ask-side liquidity |
-| 10 | imbalance | (bid-ask)/(bid+ask) depth imbalance |
-| 11 | spread_bps | Spread in basis points |
-| 12-16 | level_1-5_bid_vol | Per-level bid volumes |
-| 17-21 | level_1-5_ask_vol | Per-level ask volumes |
-| 22 | funding_rate | Current funding rate |
-| 23 | funding_rate_change | Change in funding rate |
+**Trade features (14):**
 
-All features are rolling z-score normalized (window=1000, min_periods=100).
+| # | Feature | Description | Normalization |
+|---|---------|-------------|---------------|
+| 0 | vwap | Volume-weighted average price of batch | z-score |
+| 1 | returns | Log return vs previous batch VWAP | z-score |
+| 2 | net_volume | Buy volume - sell volume | **robust** |
+| 3 | trade_count | Number of trades (always 100) | z-score |
+| 4 | buy_ratio | Fraction of buy trades | z-score |
+| 5 | cvd_delta | Cumulative volume delta change | z-score |
+| 6 | tfi | Trade flow imbalance: (buy-sell)/(buy+sell) | z-score |
+| 7 | large_trade_count | Trades > 95th percentile qty | **robust** |
+| 8 | vpin | Flow toxicity: rolling mean of \|TFI\| (window=50) | **robust** |
+| 9 | liq_cascade_magnitude | Large trade spike × price acceleration | **robust** |
+| 10 | liq_cascade_direction | Signed cascade: sign(returns) × magnitude | **robust** |
+| 11 | realvol_short | Rolling std of returns (window=10 batches) | z-score |
+| 12 | realvol_med | Rolling std of returns (window=50 batches) | z-score |
+| 13 | realvol_long | Rolling std of returns (window=200 batches) | z-score |
+
+**Orderbook features (17):**
+
+| # | Feature | Description | Normalization |
+|---|---------|-------------|---------------|
+| 14 | bid_depth_total | Total bid-side liquidity | **robust** |
+| 15 | ask_depth_total | Total ask-side liquidity | **robust** |
+| 16 | imbalance | (bid-ask)/(bid+ask) depth imbalance | z-score |
+| 17 | spread_bps | Spread in basis points | z-score |
+| 18-22 | level_1-5_bid_vol | Per-level bid volumes | z-score |
+| 23-27 | level_1-5_ask_vol | Per-level ask volumes | z-score |
+| 28 | microprice | Qty-weighted mid-price: (bid×ask_vol + ask×bid_vol)/(bid_vol+ask_vol) | **robust** |
+| 29 | microprice_deviation | Signed distance from mid: microprice - mid | z-score |
+| 30 | ofi | Order flow imbalance: weighted depth changes across top 5 levels | z-score |
+
+**Funding features (2):**
+
+| # | Feature | Description | Normalization |
+|---|---------|-------------|---------------|
+| 31 | funding_rate | Current funding rate | z-score |
+| 32 | funding_rate_change | Change in funding rate | z-score |
+
+Normalization is hybrid: **robust** = rolling median/IQR (resistant to outliers), **z-score** = rolling mean/std. Both use window=1000, min_periods=100.
 
 ### Domain Context
 
 - **Side normalization**: open_long/close_short = buy (lifting asks), open_short/close_long = sell (hitting bids)
 - **CVD (Cumulative Volume Delta)**: Running sum of (buy_vol - sell_vol). Divergence from price = reversal signal.
 - **TFI (Trade Flow Imbalance)**: Normalized net flow. Near +1 = aggressive buying, near -1 = aggressive selling.
-- **OFI (Order Flow Imbalance)**: Changes in orderbook depth at best levels. Predicts short-term price moves.
+- **VPIN (Volume-synchronized Probability of Informed Trading)**: Rolling mean of |TFI|. High VPIN (~1) = one-sided toxic flow (informed traders). Low VPIN (~0) = balanced, uninformed flow. Predicts volatility spikes.
+- **OFI (Order Flow Imbalance)**: Weighted sum of depth changes across top 5 levels between consecutive OB snapshots. Positive = bid depth increasing (bullish pressure). Predicts short-term price moves.
+- **Microprice**: Qty-weighted mid-price. Skews toward the side with less depth (more aggressive). Deviation from mid indicates short-term directional pressure.
+- **Liquidation cascade**: Proxy for forced liquidation events. Magnitude = large trade count × price acceleration. Direction = signed by return direction. High values during price drops suggest cascading liquidations.
+- **Realized volatility**: Multi-horizon (short=10, med=50, long=200 batches). Short vol spikes during events, long vol captures regime. Ratio of short/long vol is a useful regime indicator.
 - **Funding rate**: Periodic payment between longs/shorts. Positive = longs pay shorts (bullish crowd). Large positive → potential long squeeze.
 - **Spread**: Wider spread = lower liquidity = higher adverse selection risk.
-- **Market regimes**: Trending (large directional moves), mean-reverting (range-bound), volatile (wide swings), low-liquidity (thin books).
+- **Market regimes**: Trending (large directional moves), mean-reverting (range-bound), volatile (wide swings), low-liquidity (thin books). Use realvol ratio + VPIN + spread to detect.
 
 ## What You CAN Do
 
@@ -161,7 +186,7 @@ Ordered by expected impact. Based on deep research into RL for trading (2025-202
 
 1. **Risk-Aware Reward**: Current reward = pnl - vol_penalty - dd_penalty. Try Sortino-style (only penalize downside vol), CVaR tail penalty for crypto's heavy tails, or use **EMA for mean/variance** (differentiable, less noisy than rolling window). See [RF-Agent](https://arxiv.org/html/2602.23876v1) for automated reward function discovery.
 
-2. **CNN + Attention Encoder (DeepLOB style)**: Replace flat MLP with temporal CNN over the (50, 24) observation window + multi-head attention. The obs is naturally a 2D image (time x features). Reference architecture:
+2. **CNN + Attention Encoder (DeepLOB style)**: Replace flat MLP with temporal CNN over the (50, 33) observation window + multi-head attention. The obs is naturally a 2D image (time x features). Reference architecture:
    ```python
    # Conv2d(in_channels, 32, kernel_size=(1,3)) → Conv2d(32, 64, (1,3)) → MultiheadAttention(64, 4)
    ```
@@ -171,7 +196,7 @@ Ordered by expected impact. Based on deep research into RL for trading (2025-202
 
 4. **Decision Transformer**: Reframe as offline sequence modeling — predict action conditioned on desired return-to-go. Handles non-stationarity via explicit regime labels. Try Critic-Guided DT for Q-value reweighting. Refs: [kzl/decision-transformer](https://github.com/kzl/decision-transformer), [critic-guided-decision-transformer](https://github.com/sharkwyf/critic-guided-decision-transformer).
 
-5. **Regime Conditioning (SAPPO/TimesNet)**: Detect market regime (trending/mean-reverting/volatile) from features 1,5,6,10,11. Use as multiplicative gate on PPO advantage (SAPPO) or feed regime latent state to policy (TimesNet + Actor-Critic).
+5. **Regime Conditioning (SAPPO/TimesNet)**: Detect market regime (trending/mean-reverting/volatile) from features 1,5,6,8,11-13,16,17 (returns, cvd, tfi, vpin, realvol, imbalance, spread). Use as multiplicative gate on PPO advantage (SAPPO) or feed regime latent state to policy (TimesNet + Actor-Critic).
 
 6. **Funding Rate Alpha**: Large funding rate changes predict short-term reversals. Add **Fourier features** for funding periodicity. Weight funding features higher or create explicit funding-based trading rules.
 
@@ -179,7 +204,7 @@ Ordered by expected impact. Based on deep research into RL for trading (2025-202
 
 8. **Temporal Encoding**: Add relative time deltas between steps as features. Fourier features for funding periodicity. Helps the network understand event spacing.
 
-9. **Position-Aware Features**: Add current position, hold duration, unrealized P&L as explicit observation features (augment the 24 env features in the forward pass, not in prepare.py).
+9. **Position-Aware Features**: Add current position, hold duration, unrealized P&L as explicit observation features (augment the 33 env features in the forward pass, not in prepare.py).
 
 10. **Curriculum Learning**: Start with easy regimes (trending), gradually add harder ones (choppy/volatile). Or start with longer episodes, reduce over time.
 
