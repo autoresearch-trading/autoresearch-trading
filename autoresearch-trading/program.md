@@ -2,14 +2,17 @@
 
 Autonomous RL research for DEX perpetual futures trading. You are an AI researcher experimenting with RL trading agents. Your goal is to maximize out-of-sample Sharpe ratio by iterating on the training code.
 
+**Monorepo note:** This project lives inside a larger repo. Always stage only `autoresearch-trading/` paths. Never use blind `git add -A` or `git add .`.
+
 ## Setup (run once at start)
 
 1. Read this file completely
 2. Read `prepare.py` to understand the environment and features
 3. Read `train.py` to understand the current agent
-4. Create a new experiment branch:
+4. **Agree on a run tag** with the user: propose a tag based on today's date (e.g. `mar10`). The branch `autoresearch/<tag>` must not already exist.
+5. Create the experiment branch:
    ```bash
-   git checkout -b autoresearch/experiment-$(date +%s)
+   git checkout -b autoresearch/<tag>
    ```
 5. Verify data is cached:
    ```bash
@@ -120,7 +123,7 @@ Edit `train.py` with your modification. Keep changes focused — one idea per ex
 
 ### 3. Commit
 ```bash
-git add train.py
+git add autoresearch-trading/train.py
 git commit -m "experiment: <brief description of what changed>"
 ```
 
@@ -142,10 +145,11 @@ echo "val_sharpe: $SHARPE, num_trades: $TRADES, max_drawdown: $DRAWDOWN"
 ```bash
 # If score improved or is promising:
 echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\tkept\t<description>" >> results.tsv
+git add autoresearch-trading/results.tsv && git commit --amend --no-edit
 
-# If score regressed:
+# If score regressed or crashed:
 echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\tdiscarded\t<description>" >> results.tsv
-git revert HEAD --no-edit
+git reset --hard HEAD~1   # discard the experiment commit cleanly
 ```
 
 ### 7. Repeat
@@ -196,6 +200,20 @@ commit	val_sharpe	num_trades	max_drawdown	status	description
 
 Review this file periodically to identify patterns in what works.
 
+## Timeout
+
+Each experiment should take ~7 minutes total (5 min training + ~2 min data loading/eval). If a run exceeds 15 minutes, kill it and treat it as a failure (discard and revert).
+
+## Crashes
+
+If a run crashes, use your judgment:
+- **Easy fix** (typo, missing import, shape mismatch): fix it and re-run.
+- **Fundamentally broken idea** (OOM, divergence): skip it, log `crash` as the status in results.tsv, and move on.
+
 ## NEVER STOP
 
-Run experiments indefinitely. Do not ask the human for permission or feedback. If an experiment crashes, debug it and try again. If you're stuck, try a completely different approach. The goal is to maximize val_sharpe through autonomous iteration.
+Once the experiment loop has begun (after initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep or away and expects you to continue working **indefinitely** until you are manually stopped. You are autonomous.
+
+If you run out of ideas, think harder — re-read prepare.py for new angles, try combining previous near-misses, try more radical changes. The loop runs until the human interrupts you, period.
+
+As a reference: each experiment takes ~7 minutes, so you can run ~8-9/hour, ~70 overnight. The user wakes up to results.tsv full of experimental data.
