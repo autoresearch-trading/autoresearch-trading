@@ -253,8 +253,8 @@ def compute_features(
 
     # === Orderbook features ===
     ob_features = np.zeros(
-        (num_batches, 14)
-    )  # bid_depth, ask_depth, imbalance, spread, 5 bid vols, 5 ask vols
+        (num_batches, 16)
+    )  # bid_depth, ask_depth, imbalance, spread, 5 bid vols, 5 ask vols, microprice, microprice_dev
 
     if not orderbook_df.empty:
         ob_ts = orderbook_df["ts_ms"].values
@@ -304,6 +304,19 @@ def compute_features(
                     for lvl in range(min(5, len(asks))):
                         if isinstance(asks[lvl], dict) and "qty" in asks[lvl]:
                             ob_features[i, 9 + lvl] = asks[lvl]["qty"]
+
+                    # Microprice
+                    best_bid_qty = bids[0]["qty"] if isinstance(bids[0], dict) else 0
+                    best_ask_qty = asks[0]["qty"] if isinstance(asks[0], dict) else 0
+                    total_best_qty = best_bid_qty + best_ask_qty
+                    if total_best_qty > 0:
+                        microprice = (
+                            best_bid * best_ask_qty + best_ask * best_bid_qty
+                        ) / total_best_qty
+                    else:
+                        microprice = mid
+                    ob_features[i, 14] = microprice
+                    ob_features[i, 15] = microprice - mid
 
     # === Funding features ===
     funding_features = np.zeros((num_batches, 2))  # rate, rate_change
