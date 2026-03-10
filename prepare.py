@@ -421,8 +421,18 @@ def compute_features(
     return features, batch_timestamps, batch_prices
 
 
+# Indices of features that get robust (median/IQR) normalization.
+# These are tail-heavy: net_volume, large_trade_count, vpin,
+# liq_cascade_mag, liq_cascade_dir, bid_depth, ask_depth, microprice
+ROBUST_FEATURE_INDICES = {2, 7, 8, 9, 10, 14, 15, 28}
+
+
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
-    """Rolling z-score normalization."""
+    """Hybrid rolling normalization.
+
+    Robust scaling (median/IQR) for tail-heavy features.
+    Rolling z-score (mean/std) for well-behaved features.
+    """
     if features.ndim != 2 or len(features) == 0:
         return features
 
@@ -431,11 +441,20 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
 
     for col in range(num_features):
         series = pd.Series(features[:, col])
-        rolling_mean = series.rolling(window=window, min_periods=100).mean()
-        rolling_std = series.rolling(window=window, min_periods=100).std()
 
-        # Z-score normalize, fill NaN with 0
-        z = (series - rolling_mean) / rolling_std.replace(0, 1)
+        if col in ROBUST_FEATURE_INDICES:
+            # Robust scaling: (x - median) / IQR
+            rolling_median = series.rolling(window=window, min_periods=100).median()
+            rolling_q75 = series.rolling(window=window, min_periods=100).quantile(0.75)
+            rolling_q25 = series.rolling(window=window, min_periods=100).quantile(0.25)
+            iqr = (rolling_q75 - rolling_q25).replace(0, 1)
+            z = (series - rolling_median) / iqr
+        else:
+            # Standard z-score
+            rolling_mean = series.rolling(window=window, min_periods=100).mean()
+            rolling_std = series.rolling(window=window, min_periods=100).std()
+            z = (series - rolling_mean) / rolling_std.replace(0, 1)
+
         normalized[:, col] = z.fillna(0).values
 
     return normalized
