@@ -1,0 +1,2 @@
+commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
+ed3f565	0.000000	8038	0.3646	0/25	baseline	multi-symbol PPO on CUDA, default hyperparams, 5min budget
