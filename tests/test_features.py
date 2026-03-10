@@ -396,3 +396,53 @@ class TestRealizedVol:
         realvol_short_col = 11
         # Last batch (volatile period) should have higher short vol than first batch (calm)
         assert features[-1, realvol_short_col] > features[0, realvol_short_col]
+
+
+class TestIntegration:
+    """End-to-end integration tests."""
+
+    def test_full_pipeline_feature_count(
+        self, make_trades, make_orderbook, make_funding
+    ):
+        """Final feature count should be 33."""
+        features, ts, prices = compute_features(
+            make_trades(n=500),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        assert features.shape == (5, 33)
+        assert len(ts) == 5
+        assert len(prices) == 5
+
+    def test_full_pipeline_with_normalization(
+        self, make_trades, make_orderbook, make_funding
+    ):
+        """Normalization should work on the new feature set."""
+        from prepare import normalize_features
+
+        features, _, _ = compute_features(
+            make_trades(n=1000),
+            make_orderbook(n=200),
+            make_funding(n=20),
+            trade_batch=100,
+        )
+        normalized = normalize_features(features)
+        assert normalized.shape == features.shape
+        assert not np.any(np.isnan(normalized))
+
+    def test_env_observation_space_adapts(
+        self, make_trades, make_orderbook, make_funding
+    ):
+        """TradingEnv observation space should reflect new feature count."""
+        from prepare import TradingEnv, normalize_features
+
+        features, _, prices = compute_features(
+            make_trades(n=5000),
+            make_orderbook(n=1000),
+            make_funding(n=100),
+            trade_batch=100,
+        )
+        features = normalize_features(features)
+        env = TradingEnv(features, prices, window_size=10)
+        assert env.observation_space.shape == (10, 33)

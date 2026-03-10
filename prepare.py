@@ -460,9 +460,12 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
+_FEATURE_VERSION = "v2"  # bump when feature set changes
+
+
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
     """Compute cache key from parameters."""
-    key = f"{symbol}_{start}_{end}_{trade_batch}"
+    key = f"{symbol}_{start}_{end}_{trade_batch}_{_FEATURE_VERSION}"
     return hashlib.md5(key.encode()).hexdigest()
 
 
