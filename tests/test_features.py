@@ -18,7 +18,7 @@ class TestComputeFeaturesBaseline:
             trades, ob, funding, trade_batch=100
         )
         assert features.shape[0] == 2  # 200 trades / 100 batch
-        assert features.shape[1] == 30  # 11 trade + 17 OB + 2 funding
+        assert features.shape[1] == 33  # 14 trade + 17 OB + 2 funding
         assert len(timestamps) == 2
         assert len(prices) == 2
 
@@ -31,13 +31,13 @@ class TestComputeFeaturesBaseline:
     def test_empty_orderbook(self, make_trades, empty_df, make_funding):
         features, _, _ = compute_features(make_trades(), empty_df, make_funding())
         # OB features should be zeros
-        assert features.shape[1] == 30
-        assert np.all(features[:, 11:28] == 0)  # OB columns are indices 11-27
+        assert features.shape[1] == 33
+        assert np.all(features[:, 14:31] == 0)  # OB columns are indices 14-30
 
     def test_empty_funding(self, make_trades, make_orderbook, empty_df):
         features, _, _ = compute_features(make_trades(), make_orderbook(), empty_df)
-        assert features.shape[1] == 30
-        assert np.all(features[:, 28:30] == 0)  # funding columns are indices 28-29
+        assert features.shape[1] == 33
+        assert np.all(features[:, 31:33] == 0)  # funding columns are indices 31-32
 
 
 class TestMicroprice:
@@ -51,7 +51,7 @@ class TestMicroprice:
         )
         funding = make_funding(n=5)
         features, _, _ = compute_features(trades, ob, funding, trade_batch=100)
-        microprice_col = 25  # first new column after 11 trade + 14 base OB features
+        microprice_col = 28  # first new column after 14 trade + 14 base OB features
         assert features.shape[1] >= 24  # at least has new features
         assert features[0, microprice_col] != 0.0
 
@@ -94,8 +94,8 @@ class TestMicroprice:
         )
 
         features, _, _ = compute_features(trades, ob, pd.DataFrame(), trade_batch=100)
-        microprice_col = 25
-        microprice_dev_col = 26
+        microprice_col = 28
+        microprice_dev_col = 29
         # microprice = (100*3 + 102*2) / (2+3) = 100.8
         assert abs(features[0, microprice_col] - 100.8) < 1e-6
         # mid = (100 + 102) / 2 = 101, deviation = 100.8 - 101 = -0.2
@@ -104,8 +104,8 @@ class TestMicroprice:
     def test_microprice_zero_when_no_ob(self, make_trades, empty_df, make_funding):
         """Microprice should be 0 when no orderbook data."""
         features, _, _ = compute_features(make_trades(), empty_df, make_funding())
-        microprice_col = 25
-        microprice_dev_col = 26
+        microprice_col = 28
+        microprice_dev_col = 29
         assert np.all(features[:, microprice_col] == 0.0)
         assert np.all(features[:, microprice_dev_col] == 0.0)
 
@@ -119,7 +119,7 @@ class TestOFI:
         ob = make_orderbook(n=50)
         funding = make_funding(n=5)
         features, _, _ = compute_features(trades, ob, funding, trade_batch=100)
-        ofi_col = 27  # after 8 trade + 16 OB (including microprice), OFI is OB col 16
+        ofi_col = 30  # after 8 trade + 16 OB (including microprice), OFI is OB col 16
         assert features.shape[1] >= 27  # 8 trade + 17 OB + 2 funding
 
     def test_ofi_detects_bid_increase(self):
@@ -172,7 +172,7 @@ class TestOFI:
             ]
         )
         features, _, _ = compute_features(trades, ob, pd.DataFrame(), trade_batch=100)
-        ofi_col = 27
+        ofi_col = 30
         # Batch 1 uses snapshot 2. OFI = sum w_l * (Δbid - Δask)
         assert features[1, ofi_col] > 0  # positive OFI = bid depth increased
 
@@ -181,7 +181,7 @@ class TestOFI:
         features, _, _ = compute_features(
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
-        ofi_col = 27
+        ofi_col = 30
         assert features[0, ofi_col] == 0.0
 
 
@@ -319,3 +319,80 @@ class TestLiquidationCascade:
         liq_dir_col = 10
         # Batch 2 has negative returns + large trades -> negative cascade direction
         assert features[2, liq_dir_col] < 0
+
+
+class TestRealizedVol:
+    """Test multi-horizon realized volatility features."""
+
+    def test_realvol_columns_exist(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=300),
+            make_orderbook(n=50),
+            make_funding(n=5),
+            trade_batch=100,
+        )
+        assert features.shape[1] >= 33  # 14 trade + 17 OB + 2 funding
+
+    def test_realvol_nonnegative(self, make_trades, make_orderbook, make_funding):
+        """Volatility should never be negative."""
+        features, _, _ = compute_features(
+            make_trades(n=500),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        realvol_short_col = 11  # after liq_cascade_direction
+        for offset in range(3):
+            assert np.all(features[:, realvol_short_col + offset] >= 0.0)
+
+    def test_realvol_zero_for_flat_price(self):
+        """Zero vol when price is constant."""
+        import pandas as pd
+
+        trades = pd.DataFrame(
+            {
+                "ts_ms": np.arange(500) * 1000 + 1_000_000,
+                "symbol": "TEST",
+                "trade_id": [f"t{i}" for i in range(500)],
+                "side": ["open_long"] * 500,
+                "qty": [1.0] * 500,
+                "price": [100.0] * 500,
+                "recv_ms": np.arange(500) * 1000 + 1_000_010,
+            }
+        )
+        features, _, _ = compute_features(
+            trades, pd.DataFrame(), pd.DataFrame(), trade_batch=100
+        )
+        realvol_short_col = 11
+        for offset in range(3):
+            assert np.all(features[:, realvol_short_col + offset] == 0.0)
+
+    def test_realvol_short_higher_during_volatile_period(self):
+        """Short-horizon vol should spike during volatile periods."""
+        import pandas as pd
+
+        rng = np.random.default_rng(42)
+        # 500 trades: first 200 calm, next 300 volatile
+        prices = np.concatenate(
+            [
+                100.0 + rng.normal(0, 0.01, 200).cumsum(),  # calm
+                100.0 + rng.normal(0, 1.0, 300).cumsum(),  # volatile
+            ]
+        )
+        trades = pd.DataFrame(
+            {
+                "ts_ms": np.arange(500) * 1000 + 1_000_000,
+                "symbol": "TEST",
+                "trade_id": [f"t{i}" for i in range(500)],
+                "side": rng.choice(["open_long", "open_short"], 500),
+                "qty": [1.0] * 500,
+                "price": prices,
+                "recv_ms": np.arange(500) * 1000 + 1_000_010,
+            }
+        )
+        features, _, _ = compute_features(
+            trades, pd.DataFrame(), pd.DataFrame(), trade_batch=100
+        )
+        realvol_short_col = 11
+        # Last batch (volatile period) should have higher short vol than first batch (calm)
+        assert features[-1, realvol_short_col] > features[0, realvol_short_col]

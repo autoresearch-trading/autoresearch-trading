@@ -260,6 +260,18 @@ def compute_features(
     abs_tfi_series = pd.Series(abs_tfi)
     vpin = abs_tfi_series.rolling(window=50, min_periods=1).mean().values
 
+    # Multi-horizon realized volatility
+    returns_series = pd.Series(returns)
+    realvol_short = (
+        returns_series.rolling(window=10, min_periods=1).std().fillna(0).values
+    )
+    realvol_med = (
+        returns_series.rolling(window=50, min_periods=1).std().fillna(0).values
+    )
+    realvol_long = (
+        returns_series.rolling(window=200, min_periods=1).std().fillna(0).values
+    )
+
     # Batch timestamps (use last trade in batch)
     batch_timestamps = ts_batched[:, -1]
     batch_prices = vwap
@@ -398,6 +410,9 @@ def compute_features(
             vpin,
             liq_cascade_magnitude,
             liq_cascade_direction,
+            realvol_short,
+            realvol_med,
+            realvol_long,
         ]
     )
 
