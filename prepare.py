@@ -253,8 +253,8 @@ def compute_features(
 
     # === Orderbook features ===
     ob_features = np.zeros(
-        (num_batches, 16)
-    )  # bid_depth, ask_depth, imbalance, spread, 5 bid vols, 5 ask vols, microprice, microprice_dev
+        (num_batches, 17)
+    )  # bid_depth, ask_depth, imbalance, spread, 5 bid vols, 5 ask vols, microprice, microprice_dev, ofi
 
     if not orderbook_df.empty:
         ob_ts = orderbook_df["ts_ms"].values
@@ -262,6 +262,9 @@ def compute_features(
         ob_asks = orderbook_df["asks"].values
 
         ob_idx = 0
+        prev_bid_vols = np.zeros(5)
+        prev_ask_vols = np.zeros(5)
+        prev_ob_valid = False
         for i in range(num_batches):
             t = batch_timestamps[i]
             # Advance to most recent orderbook snapshot <= batch timestamp
@@ -317,6 +320,36 @@ def compute_features(
                         microprice = mid
                     ob_features[i, 14] = microprice
                     ob_features[i, 15] = microprice - mid
+
+                    # OFI (multi-level)
+                    curr_bid_vols = np.array(
+                        [
+                            (
+                                bids[lvl]["qty"]
+                                if lvl < len(bids) and isinstance(bids[lvl], dict)
+                                else 0.0
+                            )
+                            for lvl in range(5)
+                        ]
+                    )
+                    curr_ask_vols = np.array(
+                        [
+                            (
+                                asks[lvl]["qty"]
+                                if lvl < len(asks) and isinstance(asks[lvl], dict)
+                                else 0.0
+                            )
+                            for lvl in range(5)
+                        ]
+                    )
+                    if prev_ob_valid:
+                        weights = np.array([1.0, 0.5, 1 / 3, 0.25, 0.2])
+                        delta_bid = curr_bid_vols - prev_bid_vols
+                        delta_ask = curr_ask_vols - prev_ask_vols
+                        ob_features[i, 16] = (weights * (delta_bid - delta_ask)).sum()
+                    prev_bid_vols = curr_bid_vols.copy()
+                    prev_ask_vols = curr_ask_vols.copy()
+                    prev_ob_valid = True
 
     # === Funding features ===
     funding_features = np.zeros((num_batches, 2))  # rate, rate_change
