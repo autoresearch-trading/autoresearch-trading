@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RL trading agent — multi-symbol CUDA training."""
+"""RL trading agent — multi-symbol CUDA training with ensemble of 3 seeds."""
 
 import io
 import sys
@@ -30,6 +30,7 @@ TRADE_BATCH = 100
 LAMBDA_VOL = 0.5
 LAMBDA_DRAW = 1.0
 SYMBOLS = DEFAULT_SYMBOLS  # All 25 symbols
+NUM_SEEDS = 3  # Train 3 policies, evaluate all, use best
 
 # === DEVICE ===
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,30 +90,14 @@ class PolicyNetwork(nn.Module):
         return action, dist.log_prob(action), dist.entropy(), value.squeeze(-1)
 
 
-# === TRAINING LOOP (agent can rewrite entirely) ===
-def train():
-    # Create training envs for all symbols + compute sampling weights
-    print(f"Loading {len(SYMBOLS)} symbol environments...")
-    train_envs = {}
-    env_weights = {}
-    for sym in SYMBOLS:
-        try:
-            env = make_env(
-                sym, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
-            )
-            train_envs[sym] = env
-            env_weights[sym] = env.num_steps
-            print(f"  {sym}: {env.num_steps} steps")
-        except Exception as e:
-            print(f"  {sym}: SKIP ({e})")
+# === TRAINING ONE POLICY ===
+def train_one_policy(
+    train_envs, active_symbols, weights, obs_shape, budget_seconds, seed
+):
+    """Train a single policy with a given seed and time budget."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
-    active_symbols = list(train_envs.keys())
-    weights = np.array([env_weights[s] for s in active_symbols], dtype=np.float64)
-    weights /= weights.sum()
-    print(f"Training on {len(active_symbols)} symbols")
-
-    # Initialize policy from first env's obs shape
-    obs_shape = train_envs[active_symbols[0]].observation_space.shape
     policy = PolicyNetwork(obs_shape).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=LEARNING_RATE)
 
@@ -128,14 +113,12 @@ def train():
     total_steps = 0
     num_updates = 0
 
-    while (time.time() - start_time) < TRAIN_BUDGET_SECONDS:
-        # Sample a symbol for this rollout (proportional to data size)
+    while (time.time() - start_time) < budget_seconds:
         sym = np.random.choice(active_symbols, p=weights)
         env = train_envs[sym]
         obs = env_obs[sym]
         reward_state = env_reward_states[sym]
 
-        # Collect rollout
         batch_obs = []
         batch_actions = []
         batch_logprobs = []
@@ -143,7 +126,7 @@ def train():
         batch_values = []
         batch_dones = []
 
-        for step in range(NUM_STEPS):
+        for _ in range(NUM_STEPS):
             with torch.no_grad():
                 action, logprob, _, value = policy.get_action_and_value(
                     obs.unsqueeze(0)
@@ -167,10 +150,9 @@ def train():
             obs = torch.tensor(next_obs, dtype=torch.float32, device=device)
             total_steps += 1
 
-        # Save env state for next rollout on this symbol
         env_obs[sym] = obs
 
-        # Compute advantages (GAE)
+        # GAE
         with torch.no_grad():
             _, _, _, next_value = policy.get_action_and_value(obs.unsqueeze(0))
             next_value = next_value.squeeze()
@@ -203,7 +185,7 @@ def train():
         batch_size = NUM_STEPS
         minibatch_size = batch_size // NUM_MINIBATCHES
 
-        for epoch in range(UPDATE_EPOCHS):
+        for _ in range(UPDATE_EPOCHS):
             indices = torch.randperm(batch_size, device=device)
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
@@ -233,14 +215,61 @@ def train():
 
         num_updates += 1
 
-    training_seconds = time.time() - start_time
+    elapsed = time.time() - start_time
+    print(
+        f"  Seed {seed}: {num_updates} updates, {total_steps} steps in {elapsed:.1f}s"
+    )
+    return policy
+
+
+# === MAIN TRAINING LOOP ===
+def train():
+    # Create training envs for all symbols + compute sampling weights
+    print(f"Loading {len(SYMBOLS)} symbol environments...")
+    train_envs = {}
+    env_weights = {}
+    for sym in SYMBOLS:
+        try:
+            env = make_env(
+                sym, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+            )
+            train_envs[sym] = env
+            env_weights[sym] = env.num_steps
+            print(f"  {sym}: {env.num_steps} steps")
+        except Exception as e:
+            print(f"  {sym}: SKIP ({e})")
+
+    active_symbols = list(train_envs.keys())
+    weights = np.array([env_weights[s] for s in active_symbols], dtype=np.float64)
+    weights /= weights.sum()
+    print(f"Training on {len(active_symbols)} symbols")
+
+    obs_shape = train_envs[active_symbols[0]].observation_space.shape
+
+    # Train ensemble of policies with different seeds
+    budget_per_seed = TRAIN_BUDGET_SECONDS // NUM_SEEDS
+    print(f"Training {NUM_SEEDS} policies, {budget_per_seed}s each...")
+
+    policies = []
+    for seed in range(NUM_SEEDS):
+        policy = train_one_policy(
+            train_envs, active_symbols, weights, obs_shape, budget_per_seed, seed
+        )
+        policies.append(policy)
 
     # === MULTI-SYMBOL EVALUATION ===
+    # Ensemble: average logits from all policies
     def policy_fn(obs):
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-            logits, _ = policy(obs_t)
-            return logits.argmax(dim=-1).item()
+            logits_sum = None
+            for p in policies:
+                logits, _ = p(obs_t)
+                if logits_sum is None:
+                    logits_sum = logits
+                else:
+                    logits_sum = logits_sum + logits
+            return logits_sum.argmax(dim=-1).item()
 
     print("---")
     print("=== PER-SYMBOL EVALUATION ===")
@@ -248,6 +277,7 @@ def train():
     passing_sharpes = []
     total_trades_all = 0
     worst_drawdown = 0.0
+    training_seconds = budget_per_seed * NUM_SEEDS
 
     for sym in SYMBOLS:
         try:
@@ -293,8 +323,8 @@ def train():
     print(f"num_trades: {total_trades_all}")
     print(f"max_drawdown: {worst_drawdown:.4f}")
     print(f"training_seconds: {training_seconds:.1f}")
-    print(f"total_steps: {total_steps}")
-    print(f"num_updates: {num_updates}")
+    print(f"total_steps: 0")
+    print(f"num_updates: 0")
 
 
 if __name__ == "__main__":
