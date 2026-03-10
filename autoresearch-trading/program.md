@@ -157,27 +157,44 @@ Go back to step 1. Review results.tsv to understand what works.
 
 ## Research Hints
 
-Ordered by expected impact:
+Ordered by expected impact. Based on deep research into RL for trading (2025-2026 state of the art).
 
-1. **Risk-Aware Reward**: Current reward = pnl - vol_penalty - dd_penalty. Try Sortino-style (only penalize downside vol), CVaR tail penalty, or EMA-based stats instead of rolling window.
+1. **Risk-Aware Reward**: Current reward = pnl - vol_penalty - dd_penalty. Try Sortino-style (only penalize downside vol), CVaR tail penalty for crypto's heavy tails, or use **EMA for mean/variance** (differentiable, less noisy than rolling window). See [RF-Agent](https://arxiv.org/html/2602.23876v1) for automated reward function discovery.
 
-2. **CNN + Attention Encoder**: Replace flat MLP with temporal CNN over the (50, 24) observation window + multi-head attention. DeepLOB-style architecture works well for orderbook features.
+2. **CNN + Attention Encoder (DeepLOB style)**: Replace flat MLP with temporal CNN over the (50, 24) observation window + multi-head attention. The obs is naturally a 2D image (time x features). Reference architecture:
+   ```python
+   # Conv2d(in_channels, 32, kernel_size=(1,3)) → Conv2d(32, 64, (1,3)) → MultiheadAttention(64, 4)
+   ```
+   See [DeepLOB guide](https://arxiv.org/html/2403.09267v4).
 
-3. **Multi-Symbol Training**: Train on all 25 symbols with shared encoder + per-symbol head. Proportional sampling by liquidity. Use BTC features as cross-asset context.
+3. **Multi-Symbol Training**: Train on all 25 symbols with shared encoder + per-symbol embedding. **Proportional sampling by liquidity** so BTC doesn't dominate. Use BTC features as cross-asset context for non-BTC symbols.
 
-4. **Decision Transformer**: Reframe as offline sequence modeling. Condition on desired return-to-go. Can extract good policies from historical data without reward shaping.
+4. **Decision Transformer**: Reframe as offline sequence modeling — predict action conditioned on desired return-to-go. Handles non-stationarity via explicit regime labels. Try Critic-Guided DT for Q-value reweighting. Refs: [kzl/decision-transformer](https://github.com/kzl/decision-transformer), [critic-guided-decision-transformer](https://github.com/sharkwyf/critic-guided-decision-transformer).
 
-5. **Regime Conditioning**: Detect market regime (trending/mean-reverting/volatile) from features 1,5,6,10,11. Use as multiplicative gate on policy output or as separate input channel.
+5. **Regime Conditioning (SAPPO/TimesNet)**: Detect market regime (trending/mean-reverting/volatile) from features 1,5,6,10,11. Use as multiplicative gate on PPO advantage (SAPPO) or feed regime latent state to policy (TimesNet + Actor-Critic).
 
-6. **Funding Rate Alpha**: Large funding rate changes predict short-term reversals. Weight funding features higher or create explicit funding-based trading rules.
+6. **Funding Rate Alpha**: Large funding rate changes predict short-term reversals. Add **Fourier features** for funding periodicity. Weight funding features higher or create explicit funding-based trading rules.
 
-7. **Adversarial Robustness**: Add Gaussian noise to observations during training. Forces policy to generalize rather than overfit to exact feature patterns.
+7. **Adversarial Robustness**: Add Gaussian noise to observations during training. Also consider **Bayesian adversarial training** with synthetic market data for extreme scenarios. Ref: [Bayesian-Robust-Trading](https://github.com/XiaHaochong98/Bayesian-Robust-Financial-Trading-with-Adversarial-Synthetic-Market-Data).
 
-8. **Curriculum Learning**: Start with easy regimes (trending), gradually add harder ones (choppy/volatile). Or start with longer episodes, reduce over time.
+8. **Temporal Encoding**: Add relative time deltas between steps as features. Fourier features for funding periodicity. Helps the network understand event spacing.
 
-9. **Position-Aware Features**: Add current position, hold duration, unrealized P&L as explicit observation features (augment the 24 env features).
+9. **Position-Aware Features**: Add current position, hold duration, unrealized P&L as explicit observation features (augment the 24 env features in the forward pass, not in prepare.py).
 
-10. **Ensemble**: Train N policies with different seeds, average their action probabilities. Reduces variance.
+10. **Curriculum Learning**: Start with easy regimes (trending), gradually add harder ones (choppy/volatile). Or start with longer episodes, reduce over time.
+
+11. **Ensemble**: Train N policies with different seeds, average their action probabilities. Reduces variance.
+
+12. **Conservative Offline RL** (CQL/IQL): Penalizes over-estimation in unseen states. Good for extracting policies from historical data without reward shaping. Ref: [FinRL Contest 2025](https://github.com/Open-Finance-Lab/FinRL_Contest_2025).
+
+### MPS Notes
+Some PyTorch ops may fail on MPS. If you hit an unsupported op, fall back to CPU for that operation:
+```python
+# If MPS fails on a specific op:
+tensor_cpu = tensor.to("cpu")
+result = problematic_op(tensor_cpu)
+result = result.to(device)
+```
 
 ## Output Format
 
