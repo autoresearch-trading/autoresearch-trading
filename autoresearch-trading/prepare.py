@@ -18,7 +18,33 @@ TRAIN_START = "2025-10-16"
 TRAIN_END = "2026-01-23"
 VAL_END = "2026-02-17"
 TEST_END = "2026-03-09"
-DEFAULT_SYMBOLS = ["BTC"]
+DEFAULT_SYMBOLS = [
+    "2Z",
+    "AAVE",
+    "ASTER",
+    "AVAX",
+    "BNB",
+    "BTC",
+    "CRV",
+    "DOGE",
+    "ENA",
+    "ETH",
+    "FARTCOIN",
+    "HYPE",
+    "KBONK",
+    "KPEPE",
+    "LDO",
+    "LINK",
+    "LTC",
+    "PENGU",
+    "PUMP",
+    "SOL",
+    "SUI",
+    "UNI",
+    "WLFI",
+    "XPL",
+    "XRP",
+]
 FEE_BPS = 5  # Taker fee in basis points
 
 DATA_ROOT = Path(__file__).parent / "data"

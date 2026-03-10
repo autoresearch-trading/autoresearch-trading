@@ -119,10 +119,10 @@ def train():
             reward = compute_reward(info, reward_state)
 
             batch_obs.append(obs)
-            batch_actions.append(action)
-            batch_logprobs.append(logprob)
+            batch_actions.append(action.squeeze())
+            batch_logprobs.append(logprob.squeeze())
             batch_rewards.append(reward)
-            batch_values.append(value)
+            batch_values.append(value.squeeze())
             batch_dones.append(done or truncated)
 
             if done or truncated:
@@ -135,9 +135,10 @@ def train():
         # Compute advantages (GAE)
         with torch.no_grad():
             _, _, _, next_value = policy.get_action_and_value(obs.unsqueeze(0))
+            next_value = next_value.squeeze()
 
         rewards = torch.tensor(batch_rewards, dtype=torch.float32, device=device)
-        values = torch.stack(batch_values)
+        values = torch.stack(batch_values).squeeze(-1)
         dones = torch.tensor(batch_dones, dtype=torch.float32, device=device)
 
         advantages = torch.zeros_like(rewards)
