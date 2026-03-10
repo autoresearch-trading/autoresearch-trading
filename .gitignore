@@ -56,3 +56,4 @@ questdb_data/
 # Temporary files
 *.tmp
 .tmp/
+.worktrees/
