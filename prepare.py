@@ -247,6 +247,14 @@ def compute_features(
         batch_qtys = qtys_batched[i]
         large_trade_count[i] = (batch_qtys > qty_95).sum()
 
+    # Liquidation cascade proxy
+    price_accel = np.zeros(num_batches)
+    price_accel[2:] = np.abs(
+        returns[2:] - returns[1:-1]
+    )  # need 2 returns for acceleration
+    liq_cascade_magnitude = large_trade_count * price_accel
+    liq_cascade_direction = np.sign(returns) * liq_cascade_magnitude
+
     # VPIN (flow toxicity): rolling mean of |TFI|
     abs_tfi = np.abs(tfi)
     abs_tfi_series = pd.Series(abs_tfi)
@@ -388,6 +396,8 @@ def compute_features(
             tfi,
             large_trade_count,
             vpin,
+            liq_cascade_magnitude,
+            liq_cascade_direction,
         ]
     )
 

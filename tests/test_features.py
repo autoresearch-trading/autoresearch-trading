@@ -18,7 +18,7 @@ class TestComputeFeaturesBaseline:
             trades, ob, funding, trade_batch=100
         )
         assert features.shape[0] == 2  # 200 trades / 100 batch
-        assert features.shape[1] == 28  # 9 trade + 17 OB + 2 funding
+        assert features.shape[1] == 30  # 11 trade + 17 OB + 2 funding
         assert len(timestamps) == 2
         assert len(prices) == 2
 
@@ -31,13 +31,13 @@ class TestComputeFeaturesBaseline:
     def test_empty_orderbook(self, make_trades, empty_df, make_funding):
         features, _, _ = compute_features(make_trades(), empty_df, make_funding())
         # OB features should be zeros
-        assert features.shape[1] == 28
-        assert np.all(features[:, 9:26] == 0)  # OB columns are indices 9-25
+        assert features.shape[1] == 30
+        assert np.all(features[:, 11:28] == 0)  # OB columns are indices 11-27
 
     def test_empty_funding(self, make_trades, make_orderbook, empty_df):
         features, _, _ = compute_features(make_trades(), make_orderbook(), empty_df)
-        assert features.shape[1] == 28
-        assert np.all(features[:, 26:28] == 0)  # funding columns are indices 26-27
+        assert features.shape[1] == 30
+        assert np.all(features[:, 28:30] == 0)  # funding columns are indices 28-29
 
 
 class TestMicroprice:
@@ -51,7 +51,7 @@ class TestMicroprice:
         )
         funding = make_funding(n=5)
         features, _, _ = compute_features(trades, ob, funding, trade_batch=100)
-        microprice_col = 23  # first new column after 9 trade + 14 base OB features
+        microprice_col = 25  # first new column after 11 trade + 14 base OB features
         assert features.shape[1] >= 24  # at least has new features
         assert features[0, microprice_col] != 0.0
 
@@ -94,8 +94,8 @@ class TestMicroprice:
         )
 
         features, _, _ = compute_features(trades, ob, pd.DataFrame(), trade_batch=100)
-        microprice_col = 23
-        microprice_dev_col = 24
+        microprice_col = 25
+        microprice_dev_col = 26
         # microprice = (100*3 + 102*2) / (2+3) = 100.8
         assert abs(features[0, microprice_col] - 100.8) < 1e-6
         # mid = (100 + 102) / 2 = 101, deviation = 100.8 - 101 = -0.2
@@ -104,8 +104,8 @@ class TestMicroprice:
     def test_microprice_zero_when_no_ob(self, make_trades, empty_df, make_funding):
         """Microprice should be 0 when no orderbook data."""
         features, _, _ = compute_features(make_trades(), empty_df, make_funding())
-        microprice_col = 23
-        microprice_dev_col = 24
+        microprice_col = 25
+        microprice_dev_col = 26
         assert np.all(features[:, microprice_col] == 0.0)
         assert np.all(features[:, microprice_dev_col] == 0.0)
 
@@ -119,7 +119,7 @@ class TestOFI:
         ob = make_orderbook(n=50)
         funding = make_funding(n=5)
         features, _, _ = compute_features(trades, ob, funding, trade_batch=100)
-        ofi_col = 25  # after 8 trade + 16 OB (including microprice), OFI is OB col 16
+        ofi_col = 27  # after 8 trade + 16 OB (including microprice), OFI is OB col 16
         assert features.shape[1] >= 27  # 8 trade + 17 OB + 2 funding
 
     def test_ofi_detects_bid_increase(self):
@@ -172,7 +172,7 @@ class TestOFI:
             ]
         )
         features, _, _ = compute_features(trades, ob, pd.DataFrame(), trade_batch=100)
-        ofi_col = 25
+        ofi_col = 27
         # Batch 1 uses snapshot 2. OFI = sum w_l * (Δbid - Δask)
         assert features[1, ofi_col] > 0  # positive OFI = bid depth increased
 
@@ -181,7 +181,7 @@ class TestOFI:
         features, _, _ = compute_features(
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
-        ofi_col = 25
+        ofi_col = 27
         assert features[0, ofi_col] == 0.0
 
 
@@ -244,3 +244,78 @@ class TestVPIN:
         )
         vpin_col = 8
         assert features[-1, vpin_col] < 0.1
+
+
+class TestLiquidationCascade:
+    """Test liquidation cascade proxy features."""
+
+    def test_cascade_columns_exist(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=300),
+            make_orderbook(n=50),
+            make_funding(n=5),
+            trade_batch=100,
+        )
+        # After adding 2 liq cascade features, total trade features = 11
+        assert features.shape[1] >= 30  # 11 trade + 17 OB + 2 funding
+
+    def test_cascade_zero_when_no_large_trades(self):
+        """No large trades -> cascade score = 0."""
+        import pandas as pd
+
+        # All trades same small size -> no "large" trades
+        trades = pd.DataFrame(
+            {
+                "ts_ms": np.arange(300) * 1000 + 1_000_000,
+                "symbol": "TEST",
+                "trade_id": [f"t{i}" for i in range(300)],
+                "side": ["open_long"] * 300,
+                "qty": [1.0] * 300,  # uniform qty
+                "price": [100.0] * 300,  # flat price -> no acceleration
+                "recv_ms": np.arange(300) * 1000 + 1_000_010,
+            }
+        )
+        features, _, _ = compute_features(
+            trades, pd.DataFrame(), pd.DataFrame(), trade_batch=100
+        )
+        liq_mag_col = 9
+        # No large trades AND flat price -> magnitude = 0
+        assert np.all(features[:, liq_mag_col] == 0.0)
+
+    def test_cascade_nonzero_during_crash(self):
+        """Large trades + price drop -> negative cascade direction."""
+        import pandas as pd
+
+        prices = np.concatenate(
+            [
+                np.full(100, 100.0),  # batch 0: flat
+                np.full(100, 100.0),  # batch 1: flat
+                np.linspace(100, 90, 100),  # batch 2: crash
+            ]
+        )
+        qtys = np.concatenate(
+            [
+                np.full(100, 1.0),  # batch 0: small
+                np.full(100, 1.0),  # batch 1: small
+                np.linspace(
+                    1, 1000, 100
+                ),  # batch 2: varied, top values exceed 95th pct
+            ]
+        )
+        trades = pd.DataFrame(
+            {
+                "ts_ms": np.arange(300) * 1000 + 1_000_000,
+                "symbol": "TEST",
+                "trade_id": [f"t{i}" for i in range(300)],
+                "side": ["open_short"] * 300,
+                "qty": qtys,
+                "price": prices,
+                "recv_ms": np.arange(300) * 1000 + 1_000_010,
+            }
+        )
+        features, _, _ = compute_features(
+            trades, pd.DataFrame(), pd.DataFrame(), trade_batch=100
+        )
+        liq_dir_col = 10
+        # Batch 2 has negative returns + large trades -> negative cascade direction
+        assert features[2, liq_dir_col] < 0
