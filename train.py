@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""RL trading agent. This file is modified by the autoresearch agent."""
+"""RL trading agent — multi-symbol CUDA training."""
 
+import io
+import sys
 import time
 
 import numpy as np
 import torch
 import torch.nn as nn
-from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 from torch.distributions import Categorical
+
+from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # === HYPERPARAMETERS (agent tunes these) ===
 ALGO = "PPO"
@@ -26,10 +29,11 @@ WINDOW_SIZE = 50
 TRADE_BATCH = 100
 LAMBDA_VOL = 0.5
 LAMBDA_DRAW = 1.0
-SYMBOL = "BTC"
+SYMBOLS = DEFAULT_SYMBOLS  # All 25 symbols
 
 # === DEVICE ===
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"device: {device}")
 
 
 # === REWARD FUNCTION (agent redesigns this) ===
@@ -86,21 +90,50 @@ class PolicyNetwork(nn.Module):
 
 # === TRAINING LOOP (agent can rewrite entirely) ===
 def train():
-    env = make_env(SYMBOL, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH)
-    obs_shape = env.observation_space.shape
+    # Create training envs for all symbols + compute sampling weights
+    print(f"Loading {len(SYMBOLS)} symbol environments...")
+    train_envs = {}
+    env_weights = {}
+    for sym in SYMBOLS:
+        try:
+            env = make_env(
+                sym, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+            )
+            train_envs[sym] = env
+            env_weights[sym] = env.num_steps
+            print(f"  {sym}: {env.num_steps} steps")
+        except Exception as e:
+            print(f"  {sym}: SKIP ({e})")
 
+    active_symbols = list(train_envs.keys())
+    weights = np.array([env_weights[s] for s in active_symbols], dtype=np.float64)
+    weights /= weights.sum()
+    print(f"Training on {len(active_symbols)} symbols")
+
+    # Initialize policy from first env's obs shape
+    obs_shape = train_envs[active_symbols[0]].observation_space.shape
     policy = PolicyNetwork(obs_shape).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=LEARNING_RATE)
 
-    obs, _ = env.reset()
-    obs = torch.tensor(obs, dtype=torch.float32, device=device)
-    reward_state = {}
+    # Initialize all envs
+    env_obs = {}
+    env_reward_states = {}
+    for sym in active_symbols:
+        obs, _ = train_envs[sym].reset()
+        env_obs[sym] = torch.tensor(obs, dtype=torch.float32, device=device)
+        env_reward_states[sym] = {}
 
     start_time = time.time()
     total_steps = 0
     num_updates = 0
 
     while (time.time() - start_time) < TRAIN_BUDGET_SECONDS:
+        # Sample a symbol for this rollout (proportional to data size)
+        sym = np.random.choice(active_symbols, p=weights)
+        env = train_envs[sym]
+        obs = env_obs[sym]
+        reward_state = env_reward_states[sym]
+
         # Collect rollout
         batch_obs = []
         batch_actions = []
@@ -128,9 +161,13 @@ def train():
             if done or truncated:
                 next_obs, _ = env.reset()
                 reward_state = {}
+                env_reward_states[sym] = reward_state
 
             obs = torch.tensor(next_obs, dtype=torch.float32, device=device)
             total_steps += 1
+
+        # Save env state for next rollout on this symbol
+        env_obs[sym] = obs
 
         # Compute advantages (GAE)
         with torch.no_grad():
@@ -197,21 +234,63 @@ def train():
 
     training_seconds = time.time() - start_time
 
-    # === EVALUATION ===
-    env_test = make_env(
-        SYMBOL, "test", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
-    )
-
+    # === MULTI-SYMBOL EVALUATION ===
     def policy_fn(obs):
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             logits, _ = policy(obs_t)
             return logits.argmax(dim=-1).item()
 
-    val_sharpe = evaluate(env_test, policy_fn)
+    print("---")
+    print("=== PER-SYMBOL EVALUATION ===")
+
+    passing_sharpes = []
+    total_trades_all = 0
+    worst_drawdown = 0.0
+
+    for sym in SYMBOLS:
+        try:
+            env_test = make_env(
+                sym, "test", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+            )
+            # Capture evaluate() output to avoid cluttering stdout
+            captured = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = captured
+            sharpe = evaluate(env_test, policy_fn)
+            sys.stdout = old_stdout
+            eval_output = captured.getvalue()
+
+            # Parse num_trades and max_drawdown from evaluate() output
+            trades = 0
+            max_dd = 0.0
+            for line in eval_output.strip().split("\n"):
+                if line.startswith("num_trades:"):
+                    trades = int(line.split()[1])
+                elif line.startswith("max_drawdown:"):
+                    max_dd = float(line.split()[1])
+
+            status = "PASS" if sharpe > 0 else "FAIL"
+            print(
+                f"  {sym}: sharpe={sharpe:.4f} trades={trades} dd={max_dd:.4f} [{status}]"
+            )
+
+            if sharpe > 0:
+                passing_sharpes.append(sharpe)
+            total_trades_all += trades
+            worst_drawdown = max(worst_drawdown, max_dd)
+        except Exception as e:
+            print(f"  {sym}: ERROR ({e})")
+
+    # === PORTFOLIO SUMMARY ===
+    portfolio_sharpe = np.mean(passing_sharpes) if passing_sharpes else 0.0
 
     print("---")
-    print(f"val_sharpe: {val_sharpe:.6f}")
+    print("=== PORTFOLIO SUMMARY ===")
+    print(f"symbols_passing: {len(passing_sharpes)}/{len(SYMBOLS)}")
+    print(f"val_sharpe: {portfolio_sharpe:.6f}")
+    print(f"num_trades: {total_trades_all}")
+    print(f"max_drawdown: {worst_drawdown:.4f}")
     print(f"training_seconds: {training_seconds:.1f}")
     print(f"total_steps: {total_steps}")
     print(f"num_updates: {num_updates}")
