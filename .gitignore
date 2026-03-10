@@ -11,7 +11,7 @@ build/
 dist/
 
 # Autoresearch caches
-autoresearch-trading/.cache/
+.cache/
 
 # Environment
 .env

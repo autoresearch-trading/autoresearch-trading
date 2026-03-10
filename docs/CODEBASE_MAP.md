@@ -1,5 +1,5 @@
 ---
-last_mapped: 2026-03-10T06:15:00Z
+last_mapped: 2026-03-10T06:20:00Z
 total_files: 17
 total_tokens: 25853
 ---
@@ -20,7 +20,7 @@ graph TB
     subgraph "GitHub Actions"
         Sync["daily_sync.yml<br/>(2AM UTC)"]
     end
-    subgraph "autoresearch-trading/"
+    subgraph "Repo Root"
         Prepare["prepare.py<br/>(FIXED: env, features, eval)"]
         Train["train.py<br/>(AGENT MODIFIES)"]
         Program["program.md<br/>(agent instructions)"]
@@ -32,7 +32,7 @@ graph TB
     Fly -->|"sync_cloud_data.sh"| R2
     Sync -->|triggers| Fly
     R2 -->|"rclone sync / fetch_cloud_data.sh"| Local
-    Local -->|"symlink: data -> ../data"| Prepare
+    Local -->|"data/"| Prepare
     Prepare -->|"make_env(), evaluate()"| Train
     Program -->|"prompt"| Agent
     Agent -->|"modifies"| Train
@@ -45,23 +45,21 @@ graph TB
 autoresearch-trading/              # repo root
 ├── .github/workflows/
 │   └── daily_sync.yml             # Fly.io → R2 daily at 2AM UTC
-├── autoresearch-trading/          # RL research project (self-contained)
-│   ├── .cache/                    # cached .npz feature files (gitignored)
-│   ├── data -> ../data            # symlink to repo-level data/
-│   ├── .python-version            # 3.12
-│   ├── pyproject.toml             # torch, gymnasium, numpy, pandas, pyarrow
-│   ├── uv.lock                    # pinned dependencies
-│   ├── prepare.py                 # FIXED: data loading, features, TradingEnv, evaluate()
-│   ├── train.py                   # MUTABLE: agent rewrites this each experiment
-│   └── program.md                 # agent instructions (Karpathy autoresearch pattern)
+├── .cache/                        # cached .npz feature files (gitignored)
 ├── data/                          # 36GB Hive-partitioned Parquet (gitignored)
 │   ├── trades/symbol={SYM}/date={DATE}/*.parquet
 │   ├── orderbook/symbol={SYM}/date={DATE}/*.parquet
 │   └── funding/symbol={SYM}/date={DATE}/*.parquet
+├── docs/plans/                    # design docs and implementation plans
 ├── scripts/
 │   ├── sync_cloud_data.sh         # Fly.io → R2 (used by daily_sync workflow)
 │   └── fetch_cloud_data.sh        # R2 → local (superseded by rclone)
-├── docs/plans/                    # design docs and implementation plans
+├── .python-version                # 3.12
+├── pyproject.toml                 # torch, gymnasium, numpy, pandas, pyarrow
+├── uv.lock                        # pinned dependencies
+├── prepare.py                     # FIXED: data loading, features, TradingEnv, evaluate()
+├── train.py                       # MUTABLE: agent rewrites this each experiment
+├── program.md                     # agent instructions (Karpathy autoresearch pattern)
 ├── CLAUDE.md                      # repo-level Claude Code instructions
 ├── README.md                      # project overview
 └── .gitignore                     # excludes data/, .cache/, .env, logs
@@ -69,7 +67,7 @@ autoresearch-trading/              # repo root
 
 ## Module Guide
 
-### autoresearch-trading/ (RL Research Project)
+### Root (RL Research Project)
 
 **Purpose**: Autonomous RL research for DEX perpetual futures trading
 **Entry point**: `uv run train.py`
@@ -154,7 +152,7 @@ sequenceDiagram
 
 - **Karpathy autoresearch pattern**: `prepare.py` (fixed) + `train.py` (agent modifies) + `program.md` (human iterates)
 - **Commit style**: Conventional commits (`feat:`, `fix:`, `chore:`, `experiment:`)
-- **Git safety**: Only stage `autoresearch-trading/` paths, never `git add -A`
+- **Git safety**: Only stage specific files, never `git add -A`
 - **Experiment tracking**: `results.tsv` with columns: commit, val_sharpe, num_trades, max_drawdown, status, description
 - **Output format**: Greppable `key: value` lines for machine parsing
 
@@ -164,7 +162,7 @@ sequenceDiagram
 
 2. **`val_sharpe` uses test split**: Despite the name, `evaluate()` runs on the test split (2026-02-17 to 2026-03-09), not validation. The naming is intentional but confusing.
 
-3. **Data symlink**: `autoresearch-trading/data -> ../data` must exist. `prepare.py` resolves `DATA_ROOT` relative to its own `__file__` location.
+3. **Path resolution**: `prepare.py` resolves `DATA_ROOT` and `CACHE_DIR` relative to its own `__file__` location — `./data/` and `./.cache/`.
 
 4. **Cache invalidation**: Feature cache keys on `(symbol, start, end, trade_batch)`. Changing `trade_batch` in `train.py` triggers recompute. Changing feature engineering requires manual `.cache/` deletion.
 
@@ -176,14 +174,14 @@ sequenceDiagram
 
 ## Navigation Guide
 
-**To start an autoresearch session**: `cd autoresearch-trading && claude --dangerously-skip-permissions -p "$(cat program.md)"`
+**To start an autoresearch session**: `claude --dangerously-skip-permissions -p "$(cat program.md)"`
 
 **To sync data from R2**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only`
 
-**To modify the RL agent**: Edit `autoresearch-trading/train.py` only
+**To modify the RL agent**: Edit `train.py` only
 
 **To change features or environment**: You can't — `prepare.py` is fixed by design
 
 **To add a new symbol**: Add to `DEFAULT_SYMBOLS` in `prepare.py` and re-cache
 
-**To clear feature cache**: `rm -rf autoresearch-trading/.cache/`
+**To clear feature cache**: `rm -rf .cache/`

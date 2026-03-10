@@ -2,7 +2,7 @@
 
 Autonomous RL research for DEX perpetual futures trading. You are an AI researcher experimenting with RL trading agents. Your goal is to maximize out-of-sample Sharpe ratio by iterating on the training code.
 
-**Monorepo note:** This project lives inside a larger repo. Always stage only `autoresearch-trading/` paths. Never use blind `git add -A` or `git add .`.
+**Git note:** Never use blind `git add -A` or `git add .`. Only stage the files you changed.
 
 ## Setup (run once at start)
 
@@ -123,7 +123,7 @@ Edit `train.py` with your modification. Keep changes focused — one idea per ex
 
 ### 3. Commit
 ```bash
-git add autoresearch-trading/train.py
+git add train.py
 git commit -m "experiment: <brief description of what changed>"
 ```
 
@@ -145,7 +145,7 @@ echo "val_sharpe: $SHARPE, num_trades: $TRADES, max_drawdown: $DRAWDOWN"
 ```bash
 # If score improved or is promising:
 echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\tkept\t<description>" >> results.tsv
-git add autoresearch-trading/results.tsv && git commit --amend --no-edit
+git add results.tsv && git commit --amend --no-edit
 
 # If score regressed or crashed:
 echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\tdiscarded\t<description>" >> results.tsv

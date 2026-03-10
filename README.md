@@ -14,6 +14,6 @@ Sync from R2: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --che
 
 ## Autoresearch Trading
 
-Autonomous RL research for DEX perpetual futures. See `autoresearch-trading/program.md`.
+Autonomous RL research for DEX perpetual futures. See `program.md`.
 
-Launch: `cd autoresearch-trading && claude --dangerously-skip-permissions -p "$(cat program.md)"`
+Launch: `claude --dangerously-skip-permissions -p "$(cat program.md)"`
