@@ -64,6 +64,32 @@ def compute_reward(info, reward_state):
     return reward
 
 
+# === RUNNING REWARD NORMALIZER ===
+class RewardNormalizer:
+    """Welford's online algorithm for running variance."""
+
+    def __init__(self):
+        self.count = 0
+        self.mean = 0.0
+        self.M2 = 0.0
+
+    def update(self, x):
+        self.count += 1
+        delta = x - self.mean
+        self.mean += delta / self.count
+        delta2 = x - self.mean
+        self.M2 += delta * delta2
+
+    @property
+    def std(self):
+        if self.count < 2:
+            return 1.0
+        return max(np.sqrt(self.M2 / self.count), 1e-8)
+
+    def normalize(self, x):
+        return x / self.std
+
+
 # === NETWORK (agent redesigns this) ===
 class PolicyNetwork(nn.Module):
     def __init__(self, obs_shape, n_actions=3):
@@ -100,6 +126,7 @@ def train_one_policy(
 
     policy = PolicyNetwork(obs_shape).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=LEARNING_RATE)
+    reward_norm = RewardNormalizer()
 
     # Initialize all envs
     env_obs = {}
@@ -133,7 +160,9 @@ def train_one_policy(
                 )
 
             next_obs, _, done, truncated, info = env.step(action.item())
-            reward = compute_reward(info, reward_state)
+            raw_reward = compute_reward(info, reward_state)
+            reward_norm.update(raw_reward)
+            reward = reward_norm.normalize(raw_reward)
 
             batch_obs.append(obs)
             batch_actions.append(action.squeeze())
