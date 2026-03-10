@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-# Apple Silicon development environment variables
-
-export ARCHFLAGS="-arch arm64"
-export TA_INCLUDE_PATH=/opt/homebrew/include
-export TA_LIBRARY_PATH=/opt/homebrew/lib
-export LDFLAGS="-L/opt/homebrew/lib"
-export CPPFLAGS="-I/opt/homebrew/include"
-export OPENBLAS=/opt/homebrew/opt/openblas
