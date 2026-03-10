@@ -10,6 +10,9 @@ dependencies = [
     "pyarrow>=15.0",
 ]
 
+[tool.setuptools]
+py-modules = ["prepare", "train"]
+
 [build-system]
 requires = ["setuptools>=65"]
 build-backend = "setuptools.build_meta"
