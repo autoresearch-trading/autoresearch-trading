@@ -38,27 +38,28 @@ print(f"device: {device}")
 
 # === REWARD FUNCTION (agent redesigns this) ===
 def compute_reward(info, reward_state):
-    """Compute reward from environment info dict.
+    """Sortino-style reward: only penalize downside volatility.
 
     info contains: step_pnl, position, equity, drawdown, trade_count, hold_duration
     reward_state is a mutable dict for tracking rolling statistics.
     """
     pnl = info["step_pnl"]
 
-    # Track rolling P&L std for volatility penalty
+    # Track rolling downside deviation (Sortino-style)
     reward_state.setdefault("pnl_history", [])
     reward_state["pnl_history"].append(pnl)
     if len(reward_state["pnl_history"]) > 100:
         reward_state["pnl_history"] = reward_state["pnl_history"][-100:]
 
-    vol = (
-        np.std(reward_state["pnl_history"])
-        if len(reward_state["pnl_history"]) > 10
-        else 0
-    )
+    if len(reward_state["pnl_history"]) > 10:
+        negatives = [p for p in reward_state["pnl_history"] if p < 0]
+        downside_vol = np.std(negatives) if len(negatives) > 2 else 0
+    else:
+        downside_vol = 0
+
     dd = info["drawdown"]
 
-    reward = pnl - LAMBDA_VOL * vol - LAMBDA_DRAW * dd
+    reward = pnl - LAMBDA_VOL * downside_vol - LAMBDA_DRAW * dd
     return reward
 
 
