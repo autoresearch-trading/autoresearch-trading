@@ -1,1 +1,0 @@
-"""Paper trading unit tests."""
