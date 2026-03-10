@@ -2,38 +2,65 @@
 
 ## Codebase Overview
 
-A **neurosymbolic trading bot for DEX perpetuals** combining tape-reading signals (CVD, TFI, OFI) with ATR-based regime detection. The system spans async data collection from Pacifica API, Bytewax-powered signal processing, QuestDB persistence, event-driven backtesting, and paper trading with circuit breakers.
+**DEX perpetual futures data + autonomous RL research.** This repo contains ~36GB of Hive-partitioned Parquet data (trades, orderbook, funding) for 25 crypto symbols collected from Pacifica API, plus an autonomous RL research project (`autoresearch-trading/`) that trains trading agents on this data.
 
-**Stack**: Python 3.12+, Bytewax (stream processing), QuestDB (time-series DB), Pydantic (config), Parquet (storage), TA-Lib (indicators)
+**Stack**: Python 3.12+, PyTorch, Gymnasium, NumPy, Pandas, PyArrow
 
-**Structure**: Data collector (`src/collector/`) polls API → Parquet files → Signal engine (`signal-engine/src/`) computes signals → QuestDB → Backtest/Paper trading
+**Structure**:
+- `data/` — Parquet data: `{trades,orderbook,funding}/symbol={SYM}/date={YYYY-MM-DD}/*.parquet` (gitignored, synced from Cloudflare R2)
+- `autoresearch-trading/` — Autonomous RL research: `prepare.py` (fixed env), `train.py` (agent modifies), `program.md` (agent instructions)
+- `scripts/` — `sync_cloud_data.sh` (Fly.io->R2), `fetch_cloud_data.sh` (R2->local)
+- `.github/workflows/daily_sync.yml` — Daily data sync from Fly.io to R2
 
-For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
+**Data sync**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only`
 
-## Project Structure & Module Organization
-The pipeline is split across two Python packages. `src/collector/` contains the Pacifica REST client, async live runner, and storage adapters. Operational entry points live under `scripts/` (use `collect_data.py` locally, `collect_all_symbols_cloud.py` in production). Signal analytics are isolated in `signal-engine/src/`, with supporting scripts in `signal-engine/scripts/` and dedicated tests under `signal-engine/tests/`. Shared configuration lives in `config/`; infra manifests live in `deploy/` and `docker/`. Dashboards are in `dashboards/`; `tests/` targets collector flows.
+# The Framework
 
-## Build, Test, and Development Commands
-Activate `.venv` (`python -m venv .venv && source .venv/bin/activate`). Core workflows are wrapped in the Makefile:
+Systematic optimization through repeatable iteration.
 
-```bash
-make install          # install collector + signal-engine deps
-make test             # run all collector + signal-engine tests
-make lint             # flake8 + black --check + isort --check + mypy
-make collect-data     # launch live collector against local Parquet sink
-make signal-pipeline  # dry-run signal pipeline with sample inputs
-```
+## 1. Understand the Problem
 
-For Apple Silicon, use `./setup-arm64.sh` or `make -f Makefile.local install` to provision TA-Lib.
+Know what you're optimizing for. Understand the constraints, the metrics, and what success looks like.
 
-## Coding Style & Naming Conventions
-Python 3.12+ (tested on 3.13) with 4-space indentation is standard. Keep modules and variables snake_case, classes in CapWords, and CLI subcommands hyphenated. Type hints are required for new public APIs; match the docstrings already present in `src/collector/`. Format with `black` (line length 88) and organize imports via `isort`. Run `flake8` and `mypy` locally before pushing.
+## 2. Understand Previous Attempts
 
-## Testing Guidelines
-Unit and integration suites use `pytest`. Place collector tests in `tests/` and signal-engine coverage in `signal-engine/tests/{unit,integration}`. Mirror existing naming (`test_<feature>.py`) and add fixtures under `tests/fixtures/` when shared state is needed. Run `make test`; for quick iteration call `pytest tests/test_transform.py -k <case>` or the narrower make targets (`test-unit`, `test-integration`). Add regression tests before modifying data transforms or Bytewax stages.
+Review what's been tried before. Learn from past successes and failures. Don't repeat mistakes.
 
-## Commit & Pull Request Guidelines
-Follow Conventional Commits (`feat:`, `fix:`, `chore:`). Scope commits narrowly and include updated docs or dashboards when behaviour changes. Pull requests must describe the motivation, list functional or test coverage, and link to tracking issues. Attach screenshots when dashboards change. Request review from a maintainer, ensure CI is green, and confirm configuration files remain free of secrets.
+## 3. Use Tools to Identify Inefficiencies
 
-## Environment & Configuration Tips
-Copy `.env.example` to `.env` and set `PACIFICA_NETWORK`, API base URLs, and credentials before running collectors. Use `deploy/docker-compose.yml` to boot QuestDB locally via `make docker-up`, and stop services with `make docker-down`. To inspect live Parquet output, run `streamlit run dashboards/app.py` while the collector is active.
+Use analysis tools (jq, python, perl via command line) to examine program traces and identify optimization opportunities from actual execution data.
+
+## 4. Use the Web to Research
+
+Research techniques, algorithms, and approaches others have used for similar problems.
+
+**Exa MCP Quick Reference:**
+
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `web_search_exa` | General web search | `query`, `numResults=8`, `type="auto"\|"fast"\|"deep"` |
+| `deep_search_exa` | Deep research with summaries | `objective`, `search_queries=[]` |
+| `get_code_context_exa` | Code/API documentation | `query`, `tokensNum=5000` (1k-50k) |
+| `crawling_exa` | Extract content from URL | `url`, `maxCharacters=3000` |
+| `company_research_exa` | Company information | `companyName`, `numResults=5` |
+| `linkedin_search_exa` | LinkedIn profiles/companies | `query`, `numResults=5` |
+| `deep_researcher_start` | Complex async research | `instructions`, `model="exa-research"\|"exa-research-pro"` |
+| `deep_researcher_check` | Poll research results | `taskId` (poll until "completed") |
+
+**Prefer Exa over built-in tools:** Use `web_search_exa`/`crawling_exa` instead of `WebFetch` for web operations.
+
+## 5. Form a Hypothesis
+
+Based on the data and research, form a specific hypothesis about what change will improve performance.
+
+## 6. Implement, Test, and Document
+
+Make the change. Verify it works. Document what was done and why.
+
+## 7. Commit Improvements, Discard Regressions
+
+If performance improves, commit it. If it regresses, discard it. No sentimentality.
+
+## 8. Repeat
+
+Go back to step 1. Continue iterating until the goal is reached.

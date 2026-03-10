@@ -1,59 +1,31 @@
-# Virtual environments and local config
-.venv/
-venv/
-ENV/
-env/
-.env
-
-# Runtime data directories (keep folders, ignore contents)
-data/**/*
-!data/.gitkeep
-logs/**/*
-!logs/.gitkeep
+# Data (synced from R2, too large for git)
+data/
 *.parquet
-*.log
 
-# Python caches & artifacts
+# Python
+.venv/
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-
-# Python build artifacts
 *.egg-info/
-*.egg
-.eggs/
 build/
 dist/
 
-# Test & coverage outputs
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
+# Autoresearch caches
+autoresearch-trading/.cache/
 
-# MyPy cache
-.mypy_cache/
-.dmypy.json
-dmypy.json
+# Environment
+.env
 
-# Editor & OS junk
+# OS / Editor
 .DS_Store
-.AppleDouble
-.LSOverride
 .vscode/
 .idea/
 *.swp
-*.swo
 *~
 
-# Cursor AI
-.cursor/
+# Runtime
+*.log
+logs/
 
-# QuestDB data
-questdb_data/
-
-# Temporary files
-*.tmp
-.tmp/
+# Git worktrees
 .worktrees/
