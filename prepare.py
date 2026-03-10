@@ -247,6 +247,11 @@ def compute_features(
         batch_qtys = qtys_batched[i]
         large_trade_count[i] = (batch_qtys > qty_95).sum()
 
+    # VPIN (flow toxicity): rolling mean of |TFI|
+    abs_tfi = np.abs(tfi)
+    abs_tfi_series = pd.Series(abs_tfi)
+    vpin = abs_tfi_series.rolling(window=50, min_periods=1).mean().values
+
     # Batch timestamps (use last trade in batch)
     batch_timestamps = ts_batched[:, -1]
     batch_prices = vwap
@@ -382,6 +387,7 @@ def compute_features(
             cvd_delta,
             tfi,
             large_trade_count,
+            vpin,
         ]
     )
 
