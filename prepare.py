@@ -173,9 +173,31 @@ def compute_features(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute features from raw data.
+    """Compute 20 evidence-based features from raw data.
 
-    Returns: (features, timestamps, prices) where features has shape (num_batches, num_features).
+    Returns: (features, timestamps, prices) where features has shape (num_batches, 20).
+
+    Feature layout:
+      0: returns           - log return of batch VWAP
+      1: r_5               - 5-batch log return
+      2: r_20              - 20-batch log return
+      3: r_100             - 100-batch log return
+      4: realvol_10        - rolling std of returns (window=10)
+      5: bipower_var_20    - (pi/2) * rolling mean(|r_t|*|r_{t-1}|) (window=20)
+      6: tfi               - (buy_vol - sell_vol) / total_vol
+      7: volume_spike_ratio - batch_notional / rolling_mean(notional, 20)
+      8: large_trade_share - notional of trades > q95 / total notional
+      9: kyle_lambda_50    - rolling price impact coefficient
+     10: amihud_illiq_50   - rolling |return| / notional
+     11: trade_arrival_rate - trades per second in batch
+     12: spread_bps        - bid-ask spread in basis points
+     13: log_total_depth   - log(bid_depth + ask_depth + 1)
+     14: weighted_imbalance_5lvl - depth-weighted bid-ask imbalance
+     15: microprice_dev    - microprice - mid
+     16: ofi               - weighted multi-level order flow imbalance
+     17: ob_slope_asym     - ask price-depth slope minus bid slope
+     18: funding_zscore    - z-scored funding rate (event-aligned)
+     19: utc_hour_linear   - hour_utc / 24
     """
     if trades_df.empty:
         return np.array([]), np.array([]), np.array([])
@@ -185,8 +207,8 @@ def compute_features(
     trades_df["norm_side"] = trades_df["side"].apply(normalize_side)
     trades_df["is_buy"] = trades_df["norm_side"] == "buy"
 
-    # Compute 95th percentile for large trade detection
-    qty_95 = trades_df["qty"].quantile(0.95)
+    # Compute notional (price * qty for cross-symbol invariance)
+    trades_df["notional"] = trades_df["price"] * trades_df["qty"]
 
     # Group into batches
     num_trades = len(trades_df)
@@ -197,89 +219,129 @@ def compute_features(
     # Trim to exact multiple
     trades_df = trades_df.iloc[: num_batches * trade_batch]
 
-    # Pre-extract arrays for vectorized ops
+    # Pre-extract arrays
     prices = trades_df["price"].values
     qtys = trades_df["qty"].values
+    notionals = trades_df["notional"].values
     is_buy = trades_df["is_buy"].values
     ts_ms = trades_df["ts_ms"].values
 
     # Reshape into batches
-    prices_batched = prices[: num_batches * trade_batch].reshape(
-        num_batches, trade_batch
-    )
-    qtys_batched = qtys[: num_batches * trade_batch].reshape(num_batches, trade_batch)
-    is_buy_batched = is_buy[: num_batches * trade_batch].reshape(
-        num_batches, trade_batch
-    )
-    ts_batched = ts_ms[: num_batches * trade_batch].reshape(num_batches, trade_batch)
+    prices_batched = prices.reshape(num_batches, trade_batch)
+    qtys_batched = qtys.reshape(num_batches, trade_batch)
+    notionals_batched = notionals.reshape(num_batches, trade_batch)
+    is_buy_batched = is_buy.reshape(num_batches, trade_batch)
+    ts_batched = ts_ms.reshape(num_batches, trade_batch)
 
-    # Compute per-batch features
-    # VWAP
-    total_value = (prices_batched * qtys_batched).sum(axis=1)
+    # --- VWAP ---
+    total_notional = notionals_batched.sum(axis=1)
     total_qty = qtys_batched.sum(axis=1)
-    vwap = np.where(total_qty > 0, total_value / total_qty, prices_batched[:, -1])
+    vwap = np.where(total_qty > 0, total_notional / total_qty, prices_batched[:, -1])
 
-    # Returns (log returns of VWAP)
+    # --- Feature 0: returns (1-step log return of VWAP) ---
     returns = np.zeros(num_batches)
     returns[1:] = np.log(vwap[1:] / np.maximum(vwap[:-1], 1e-10))
 
-    # Buy/sell volumes
-    buy_vol = (qtys_batched * is_buy_batched).sum(axis=1)
-    sell_vol = (qtys_batched * ~is_buy_batched).sum(axis=1)
-    net_volume = buy_vol - sell_vol
+    # --- Features 1-3: multi-horizon returns ---
+    r_5 = np.zeros(num_batches)
+    r_20 = np.zeros(num_batches)
+    r_100 = np.zeros(num_batches)
+    for k, arr in [(5, r_5), (20, r_20), (100, r_100)]:
+        if num_batches > k:
+            arr[k:] = np.log(vwap[k:] / np.maximum(vwap[:-k], 1e-10))
 
-    # Trade count per batch (constant = trade_batch, but useful as feature)
-    trade_count = np.full(num_batches, trade_batch, dtype=np.float64)
-
-    # Buy ratio
-    buy_ratio = is_buy_batched.sum(axis=1) / trade_batch
-
-    # CVD delta (cumulative net volume change per batch)
-    cvd_delta = net_volume  # Change in CVD over the batch
-
-    # TFI: (buy_vol - sell_vol) / (buy_vol + sell_vol)
-    total_vol = buy_vol + sell_vol
-    tfi = np.where(total_vol > 0, (buy_vol - sell_vol) / total_vol, 0.0)
-
-    # Large trade count
-    large_trade_count = np.zeros(num_batches)
-    for i in range(num_batches):
-        batch_qtys = qtys_batched[i]
-        large_trade_count[i] = (batch_qtys > qty_95).sum()
-
-    # Liquidation cascade proxy
-    price_accel = np.zeros(num_batches)
-    price_accel[2:] = np.abs(
-        returns[2:] - returns[1:-1]
-    )  # need 2 returns for acceleration
-    liq_cascade_magnitude = large_trade_count * price_accel
-    liq_cascade_direction = np.sign(returns) * liq_cascade_magnitude
-
-    # VPIN (flow toxicity): rolling mean of |TFI|
-    abs_tfi = np.abs(tfi)
-    abs_tfi_series = pd.Series(abs_tfi)
-    vpin = abs_tfi_series.rolling(window=50, min_periods=1).mean().values
-
-    # Multi-horizon realized volatility
+    # --- Feature 4: realvol_10 ---
     returns_series = pd.Series(returns)
-    realvol_short = (
-        returns_series.rolling(window=10, min_periods=1).std().fillna(0).values
+    realvol_10 = returns_series.rolling(window=10, min_periods=1).std().fillna(0).values
+
+    # --- Feature 5: bipower_var_20 ---
+    abs_returns = np.abs(returns)
+    abs_ret_product = pd.Series(np.nan, index=range(num_batches))
+    abs_ret_product.iloc[1:] = abs_returns[1:] * abs_returns[:-1]
+    rolling_sum = abs_ret_product.rolling(window=20, min_periods=2).sum()
+    rolling_count = abs_ret_product.rolling(window=20, min_periods=2).count()
+    bipower_var_20 = np.where(
+        rolling_count.values > 1,
+        (np.pi / 2) * rolling_sum.values / (rolling_count.values - 1),
+        0.0,
     )
-    realvol_med = (
-        returns_series.rolling(window=50, min_periods=1).std().fillna(0).values
-    )
-    realvol_long = (
-        returns_series.rolling(window=200, min_periods=1).std().fillna(0).values
+    bipower_var_20 = np.nan_to_num(bipower_var_20)
+
+    # --- Feature 6: tfi ---
+    buy_notional = (notionals_batched * is_buy_batched).sum(axis=1)
+    sell_notional = (notionals_batched * ~is_buy_batched).sum(axis=1)
+    total_batch_notional = buy_notional + sell_notional
+    tfi = np.where(
+        total_batch_notional > 0,
+        (buy_notional - sell_notional) / total_batch_notional,
+        0.0,
     )
 
-    # Batch timestamps (use last trade in batch)
+    # --- Feature 7: volume_spike_ratio ---
+    notional_series = pd.Series(total_batch_notional)
+    rolling_mean_notional = (
+        notional_series.shift(1).rolling(window=20, min_periods=1).mean()
+    )
+    volume_spike_ratio = np.where(
+        rolling_mean_notional.values > 0,
+        total_batch_notional / rolling_mean_notional.values,
+        1.0,
+    )
+
+    # --- Feature 8: large_trade_share ---
+    large_trade_share = np.zeros(num_batches)
+    for i in range(num_batches):
+        batch_not = notionals_batched[i]
+        if i > 0:
+            prior_notionals = notionals[: i * trade_batch]
+            notional_95 = np.percentile(prior_notionals, 95)
+        else:
+            notional_95 = np.percentile(batch_not, 95)
+        large_mask = batch_not > notional_95
+        large_trade_share[i] = batch_not[large_mask].sum() / max(batch_not.sum(), 1e-10)
+
+    # --- Feature 9: kyle_lambda_50 ---
+    signed_notional = np.zeros(num_batches)
+    for i in range(num_batches):
+        buy_not = (notionals_batched[i] * is_buy_batched[i]).sum()
+        sell_not = (notionals_batched[i] * ~is_buy_batched[i]).sum()
+        signed_notional[i] = buy_not - sell_not
+
+    ret_s = pd.Series(returns)
+    sn_s = pd.Series(signed_notional)
+    rolling_cov = ret_s.rolling(window=50, min_periods=10).cov(sn_s)
+    rolling_var = sn_s.rolling(window=50, min_periods=10).var()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        kyle_lambda = np.where(
+            rolling_var.values > 1e-20,
+            rolling_cov.values / rolling_var.values,
+            0.0,
+        )
+    kyle_lambda = np.nan_to_num(kyle_lambda)
+
+    # --- Feature 10: amihud_illiq_50 ---
+    illiq_raw = np.where(
+        total_batch_notional > 0, np.abs(returns) / total_batch_notional, 0.0
+    )
+    illiq_series = pd.Series(illiq_raw)
+    amihud_illiq = (
+        illiq_series.rolling(window=50, min_periods=1).mean().fillna(0).values
+    )
+
+    # --- Feature 11: trade_arrival_rate ---
+    batch_first_ts = ts_batched[:, 0]
+    batch_last_ts = ts_batched[:, -1]
+    batch_duration_s = (batch_last_ts - batch_first_ts) / 1000.0
+    trade_arrival_rate = np.where(
+        batch_duration_s > 0, trade_batch / batch_duration_s, 0.0
+    )
+
+    # Batch timestamps and prices
     batch_timestamps = ts_batched[:, -1]
     batch_prices = vwap
 
-    # === Orderbook features ===
-    ob_features = np.zeros(
-        (num_batches, 17)
-    )  # bid_depth, ask_depth, imbalance, spread, 5 bid vols, 5 ask vols, microprice, microprice_dev, ofi
+    # === ORDERBOOK FEATURES (indices 12-17) ===
+    ob_features = np.zeros((num_batches, 6))
 
     if not orderbook_df.empty:
         ob_ts = orderbook_df["ts_ms"].values
@@ -290,9 +352,11 @@ def compute_features(
         prev_bid_vols = np.zeros(5)
         prev_ask_vols = np.zeros(5)
         prev_ob_valid = False
+        weights_ofi = np.array([1.0, 0.5, 1 / 3, 0.25, 0.2])
+        weights_imb = np.array([1.0, 0.5, 1 / 3, 0.25, 0.2])
+
         for i in range(num_batches):
             t = batch_timestamps[i]
-            # Advance to most recent orderbook snapshot <= batch timestamp
             while ob_idx < len(ob_ts) - 1 and ob_ts[ob_idx + 1] <= t:
                 ob_idx += 1
 
@@ -301,41 +365,66 @@ def compute_features(
                 asks = ob_asks[ob_idx]
 
                 if len(bids) > 0 and len(asks) > 0:
-                    # Total depths
-                    bid_depth = sum(
-                        b["qty"] for b in bids if isinstance(b, dict) and "qty" in b
+                    n_bid_lvls = min(5, len(bids))
+                    n_ask_lvls = min(5, len(asks))
+
+                    bid_prices_arr = np.array(
+                        [
+                            bids[l]["price"] if isinstance(bids[l], dict) else 0.0
+                            for l in range(n_bid_lvls)
+                        ]
                     )
-                    ask_depth = sum(
-                        a["qty"] for a in asks if isinstance(a, dict) and "qty" in a
+                    bid_qtys_arr = np.array(
+                        [
+                            bids[l]["qty"] if isinstance(bids[l], dict) else 0.0
+                            for l in range(n_bid_lvls)
+                        ]
+                    )
+                    ask_prices_arr = np.array(
+                        [
+                            asks[l]["price"] if isinstance(asks[l], dict) else 0.0
+                            for l in range(n_ask_lvls)
+                        ]
+                    )
+                    ask_qtys_arr = np.array(
+                        [
+                            asks[l]["qty"] if isinstance(asks[l], dict) else 0.0
+                            for l in range(n_ask_lvls)
+                        ]
                     )
 
-                    total_depth = bid_depth + ask_depth
-                    imbalance = (
-                        (bid_depth - ask_depth) / total_depth if total_depth > 0 else 0
+                    best_bid = bid_prices_arr[0] if n_bid_lvls > 0 else 0.0
+                    best_ask = ask_prices_arr[0] if n_ask_lvls > 0 else 0.0
+                    mid = (
+                        (best_bid + best_ask) / 2 if (best_bid + best_ask) > 0 else 1.0
                     )
 
-                    # Spread
-                    best_bid = bids[0]["price"] if isinstance(bids[0], dict) else 0
-                    best_ask = asks[0]["price"] if isinstance(asks[0], dict) else 0
-                    mid = (best_bid + best_ask) / 2 if (best_bid + best_ask) > 0 else 1
-                    spread_bps = (best_ask - best_bid) / mid * 10000
+                    # Convert qty to notional for cross-symbol invariance
+                    bid_notional_arr = bid_qtys_arr * bid_prices_arr
+                    ask_notional_arr = ask_qtys_arr * ask_prices_arr
 
-                    ob_features[i, 0] = bid_depth
-                    ob_features[i, 1] = ask_depth
-                    ob_features[i, 2] = imbalance
-                    ob_features[i, 3] = spread_bps
+                    # Feature 12: spread_bps
+                    ob_features[i, 0] = (best_ask - best_bid) / mid * 10000
 
-                    # Per-level volumes (up to 5 levels)
-                    for lvl in range(min(5, len(bids))):
-                        if isinstance(bids[lvl], dict) and "qty" in bids[lvl]:
-                            ob_features[i, 4 + lvl] = bids[lvl]["qty"]
-                    for lvl in range(min(5, len(asks))):
-                        if isinstance(asks[lvl], dict) and "qty" in asks[lvl]:
-                            ob_features[i, 9 + lvl] = asks[lvl]["qty"]
+                    # Feature 13: log_total_depth (notional-based)
+                    bid_depth_not = bid_notional_arr.sum()
+                    ask_depth_not = ask_notional_arr.sum()
+                    ob_features[i, 1] = np.log(bid_depth_not + ask_depth_not + 1)
 
-                    # Microprice
-                    best_bid_qty = bids[0]["qty"] if isinstance(bids[0], dict) else 0
-                    best_ask_qty = asks[0]["qty"] if isinstance(asks[0], dict) else 0
+                    # Feature 14: weighted_imbalance_5lvl (notional-based)
+                    w = weights_imb[:n_bid_lvls]
+                    w_ask = weights_imb[:n_ask_lvls]
+                    num_imb = (w * bid_notional_arr[:n_bid_lvls]).sum() - (
+                        w_ask * ask_notional_arr[:n_ask_lvls]
+                    ).sum()
+                    den_imb = (w * bid_notional_arr[:n_bid_lvls]).sum() + (
+                        w_ask * ask_notional_arr[:n_ask_lvls]
+                    ).sum()
+                    ob_features[i, 2] = num_imb / den_imb if den_imb > 0 else 0.0
+
+                    # Feature 15: microprice_dev (price-based, uses raw qty)
+                    best_bid_qty = bid_qtys_arr[0] if n_bid_lvls > 0 else 0.0
+                    best_ask_qty = ask_qtys_arr[0] if n_ask_lvls > 0 else 0.0
                     total_best_qty = best_bid_qty + best_ask_qty
                     if total_best_qty > 0:
                         microprice = (
@@ -343,88 +432,98 @@ def compute_features(
                         ) / total_best_qty
                     else:
                         microprice = mid
-                    ob_features[i, 14] = microprice
-                    ob_features[i, 15] = microprice - mid
+                    ob_features[i, 3] = microprice - mid
 
-                    # OFI (multi-level)
-                    curr_bid_vols = np.array(
-                        [
-                            (
-                                bids[lvl]["qty"]
-                                if lvl < len(bids) and isinstance(bids[lvl], dict)
-                                else 0.0
-                            )
-                            for lvl in range(5)
-                        ]
-                    )
-                    curr_ask_vols = np.array(
-                        [
-                            (
-                                asks[lvl]["qty"]
-                                if lvl < len(asks) and isinstance(asks[lvl], dict)
-                                else 0.0
-                            )
-                            for lvl in range(5)
-                        ]
-                    )
+                    # Feature 16: ofi (notional-based)
+                    curr_bid_vols = np.zeros(5)
+                    curr_ask_vols = np.zeros(5)
+                    curr_bid_vols[:n_bid_lvls] = bid_notional_arr
+                    curr_ask_vols[:n_ask_lvls] = ask_notional_arr
                     if prev_ob_valid:
-                        weights = np.array([1.0, 0.5, 1 / 3, 0.25, 0.2])
                         delta_bid = curr_bid_vols - prev_bid_vols
                         delta_ask = curr_ask_vols - prev_ask_vols
-                        ob_features[i, 16] = (weights * (delta_bid - delta_ask)).sum()
+                        ob_features[i, 4] = (
+                            weights_ofi * (delta_bid - delta_ask)
+                        ).sum()
                     prev_bid_vols = curr_bid_vols.copy()
                     prev_ask_vols = curr_ask_vols.copy()
                     prev_ob_valid = True
 
-    # === Funding features ===
-    funding_features = np.zeros((num_batches, 2))  # rate, rate_change
+                    # Feature 17: ob_slope_asymmetry (OLS price-depth slope)
+                    if n_ask_lvls >= 2 and n_bid_lvls >= 2:
+                        ask_cum_not = np.cumsum(ask_notional_arr)
+                        bid_cum_not = np.cumsum(bid_notional_arr)
 
+                        if np.var(ask_cum_not) > 1e-20:
+                            ask_slope = np.polyfit(ask_cum_not, ask_prices_arr, 1)[0]
+                        else:
+                            ask_slope = 0.0
+                        if np.var(bid_cum_not) > 1e-20:
+                            bid_slope = np.polyfit(bid_cum_not, bid_prices_arr, 1)[0]
+                        else:
+                            bid_slope = 0.0
+                        ob_features[i, 5] = ask_slope - bid_slope
+
+    # === FUNDING + TIME FEATURES (indices 18-19) ===
+    extra_features = np.zeros((num_batches, 2))
+
+    # Feature 18: funding_zscore
     if not funding_df.empty:
         fund_ts = funding_df["ts_ms"].values
         fund_rate = funding_df["rate"].values
 
+        # Compute z-score over last 21 funding events (3 prints/day * 7 days)
+        # Require min 8 events (~2.7 days) for stable std estimate
+        fund_zscore = np.zeros(len(fund_rate))
+        for j in range(len(fund_rate)):
+            lookback = fund_rate[max(0, j - 20) : j + 1]
+            if len(lookback) >= 8:
+                mu = lookback.mean()
+                sigma = lookback.std()
+                if sigma > 1e-12:
+                    fund_zscore[j] = (fund_rate[j] - mu) / sigma
+
+        # Forward-fill to batches
         fund_idx = 0
-        prev_rate = 0.0
         for i in range(num_batches):
             t = batch_timestamps[i]
             while fund_idx < len(fund_ts) - 1 and fund_ts[fund_idx + 1] <= t:
                 fund_idx += 1
-
             if fund_idx < len(fund_ts) and fund_ts[fund_idx] <= t:
-                rate = fund_rate[fund_idx]
-                funding_features[i, 0] = rate
-                funding_features[i, 1] = rate - prev_rate
-                prev_rate = rate
+                extra_features[i, 0] = fund_zscore[fund_idx]
+
+    # Feature 19: utc_hour_linear
+    for i in range(num_batches):
+        hour = (batch_timestamps[i] / 1000 / 3600) % 24
+        extra_features[i, 1] = hour / 24.0
 
     # Combine all features
     trade_features = np.column_stack(
         [
-            vwap,
-            returns,
-            net_volume,
-            trade_count,
-            buy_ratio,
-            cvd_delta,
-            tfi,
-            large_trade_count,
-            vpin,
-            liq_cascade_magnitude,
-            liq_cascade_direction,
-            realvol_short,
-            realvol_med,
-            realvol_long,
+            returns,  # 0
+            r_5,  # 1
+            r_20,  # 2
+            r_100,  # 3
+            realvol_10,  # 4
+            bipower_var_20,  # 5
+            tfi,  # 6
+            volume_spike_ratio,  # 7
+            large_trade_share,  # 8
+            kyle_lambda,  # 9
+            amihud_illiq,  # 10
+            trade_arrival_rate,  # 11
         ]
     )
 
-    features = np.hstack([trade_features, ob_features, funding_features])
+    features = np.hstack([trade_features, ob_features, extra_features])
 
     return features, batch_timestamps, batch_prices
 
 
 # Indices of features that get robust (median/IQR) normalization.
-# These are tail-heavy: net_volume, large_trade_count, vpin,
-# liq_cascade_mag, liq_cascade_dir, bid_depth, ask_depth, microprice
-ROBUST_FEATURE_INDICES = {2, 7, 8, 9, 10, 14, 15, 28}
+# Tail-heavy: bipower_var, volume_spike_ratio, large_trade_share, kyle_lambda,
+# amihud_illiq, trade_arrival_rate, spread_bps, log_total_depth, ofi, ob_slope_asym
+ROBUST_FEATURE_INDICES = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17}
 
 
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
@@ -460,7 +559,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v2"  # bump when feature set changes
+_FEATURE_VERSION = "v3"  # bump when feature set changes
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
