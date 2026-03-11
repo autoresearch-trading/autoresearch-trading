@@ -1,178 +1,231 @@
 #!/usr/bin/env python3
-"""RL trading agent — Optuna hyperparameter search with SB3 PPO."""
+"""RL trading agent — Optuna hyperparameter search with hand-rolled PPO."""
 
-import contextlib
 import io
 import os
 import sys
 import time
 
-import gymnasium
 import numpy as np
 import optuna
 import torch
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import DummyVecEnv
+import torch.nn as nn
+from torch.distributions import Categorical
 
 from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # ── Configuration ──────────────────────────────────────────────
 SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "CRV"]
-SEARCH_BUDGET = 90  # seconds per search trial
+SEARCH_BUDGET = 90  # seconds per trial (split across seeds)
+SEARCH_SEEDS = 2  # seeds per search trial
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 3
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-BATCH_SIZE = 256
 
-# SB3 recommends CPU for MlpPolicy (GPU transfer overhead > compute for small MLPs)
-DEVICE = torch.device("cpu")
-
-
-# ── Utilities ──────────────────────────────────────────────────
-@contextlib.contextmanager
-def quiet():
-    """Suppress stdout (for noisy cache-loading messages)."""
-    old = sys.stdout
-    devnull = open(os.devnull, "w")
-    sys.stdout = devnull
-    try:
-        yield
-    finally:
-        sys.stdout = old
-        devnull.close()
+DEVICE = torch.device(
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
 
 
-class TimeBudget(BaseCallback):
-    """Stop SB3 training after a wall-clock budget."""
+# ── Reward ─────────────────────────────────────────────────────
+class RewardNormalizer:
+    """Welford's online algorithm for running std."""
 
-    def __init__(self, seconds):
+    def __init__(self):
+        self.count = 0
+        self.mean = 0.0
+        self.M2 = 0.0
+
+    def update(self, x):
+        self.count += 1
+        delta = x - self.mean
+        self.mean += delta / self.count
+        self.M2 += delta * (x - self.mean)
+
+    @property
+    def std(self):
+        if self.count < 2:
+            return 1.0
+        return max(np.sqrt(self.M2 / self.count), 1e-8)
+
+    def normalize(self, x):
+        return x / self.std
+
+
+def compute_reward(info, reward_state, lam_vol, lam_draw):
+    """Sortino-style reward."""
+    pnl = info["step_pnl"]
+    reward_state.setdefault("pnl_history", [])
+    reward_state["pnl_history"].append(pnl)
+    if len(reward_state["pnl_history"]) > 100:
+        reward_state["pnl_history"] = reward_state["pnl_history"][-100:]
+
+    downside_vol = 0.0
+    if len(reward_state["pnl_history"]) > 10:
+        negatives = [p for p in reward_state["pnl_history"] if p < 0]
+        if len(negatives) > 2:
+            downside_vol = float(np.std(negatives))
+
+    return pnl - lam_vol * downside_vol - lam_draw * info["drawdown"]
+
+
+# ── Network ────────────────────────────────────────────────────
+class PolicyNetwork(nn.Module):
+    def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
-        self.seconds = seconds
-        self.t0 = None
+        flat_dim = obs_shape[0] * obs_shape[1]
+        layers = [nn.Linear(flat_dim, hidden_dim), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
+        self.shared = nn.Sequential(*layers)
+        self.actor = nn.Linear(hidden_dim, n_actions)
+        self.critic = nn.Linear(hidden_dim, 1)
 
-    def _on_training_start(self):
-        self.t0 = time.time()
+    def forward(self, x):
+        x = x.flatten(start_dim=1)
+        shared = self.shared(x)
+        return self.actor(shared), self.critic(shared)
 
-    def _on_step(self):
-        return (time.time() - self.t0) < self.seconds
-
-
-# ── Reward wrapper ─────────────────────────────────────────────
-class SortinoReward(gymnasium.Wrapper):
-    """Sortino-style reward with Welford running normalization."""
-
-    def __init__(self, env, lam_vol=0.5, lam_draw=1.0):
-        super().__init__(env)
-        self.lam_vol = lam_vol
-        self.lam_draw = lam_draw
-        self._hist = []
-        self._n = 0
-        self._mean = 0.0
-        self._m2 = 0.0
-
-    def reset(self, **kw):
-        self._hist = []
-        return self.env.reset(**kw)
-
-    def step(self, action):
-        obs, _, done, trunc, info = self.env.step(action)
-        r = self._raw_reward(info)
-        r = self._normalize(r)
-        return obs, float(r), done, trunc, info
-
-    def _raw_reward(self, info):
-        pnl = info["step_pnl"]
-        self._hist.append(pnl)
-        if len(self._hist) > 100:
-            self._hist = self._hist[-100:]
-        dv = 0.0
-        if len(self._hist) > 10:
-            neg = [p for p in self._hist if p < 0]
-            if len(neg) > 2:
-                dv = float(np.std(neg))
-        return pnl - self.lam_vol * dv - self.lam_draw * info["drawdown"]
-
-    def _normalize(self, x):
-        self._n += 1
-        d = x - self._mean
-        self._mean += d / self._n
-        self._m2 += d * (x - self._mean)
-        if self._n < 2:
-            return x
-        return x / max(np.sqrt(self._m2 / self._n), 1e-8)
-
-
-# ── Environment factories ─────────────────────────────────────
-def _env_factory(sym, split, lv, ld):
-    """Return a callable that creates a reward-wrapped env."""
-
-    def _init():
-        with quiet():
-            env = make_env(sym, split, window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH)
-        return SortinoReward(env, lam_vol=lv, lam_draw=ld)
-
-    return _init
+    def get_action_and_value(self, obs, action=None):
+        logits, value = self(obs)
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        return action, dist.log_prob(action), dist.entropy(), value.squeeze(-1)
 
 
 # ── Training ───────────────────────────────────────────────────
-def train_model(symbols, p, budget, seed=0, tb_log=None):
-    """Train one PPO model with SB3, return the model."""
-    n_envs = len(symbols)
-    vec = DummyVecEnv(
-        [_env_factory(s, "train", p["lam_vol"], p["lam_draw"]) for s in symbols]
-    )
+def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, seed):
+    """Train a single policy with given hyperparams and time budget."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    policy = PolicyNetwork(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=p["lr"])
+    reward_norm = RewardNormalizer()
+
+    env_obs = {}
+    env_reward_states = {}
+    for sym in active_symbols:
+        obs, _ = train_envs[sym].reset()
+        env_obs[sym] = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
+        env_reward_states[sym] = {}
 
     n_steps = p["n_steps"]
-    buf = n_steps * n_envs
-    bs = min(BATCH_SIZE, buf)
-    while buf % bs != 0:
-        bs -= 1
+    n_minibatches = 4
+    start_time = time.time()
+    total_steps = 0
 
-    model = PPO(
-        "MlpPolicy",
-        vec,
-        learning_rate=p["lr"],
-        n_steps=n_steps,
-        batch_size=bs,
-        n_epochs=p["n_epochs"],
-        gamma=p["gamma"],
-        gae_lambda=p["gae_lam"],
-        ent_coef=p["ent"],
-        clip_range=p["clip"],
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        seed=seed,
-        device=DEVICE,
-        tensorboard_log=tb_log,
-        verbose=0,
-        policy_kwargs=dict(net_arch=[p["hdim"]] * p["nlayers"]),
-    )
+    while (time.time() - start_time) < budget:
+        sym = np.random.choice(active_symbols, p=weights)
+        env = train_envs[sym]
+        obs = env_obs[sym]
+        reward_state = env_reward_states[sym]
 
-    model.learn(total_timesteps=999_999_999, callback=TimeBudget(budget))
-    vec.close()
-    return model
+        batch_obs, batch_actions, batch_logprobs = [], [], []
+        batch_rewards, batch_values, batch_dones = [], [], []
+
+        for _ in range(n_steps):
+            with torch.no_grad():
+                action, logprob, _, value = policy.get_action_and_value(
+                    obs.unsqueeze(0)
+                )
+
+            next_obs, _, done, truncated, info = env.step(action.item())
+            raw_reward = compute_reward(info, reward_state, p["lam_vol"], p["lam_draw"])
+            reward_norm.update(raw_reward)
+            reward = reward_norm.normalize(raw_reward)
+
+            batch_obs.append(obs)
+            batch_actions.append(action.squeeze())
+            batch_logprobs.append(logprob.squeeze())
+            batch_rewards.append(reward)
+            batch_values.append(value.squeeze())
+            batch_dones.append(done or truncated)
+
+            if done or truncated:
+                next_obs, _ = env.reset()
+                reward_state = {}
+                env_reward_states[sym] = reward_state
+
+            obs = torch.tensor(next_obs, dtype=torch.float32, device=DEVICE)
+            total_steps += 1
+
+        env_obs[sym] = obs
+
+        # GAE
+        with torch.no_grad():
+            _, _, _, next_value = policy.get_action_and_value(obs.unsqueeze(0))
+            next_value = next_value.squeeze()
+
+        rewards = torch.tensor(batch_rewards, dtype=torch.float32, device=DEVICE)
+        values = torch.stack(batch_values).squeeze(-1)
+        dones = torch.tensor(batch_dones, dtype=torch.float32, device=DEVICE)
+
+        advantages = torch.zeros_like(rewards)
+        lastgaelam = 0
+        for t in reversed(range(n_steps)):
+            next_val = next_value if t == n_steps - 1 else values[t + 1]
+            delta = rewards[t] + p["gamma"] * next_val * (1 - dones[t]) - values[t]
+            advantages[t] = lastgaelam = (
+                delta + p["gamma"] * p["gae_lam"] * (1 - dones[t]) * lastgaelam
+            )
+
+        returns = advantages + values
+        b_obs = torch.stack(batch_obs)
+        b_actions = torch.stack(batch_actions)
+        b_logprobs = torch.stack(batch_logprobs)
+        b_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        b_returns = returns
+
+        minibatch_size = n_steps // n_minibatches
+
+        for _ in range(p["n_epochs"]):
+            indices = torch.randperm(n_steps, device=DEVICE)
+            for start in range(0, n_steps, minibatch_size):
+                mb_idx = indices[start : start + minibatch_size]
+                _, new_logprob, entropy, new_value = policy.get_action_and_value(
+                    b_obs[mb_idx], b_actions[mb_idx]
+                )
+                ratio = (new_logprob - b_logprobs[mb_idx]).exp()
+                surr1 = ratio * b_advantages[mb_idx]
+                surr2 = (
+                    torch.clamp(ratio, 1 - p["clip"], 1 + p["clip"])
+                    * b_advantages[mb_idx]
+                )
+                pg_loss = -torch.min(surr1, surr2).mean()
+                v_loss = ((new_value - b_returns[mb_idx]) ** 2).mean()
+                ent_loss = entropy.mean()
+                loss = pg_loss + 0.5 * v_loss - p["ent"] * ent_loss
+
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
+                optimizer.step()
+
+    return policy
 
 
 # ── Evaluation ─────────────────────────────────────────────────
-def _run_eval(policy_fn, symbols, split="test"):
-    """Run policy through symbols on given split. Returns (sharpe, passing, trades, dd)."""
+def eval_policy(policy_fn, symbols, split="test"):
+    """Run policy_fn on all symbols. Returns (sharpe, passing, trades, dd)."""
     passing = []
     trades_all = 0
     worst_dd = 0.0
 
     for sym in symbols:
         try:
-            with quiet():
-                et = make_env(
-                    sym, split, window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
-                )
+            env_test = make_env(
+                sym, split, window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+            )
             buf = io.StringIO()
             old = sys.stdout
             sys.stdout = buf
-            sh = evaluate(et, policy_fn)
+            sh = evaluate(env_test, policy_fn)
             sys.stdout = old
             out = buf.getvalue()
 
@@ -185,7 +238,6 @@ def _run_eval(policy_fn, symbols, split="test"):
 
             tag = "PASS" if sh > 0 else "FAIL"
             print(f"  {sym}: sharpe={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
-
             if sh > 0:
                 passing.append(sh)
             trades_all += t
@@ -193,35 +245,67 @@ def _run_eval(policy_fn, symbols, split="test"):
         except Exception as e:
             print(f"  {sym}: ERROR ({e})")
 
-    mean_sh = float(np.mean(passing)) if passing else 0.0
-    return mean_sh, len(passing), trades_all, worst_dd
+    return (
+        float(np.mean(passing)) if passing else 0.0,
+        len(passing),
+        trades_all,
+        worst_dd,
+    )
 
 
-def eval_single(model, symbols, split="test"):
-    """Evaluate a single SB3 model."""
-
-    def fn(obs):
-        a, _ = model.predict(obs, deterministic=True)
-        return int(a)
-
-    return _run_eval(fn, symbols, split)
-
-
-def eval_ensemble(models, symbols, split="test"):
-    """Evaluate ensemble by averaging logits across models."""
+def make_ensemble_fn(policies, device):
+    """Create ensemble policy function averaging logits."""
 
     def fn(obs):
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-        logits = None
         with torch.no_grad():
-            for m in models:
-                feat = m.policy.extract_features(obs_t, m.policy.features_extractor)
-                lp, _ = m.policy.mlp_extractor(feat)
-                lg = m.policy.action_net(lp)
-                logits = lg if logits is None else logits + lg
-        return logits.argmax(-1).item()
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            logits_sum = None
+            for p in policies:
+                logits, _ = p(obs_t)
+                logits_sum = logits if logits_sum is None else logits_sum + logits
+            return logits_sum.argmax(dim=-1).item()
 
-    return _run_eval(fn, symbols, split)
+    return fn
+
+
+# ── Full training run ──────────────────────────────────────────
+def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
+    """Train n_seeds policies, evaluate ensemble. Returns (sharpe, passing, trades, dd)."""
+    # Suppress env loading noise
+    old_stdout = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    train_envs = {}
+    env_weights = {}
+    for sym in symbols:
+        try:
+            env = make_env(
+                sym, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+            )
+            train_envs[sym] = env
+            env_weights[sym] = env.num_steps
+        except Exception:
+            pass
+    sys.stdout.close()
+    sys.stdout = old_stdout
+
+    active = list(train_envs.keys())
+    weights = np.array([env_weights[s] for s in active], dtype=np.float64)
+    weights /= weights.sum()
+    obs_shape = train_envs[active[0]].observation_space.shape
+
+    budget_per_seed = budget // n_seeds
+    policies = []
+    for seed in range(n_seeds):
+        if verbose:
+            print(f"  Training seed {seed} ({budget_per_seed}s)...")
+        policy = train_one_policy(
+            train_envs, active, weights, obs_shape, p, budget_per_seed, seed
+        )
+        policies.append(policy)
+
+    ensemble_fn = make_ensemble_fn(policies, DEVICE)
+    sh, ps, tr, dd = eval_policy(ensemble_fn, symbols, split=split)
+    return sh, ps, tr, dd
 
 
 # ── Optuna objective ───────────────────────────────────────────
@@ -234,7 +318,7 @@ def objective(trial):
         "gae_lam": 0.95,
         "ent": trial.suggest_float("ent", 0.001, 0.05, log=True),
         "clip": 0.2,
-        "hdim": trial.suggest_categorical("hdim", [64, 128, 256, 512]),
+        "hdim": trial.suggest_categorical("hdim", [64, 128, 256]),
         "nlayers": 3,
         "lam_vol": trial.suggest_float("lam_vol", 0.0, 2.0),
         "lam_draw": trial.suggest_float("lam_draw", 0.1, 5.0, log=True),
@@ -248,19 +332,16 @@ def objective(trial):
 
     try:
         t0 = time.time()
-        m = train_model(SEARCH_SYMBOLS, p, SEARCH_BUDGET, seed=trial.number)
-        # Evaluate on VAL split (not test) to avoid overfitting during search
-        sh, ps, tr, dd = eval_single(m, SEARCH_SYMBOLS, split="val")
+        sh, ps, tr, dd = full_run(
+            SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
+        )
         elapsed = time.time() - t0
         print(
             f"  => sharpe={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
             f"trades={tr} dd={dd:.4f} ({elapsed:.0f}s)"
         )
-        del m
         if DEVICE.type == "mps":
             torch.mps.empty_cache()
-        elif DEVICE.type == "cuda":
-            torch.cuda.empty_cache()
         return sh
     except Exception as e:
         print(f"  => FAILED: {e}")
@@ -273,14 +354,14 @@ def main():
     print(f"device: {DEVICE}")
     print(
         f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
-        f"on {SEARCH_SYMBOLS} ===\n"
+        f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
     )
 
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
         storage="sqlite:///optuna_study.db",
-        study_name="ppo_v3",
+        study_name="ppo_v3_handrolled",
         load_if_exists=True,
     )
     study.optimize(objective, n_trials=SEARCH_TRIALS)
@@ -309,25 +390,16 @@ def main():
         "lam_vol": b["lam_vol"],
         "lam_draw": b["lam_draw"],
     }
-    seed_budget = FINAL_BUDGET // FINAL_SEEDS
 
     print(
-        f"\n=== FINAL: {FINAL_SEEDS} seeds x {seed_budget}s, "
-        f"all {len(DEFAULT_SYMBOLS)} symbols ==="
+        f"\n=== FINAL: {FINAL_SEEDS} seeds x "
+        f"{FINAL_BUDGET // FINAL_SEEDS}s on all {len(DEFAULT_SYMBOLS)} symbols ==="
     )
     print(f"params: {bp}\n")
 
-    models = []
-    for s in range(FINAL_SEEDS):
-        print(f"Training seed {s}...")
-        models.append(
-            train_model(DEFAULT_SYMBOLS, bp, seed_budget, seed=s, tb_log="./tb_logs")
-        )
-
-    # Ensemble evaluation on TEST split
-    print("\n---")
-    print("=== PER-SYMBOL EVALUATION ===")
-    sh, ps, tr, dd = eval_ensemble(models, DEFAULT_SYMBOLS, split="test")
+    sh, ps, tr, dd = full_run(
+        DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
+    )
 
     print("---")
     print("=== PORTFOLIO SUMMARY ===")
