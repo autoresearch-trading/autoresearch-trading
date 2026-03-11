@@ -33,7 +33,11 @@ SYMBOLS = DEFAULT_SYMBOLS  # All 25 symbols
 NUM_SEEDS = 3  # Train 3 policies, evaluate all, use best
 
 # === DEVICE ===
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
 print(f"device: {device}")
 
 

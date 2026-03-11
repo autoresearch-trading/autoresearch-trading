@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import duckdb
 import gymnasium
 import numpy as np
 import pandas as pd
@@ -87,67 +88,37 @@ def discover_parquet_files(
     return files
 
 
-def load_trades(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Load trade data from Parquet files, sorted by ts_ms."""
-    files = discover_parquet_files(DATA_ROOT, "trades", symbol, start_date, end_date)
+def _load_parquet_duckdb(
+    data_type: str, symbol: str, start_date: str, end_date: str
+) -> pd.DataFrame:
+    """Load Hive-partitioned Parquet files using DuckDB for speed."""
+    files = discover_parquet_files(DATA_ROOT, data_type, symbol, start_date, end_date)
     if not files:
         return pd.DataFrame()
 
-    dfs = []
-    for f in files:
-        try:
-            dfs.append(pd.read_parquet(f))
-        except Exception:
-            continue
-
-    if not dfs:
-        return pd.DataFrame()
-
-    df = pd.concat(dfs, ignore_index=True)
-    df = df.sort_values("ts_ms").reset_index(drop=True)
+    file_list = [str(f) for f in files]
+    con = duckdb.connect()
+    df = con.execute(
+        "SELECT * FROM read_parquet($1) ORDER BY ts_ms",
+        [file_list],
+    ).fetchdf()
+    con.close()
     return df
+
+
+def load_trades(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Load trade data from Parquet files, sorted by ts_ms."""
+    return _load_parquet_duckdb("trades", symbol, start_date, end_date)
 
 
 def load_orderbook(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     """Load orderbook data from Parquet files, sorted by ts_ms."""
-    files = discover_parquet_files(DATA_ROOT, "orderbook", symbol, start_date, end_date)
-    if not files:
-        return pd.DataFrame()
-
-    dfs = []
-    for f in files:
-        try:
-            dfs.append(pd.read_parquet(f))
-        except Exception:
-            continue
-
-    if not dfs:
-        return pd.DataFrame()
-
-    df = pd.concat(dfs, ignore_index=True)
-    df = df.sort_values("ts_ms").reset_index(drop=True)
-    return df
+    return _load_parquet_duckdb("orderbook", symbol, start_date, end_date)
 
 
 def load_funding(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     """Load funding rate data from Parquet files, sorted by ts_ms."""
-    files = discover_parquet_files(DATA_ROOT, "funding", symbol, start_date, end_date)
-    if not files:
-        return pd.DataFrame()
-
-    dfs = []
-    for f in files:
-        try:
-            dfs.append(pd.read_parquet(f))
-        except Exception:
-            continue
-
-    if not dfs:
-        return pd.DataFrame()
-
-    df = pd.concat(dfs, ignore_index=True)
-    df = df.sort_values("ts_ms").reset_index(drop=True)
-    return df
+    return _load_parquet_duckdb("funding", symbol, start_date, end_date)
 
 
 # ============================================================
@@ -289,23 +260,27 @@ def compute_features(
     )
 
     # --- Feature 8: large_trade_share ---
+    # Use rolling p95 over a fixed lookback window instead of O(n²) growing slice
     large_trade_share = np.zeros(num_batches)
+    LOOKBACK_BATCHES = 50  # ~5000 trades lookback for p95 estimate
+    flat_notionals = notionals_batched.ravel()
     for i in range(num_batches):
         batch_not = notionals_batched[i]
         if i > 0:
-            prior_notionals = notionals[: i * trade_batch]
-            notional_95 = np.percentile(prior_notionals, 95)
+            start_idx = max(0, i - LOOKBACK_BATCHES) * trade_batch
+            end_idx = i * trade_batch
+            notional_95 = np.percentile(flat_notionals[start_idx:end_idx], 95)
         else:
             notional_95 = np.percentile(batch_not, 95)
-        large_mask = batch_not > notional_95
-        large_trade_share[i] = batch_not[large_mask].sum() / max(batch_not.sum(), 1e-10)
+        batch_sum = batch_not.sum()
+        large_trade_share[i] = batch_not[batch_not > notional_95].sum() / max(
+            batch_sum, 1e-10
+        )
 
     # --- Feature 9: kyle_lambda_50 ---
-    signed_notional = np.zeros(num_batches)
-    for i in range(num_batches):
-        buy_not = (notionals_batched[i] * is_buy_batched[i]).sum()
-        sell_not = (notionals_batched[i] * ~is_buy_batched[i]).sum()
-        signed_notional[i] = buy_not - sell_not
+    signed_notional = (notionals_batched * is_buy_batched).sum(axis=1) - (
+        notionals_batched * ~is_buy_batched
+    ).sum(axis=1)
 
     ret_s = pd.Series(returns)
     sn_s = pd.Series(signed_notional)
@@ -472,30 +447,25 @@ def compute_features(
         fund_ts = funding_df["ts_ms"].values
         fund_rate = funding_df["rate"].values
 
-        # Compute z-score over last 21 funding events (3 prints/day * 7 days)
-        # Require min 8 events (~2.7 days) for stable std estimate
-        fund_zscore = np.zeros(len(fund_rate))
-        for j in range(len(fund_rate)):
-            lookback = fund_rate[max(0, j - 20) : j + 1]
-            if len(lookback) >= 8:
-                mu = lookback.mean()
-                sigma = lookback.std()
-                if sigma > 1e-12:
-                    fund_zscore[j] = (fund_rate[j] - mu) / sigma
+        # Vectorized z-score over last 21 funding events
+        fund_series = pd.Series(fund_rate)
+        roll_mean = fund_series.rolling(window=21, min_periods=8).mean()
+        roll_std = fund_series.rolling(window=21, min_periods=8).std()
+        with np.errstate(invalid="ignore", divide="ignore"):
+            fund_zscore = np.where(
+                roll_std.values > 1e-12,
+                (fund_rate - roll_mean.values) / roll_std.values,
+                0.0,
+            )
+        fund_zscore = np.nan_to_num(fund_zscore)
 
-        # Forward-fill to batches
-        fund_idx = 0
-        for i in range(num_batches):
-            t = batch_timestamps[i]
-            while fund_idx < len(fund_ts) - 1 and fund_ts[fund_idx + 1] <= t:
-                fund_idx += 1
-            if fund_idx < len(fund_ts) and fund_ts[fund_idx] <= t:
-                extra_features[i, 0] = fund_zscore[fund_idx]
+        # Vectorized forward-fill to batches via searchsorted
+        indices = np.searchsorted(fund_ts, batch_timestamps, side="right") - 1
+        valid = indices >= 0
+        extra_features[valid, 0] = fund_zscore[indices[valid]]
 
-    # Feature 19: utc_hour_linear
-    for i in range(num_batches):
-        hour = (batch_timestamps[i] / 1000 / 3600) % 24
-        extra_features[i, 1] = hour / 24.0
+    # Feature 19: utc_hour_linear (vectorized)
+    extra_features[:, 1] = ((batch_timestamps / 1000 / 3600) % 24) / 24.0
 
     # Combine all features
     trade_features = np.column_stack(
