@@ -17,19 +17,20 @@ def make_trades():
         base_qty: float = 1.0,
         sides: list[str] | None = None,
         seed: int = 42,
+        ts_spacing_ms: int = 1000,
     ) -> pd.DataFrame:
         rng = np.random.default_rng(seed)
         if sides is None:
             sides = ["open_long", "close_long", "open_short", "close_short"]
         return pd.DataFrame(
             {
-                "ts_ms": np.arange(n) * 1000 + 1_000_000,
+                "ts_ms": np.arange(n) * ts_spacing_ms + 1_000_000,
                 "symbol": "TEST",
                 "trade_id": [f"t{i}" for i in range(n)],
                 "side": rng.choice(sides, size=n),
                 "qty": rng.exponential(base_qty, size=n),
                 "price": base_price + rng.normal(0, 0.1, size=n).cumsum(),
-                "recv_ms": np.arange(n) * 1000 + 1_000_010,
+                "recv_ms": np.arange(n) * ts_spacing_ms + 1_000_010,
             }
         )
 
