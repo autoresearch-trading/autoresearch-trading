@@ -1,6 +1,2 @@
 commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
-ed3f565	0.000000	8038	0.3646	0/25	baseline	multi-symbol PPO on CUDA, default hyperparams, 5min budget
-43eb623	0.013398	8056	0.3381	1/25	kept	sortino-style reward (only penalize downside vol)
-2118a96	0.237252	2368	0.2366	2/25	kept	larger network (256x3) + longer rollouts (512)
-f434b8f	0.136421	3533	0.1604	4/25	kept	ensemble 3 seeds × 100s averaged logits
-c451655	0.190809	4535	0.2968	3/25	kept	reward normalization + 3-seed ensemble
+bef5923	0.369578	3278	0.1836	1/25	kept	v3 features baseline (reward norm + 3-seed ensemble)
