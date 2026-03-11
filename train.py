@@ -14,8 +14,8 @@ from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # === HYPERPARAMETERS (agent tunes these) ===
 ALGO = "PPO"
-HIDDEN_DIM = 256
-NUM_LAYERS = 3
+HIDDEN_DIM = 128
+NUM_LAYERS = 2
 LEARNING_RATE = 3e-4
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
