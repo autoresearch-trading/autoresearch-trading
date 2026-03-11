@@ -1,364 +1,345 @@
 #!/usr/bin/env python3
-"""RL trading agent — multi-symbol CUDA training with ensemble of 3 seeds."""
+"""RL trading agent — Optuna hyperparameter search with SB3 PPO."""
 
+import contextlib
 import io
+import os
 import sys
 import time
 
+import gymnasium
 import numpy as np
+import optuna
 import torch
-import torch.nn as nn
-from torch.distributions import Categorical
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
-# === HYPERPARAMETERS (agent tunes these) ===
-ALGO = "PPO"
-HIDDEN_DIM = 256
-NUM_LAYERS = 3
-LEARNING_RATE = 3e-4
-GAMMA = 0.99
-GAE_LAMBDA = 0.95
-CLIP_EPS = 0.2
-ENTROPY_COEF = 0.01
-VALUE_COEF = 0.5
-NUM_STEPS = 1024  # Steps per rollout
-NUM_MINIBATCHES = 4
-UPDATE_EPOCHS = 4
+# ── Configuration ──────────────────────────────────────────────
+SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "CRV"]
+SEARCH_BUDGET = 90  # seconds per search trial
+SEARCH_TRIALS = 20
+FINAL_SEEDS = 3
+FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-LAMBDA_VOL = 0.5
-LAMBDA_DRAW = 1.0
-SYMBOLS = DEFAULT_SYMBOLS  # All 25 symbols
-NUM_SEEDS = 3  # Train 3 policies, evaluate all, use best
+BATCH_SIZE = 256
 
-# === DEVICE ===
-device = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
-)
-print(f"device: {device}")
+# SB3 recommends CPU for MlpPolicy (GPU transfer overhead > compute for small MLPs)
+DEVICE = torch.device("cpu")
 
 
-# === REWARD FUNCTION (agent redesigns this) ===
-def compute_reward(info, reward_state):
-    """Sortino-style reward: only penalize downside volatility.
-
-    info contains: step_pnl, position, equity, drawdown, trade_count, hold_duration
-    reward_state is a mutable dict for tracking rolling statistics.
-    """
-    pnl = info["step_pnl"]
-
-    # Track rolling downside deviation (Sortino-style)
-    reward_state.setdefault("pnl_history", [])
-    reward_state["pnl_history"].append(pnl)
-    if len(reward_state["pnl_history"]) > 100:
-        reward_state["pnl_history"] = reward_state["pnl_history"][-100:]
-
-    if len(reward_state["pnl_history"]) > 10:
-        negatives = [p for p in reward_state["pnl_history"] if p < 0]
-        downside_vol = np.std(negatives) if len(negatives) > 2 else 0
-    else:
-        downside_vol = 0
-
-    dd = info["drawdown"]
-
-    reward = pnl - LAMBDA_VOL * downside_vol - LAMBDA_DRAW * dd
-    return reward
+# ── Utilities ──────────────────────────────────────────────────
+@contextlib.contextmanager
+def quiet():
+    """Suppress stdout (for noisy cache-loading messages)."""
+    old = sys.stdout
+    devnull = open(os.devnull, "w")
+    sys.stdout = devnull
+    try:
+        yield
+    finally:
+        sys.stdout = old
+        devnull.close()
 
 
-# === RUNNING REWARD NORMALIZER ===
-class RewardNormalizer:
-    """Welford's online algorithm for running variance."""
+class TimeBudget(BaseCallback):
+    """Stop SB3 training after a wall-clock budget."""
 
-    def __init__(self):
-        self.count = 0
-        self.mean = 0.0
-        self.M2 = 0.0
-
-    def update(self, x):
-        self.count += 1
-        delta = x - self.mean
-        self.mean += delta / self.count
-        delta2 = x - self.mean
-        self.M2 += delta * delta2
-
-    @property
-    def std(self):
-        if self.count < 2:
-            return 1.0
-        return max(np.sqrt(self.M2 / self.count), 1e-8)
-
-    def normalize(self, x):
-        return x / self.std
-
-
-# === NETWORK (agent redesigns this) ===
-class PolicyNetwork(nn.Module):
-    def __init__(self, obs_shape, n_actions=3):
+    def __init__(self, seconds):
         super().__init__()
-        flat_dim = obs_shape[0] * obs_shape[1]  # window_size * num_features
+        self.seconds = seconds
+        self.t0 = None
 
-        layers = [nn.Linear(flat_dim, HIDDEN_DIM), nn.ReLU()]
-        for _ in range(NUM_LAYERS - 1):
-            layers.extend([nn.Linear(HIDDEN_DIM, HIDDEN_DIM), nn.ReLU()])
-        self.shared = nn.Sequential(*layers)
-        self.actor = nn.Linear(HIDDEN_DIM, n_actions)
-        self.critic = nn.Linear(HIDDEN_DIM, 1)
+    def _on_training_start(self):
+        self.t0 = time.time()
 
-    def forward(self, x):
-        x = x.flatten(start_dim=1)
-        shared = self.shared(x)
-        return self.actor(shared), self.critic(shared)
-
-    def get_action_and_value(self, obs, action=None):
-        logits, value = self(obs)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), value.squeeze(-1)
+    def _on_step(self):
+        return (time.time() - self.t0) < self.seconds
 
 
-# === TRAINING ONE POLICY ===
-def train_one_policy(
-    train_envs, active_symbols, weights, obs_shape, budget_seconds, seed
-):
-    """Train a single policy with a given seed and time budget."""
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+# ── Reward wrapper ─────────────────────────────────────────────
+class SortinoReward(gymnasium.Wrapper):
+    """Sortino-style reward with Welford running normalization."""
 
-    policy = PolicyNetwork(obs_shape).to(device)
-    optimizer = torch.optim.Adam(policy.parameters(), lr=LEARNING_RATE)
-    reward_norm = RewardNormalizer()
+    def __init__(self, env, lam_vol=0.5, lam_draw=1.0):
+        super().__init__(env)
+        self.lam_vol = lam_vol
+        self.lam_draw = lam_draw
+        self._hist = []
+        self._n = 0
+        self._mean = 0.0
+        self._m2 = 0.0
 
-    # Initialize all envs
-    env_obs = {}
-    env_reward_states = {}
-    for sym in active_symbols:
-        obs, _ = train_envs[sym].reset()
-        env_obs[sym] = torch.tensor(obs, dtype=torch.float32, device=device)
-        env_reward_states[sym] = {}
+    def reset(self, **kw):
+        self._hist = []
+        return self.env.reset(**kw)
 
-    start_time = time.time()
-    total_steps = 0
-    num_updates = 0
+    def step(self, action):
+        obs, _, done, trunc, info = self.env.step(action)
+        r = self._raw_reward(info)
+        r = self._normalize(r)
+        return obs, float(r), done, trunc, info
 
-    while (time.time() - start_time) < budget_seconds:
-        sym = np.random.choice(active_symbols, p=weights)
-        env = train_envs[sym]
-        obs = env_obs[sym]
-        reward_state = env_reward_states[sym]
+    def _raw_reward(self, info):
+        pnl = info["step_pnl"]
+        self._hist.append(pnl)
+        if len(self._hist) > 100:
+            self._hist = self._hist[-100:]
+        dv = 0.0
+        if len(self._hist) > 10:
+            neg = [p for p in self._hist if p < 0]
+            if len(neg) > 2:
+                dv = float(np.std(neg))
+        return pnl - self.lam_vol * dv - self.lam_draw * info["drawdown"]
 
-        batch_obs = []
-        batch_actions = []
-        batch_logprobs = []
-        batch_rewards = []
-        batch_values = []
-        batch_dones = []
+    def _normalize(self, x):
+        self._n += 1
+        d = x - self._mean
+        self._mean += d / self._n
+        self._m2 += d * (x - self._mean)
+        if self._n < 2:
+            return x
+        return x / max(np.sqrt(self._m2 / self._n), 1e-8)
 
-        for _ in range(NUM_STEPS):
-            with torch.no_grad():
-                action, logprob, _, value = policy.get_action_and_value(
-                    obs.unsqueeze(0)
-                )
 
-            next_obs, _, done, truncated, info = env.step(action.item())
-            raw_reward = compute_reward(info, reward_state)
-            reward_norm.update(raw_reward)
-            reward = reward_norm.normalize(raw_reward)
+# ── Environment factories ─────────────────────────────────────
+def _env_factory(sym, split, lv, ld):
+    """Return a callable that creates a reward-wrapped env."""
 
-            batch_obs.append(obs)
-            batch_actions.append(action.squeeze())
-            batch_logprobs.append(logprob.squeeze())
-            batch_rewards.append(reward)
-            batch_values.append(value.squeeze())
-            batch_dones.append(done or truncated)
+    def _init():
+        with quiet():
+            env = make_env(sym, split, window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH)
+        return SortinoReward(env, lam_vol=lv, lam_draw=ld)
 
-            if done or truncated:
-                next_obs, _ = env.reset()
-                reward_state = {}
-                env_reward_states[sym] = reward_state
+    return _init
 
-            obs = torch.tensor(next_obs, dtype=torch.float32, device=device)
-            total_steps += 1
 
-        env_obs[sym] = obs
-
-        # GAE
-        with torch.no_grad():
-            _, _, _, next_value = policy.get_action_and_value(obs.unsqueeze(0))
-            next_value = next_value.squeeze()
-
-        rewards = torch.tensor(batch_rewards, dtype=torch.float32, device=device)
-        values = torch.stack(batch_values).squeeze(-1)
-        dones = torch.tensor(batch_dones, dtype=torch.float32, device=device)
-
-        advantages = torch.zeros_like(rewards)
-        lastgaelam = 0
-        for t in reversed(range(NUM_STEPS)):
-            if t == NUM_STEPS - 1:
-                next_val = next_value
-            else:
-                next_val = values[t + 1]
-            delta = rewards[t] + GAMMA * next_val * (1 - dones[t]) - values[t]
-            advantages[t] = lastgaelam = (
-                delta + GAMMA * GAE_LAMBDA * (1 - dones[t]) * lastgaelam
-            )
-
-        returns = advantages + values
-
-        # PPO update
-        b_obs = torch.stack(batch_obs)
-        b_actions = torch.stack(batch_actions)
-        b_logprobs = torch.stack(batch_logprobs)
-        b_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        b_returns = returns
-
-        batch_size = NUM_STEPS
-        minibatch_size = batch_size // NUM_MINIBATCHES
-
-        for _ in range(UPDATE_EPOCHS):
-            indices = torch.randperm(batch_size, device=device)
-            for start in range(0, batch_size, minibatch_size):
-                end = start + minibatch_size
-                mb_idx = indices[start:end]
-
-                _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_idx], b_actions[mb_idx]
-                )
-
-                ratio = (new_logprob - b_logprobs[mb_idx]).exp()
-                surr1 = ratio * b_advantages[mb_idx]
-                surr2 = (
-                    torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS)
-                    * b_advantages[mb_idx]
-                )
-
-                pg_loss = -torch.min(surr1, surr2).mean()
-                v_loss = ((new_value - b_returns[mb_idx]) ** 2).mean()
-                ent_loss = entropy.mean()
-
-                loss = pg_loss + VALUE_COEF * v_loss - ENTROPY_COEF * ent_loss
-
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
-                optimizer.step()
-
-        num_updates += 1
-
-    elapsed = time.time() - start_time
-    print(
-        f"  Seed {seed}: {num_updates} updates, {total_steps} steps in {elapsed:.1f}s"
+# ── Training ───────────────────────────────────────────────────
+def train_model(symbols, p, budget, seed=0, tb_log=None):
+    """Train one PPO model with SB3, return the model."""
+    n_envs = len(symbols)
+    vec = DummyVecEnv(
+        [_env_factory(s, "train", p["lam_vol"], p["lam_draw"]) for s in symbols]
     )
-    return policy
+
+    n_steps = p["n_steps"]
+    buf = n_steps * n_envs
+    bs = min(BATCH_SIZE, buf)
+    while buf % bs != 0:
+        bs -= 1
+
+    model = PPO(
+        "MlpPolicy",
+        vec,
+        learning_rate=p["lr"],
+        n_steps=n_steps,
+        batch_size=bs,
+        n_epochs=p["n_epochs"],
+        gamma=p["gamma"],
+        gae_lambda=p["gae_lam"],
+        ent_coef=p["ent"],
+        clip_range=p["clip"],
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        seed=seed,
+        device=DEVICE,
+        tensorboard_log=tb_log,
+        verbose=0,
+        policy_kwargs=dict(net_arch=[p["hdim"]] * p["nlayers"]),
+    )
+
+    model.learn(total_timesteps=999_999_999, callback=TimeBudget(budget))
+    vec.close()
+    return model
 
 
-# === MAIN TRAINING LOOP ===
-def train():
-    # Create training envs for all symbols + compute sampling weights
-    print(f"Loading {len(SYMBOLS)} symbol environments...")
-    train_envs = {}
-    env_weights = {}
-    for sym in SYMBOLS:
+# ── Evaluation ─────────────────────────────────────────────────
+def _run_eval(policy_fn, symbols, split="test"):
+    """Run policy through symbols on given split. Returns (sharpe, passing, trades, dd)."""
+    passing = []
+    trades_all = 0
+    worst_dd = 0.0
+
+    for sym in symbols:
         try:
-            env = make_env(
-                sym, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
-            )
-            train_envs[sym] = env
-            env_weights[sym] = env.num_steps
-            print(f"  {sym}: {env.num_steps} steps")
-        except Exception as e:
-            print(f"  {sym}: SKIP ({e})")
+            with quiet():
+                et = make_env(
+                    sym, split, window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+                )
+            buf = io.StringIO()
+            old = sys.stdout
+            sys.stdout = buf
+            sh = evaluate(et, policy_fn)
+            sys.stdout = old
+            out = buf.getvalue()
 
-    active_symbols = list(train_envs.keys())
-    weights = np.array([env_weights[s] for s in active_symbols], dtype=np.float64)
-    weights /= weights.sum()
-    print(f"Training on {len(active_symbols)} symbols")
+            t, d = 0, 0.0
+            for ln in out.strip().split("\n"):
+                if ln.startswith("num_trades:"):
+                    t = int(ln.split()[1])
+                elif ln.startswith("max_drawdown:"):
+                    d = float(ln.split()[1])
 
-    obs_shape = train_envs[active_symbols[0]].observation_space.shape
+            tag = "PASS" if sh > 0 else "FAIL"
+            print(f"  {sym}: sharpe={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
 
-    # Train ensemble of policies with different seeds
-    budget_per_seed = TRAIN_BUDGET_SECONDS // NUM_SEEDS
-    print(f"Training {NUM_SEEDS} policies, {budget_per_seed}s each...")
-
-    policies = []
-    for seed in range(NUM_SEEDS):
-        policy = train_one_policy(
-            train_envs, active_symbols, weights, obs_shape, budget_per_seed, seed
-        )
-        policies.append(policy)
-
-    # === MULTI-SYMBOL EVALUATION ===
-    # Ensemble: average logits from all policies
-    def policy_fn(obs):
-        with torch.no_grad():
-            obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-            logits_sum = None
-            for p in policies:
-                logits, _ = p(obs_t)
-                if logits_sum is None:
-                    logits_sum = logits
-                else:
-                    logits_sum = logits_sum + logits
-            return logits_sum.argmax(dim=-1).item()
-
-    print("---")
-    print("=== PER-SYMBOL EVALUATION ===")
-
-    passing_sharpes = []
-    total_trades_all = 0
-    worst_drawdown = 0.0
-    training_seconds = budget_per_seed * NUM_SEEDS
-
-    for sym in SYMBOLS:
-        try:
-            env_test = make_env(
-                sym, "test", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
-            )
-            # Capture evaluate() output to avoid cluttering stdout
-            captured = io.StringIO()
-            old_stdout = sys.stdout
-            sys.stdout = captured
-            sharpe = evaluate(env_test, policy_fn)
-            sys.stdout = old_stdout
-            eval_output = captured.getvalue()
-
-            # Parse num_trades and max_drawdown from evaluate() output
-            trades = 0
-            max_dd = 0.0
-            for line in eval_output.strip().split("\n"):
-                if line.startswith("num_trades:"):
-                    trades = int(line.split()[1])
-                elif line.startswith("max_drawdown:"):
-                    max_dd = float(line.split()[1])
-
-            status = "PASS" if sharpe > 0 else "FAIL"
-            print(
-                f"  {sym}: sharpe={sharpe:.4f} trades={trades} dd={max_dd:.4f} [{status}]"
-            )
-
-            if sharpe > 0:
-                passing_sharpes.append(sharpe)
-            total_trades_all += trades
-            worst_drawdown = max(worst_drawdown, max_dd)
+            if sh > 0:
+                passing.append(sh)
+            trades_all += t
+            worst_dd = max(worst_dd, d)
         except Exception as e:
             print(f"  {sym}: ERROR ({e})")
 
-    # === PORTFOLIO SUMMARY ===
-    portfolio_sharpe = np.mean(passing_sharpes) if passing_sharpes else 0.0
+    mean_sh = float(np.mean(passing)) if passing else 0.0
+    return mean_sh, len(passing), trades_all, worst_dd
+
+
+def eval_single(model, symbols, split="test"):
+    """Evaluate a single SB3 model."""
+
+    def fn(obs):
+        a, _ = model.predict(obs, deterministic=True)
+        return int(a)
+
+    return _run_eval(fn, symbols, split)
+
+
+def eval_ensemble(models, symbols, split="test"):
+    """Evaluate ensemble by averaging logits across models."""
+
+    def fn(obs):
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=DEVICE).unsqueeze(0)
+        logits = None
+        with torch.no_grad():
+            for m in models:
+                feat = m.policy.extract_features(obs_t, m.policy.features_extractor)
+                lp, _ = m.policy.mlp_extractor(feat)
+                lg = m.policy.action_net(lp)
+                logits = lg if logits is None else logits + lg
+        return logits.argmax(-1).item()
+
+    return _run_eval(fn, symbols, split)
+
+
+# ── Optuna objective ───────────────────────────────────────────
+def objective(trial):
+    p = {
+        "lr": trial.suggest_float("lr", 5e-5, 3e-3, log=True),
+        "n_steps": trial.suggest_categorical("n_steps", [256, 512, 1024]),
+        "n_epochs": 4,
+        "gamma": trial.suggest_float("gamma", 0.9, 0.999),
+        "gae_lam": 0.95,
+        "ent": trial.suggest_float("ent", 0.001, 0.05, log=True),
+        "clip": 0.2,
+        "hdim": trial.suggest_categorical("hdim", [64, 128, 256, 512]),
+        "nlayers": 3,
+        "lam_vol": trial.suggest_float("lam_vol", 0.0, 2.0),
+        "lam_draw": trial.suggest_float("lam_draw", 0.1, 5.0, log=True),
+    }
+
+    print(f"\n{'='*50}")
+    print(f"Trial {trial.number}")
+    for k in ["lr", "n_steps", "gamma", "ent", "hdim", "lam_vol", "lam_draw"]:
+        v = p[k]
+        print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
+
+    try:
+        t0 = time.time()
+        m = train_model(SEARCH_SYMBOLS, p, SEARCH_BUDGET, seed=trial.number)
+        # Evaluate on VAL split (not test) to avoid overfitting during search
+        sh, ps, tr, dd = eval_single(m, SEARCH_SYMBOLS, split="val")
+        elapsed = time.time() - t0
+        print(
+            f"  => sharpe={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
+            f"trades={tr} dd={dd:.4f} ({elapsed:.0f}s)"
+        )
+        del m
+        if DEVICE.type == "mps":
+            torch.mps.empty_cache()
+        elif DEVICE.type == "cuda":
+            torch.cuda.empty_cache()
+        return sh
+    except Exception as e:
+        print(f"  => FAILED: {e}")
+        return -999.0
+
+
+# ── Main ───────────────────────────────────────────────────────
+def main():
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    print(f"device: {DEVICE}")
+    print(
+        f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
+        f"on {SEARCH_SYMBOLS} ===\n"
+    )
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+        storage="sqlite:///optuna_study.db",
+        study_name="ppo_v3",
+        load_if_exists=True,
+    )
+    study.optimize(objective, n_trials=SEARCH_TRIALS)
+
+    # Top results
+    print(f"\n{'='*50}")
+    print("TOP 5 TRIALS:")
+    ranked = sorted(
+        study.trials, key=lambda t: t.value if t.value else -999, reverse=True
+    )
+    for t in ranked[:5]:
+        print(f"  #{t.number}: sharpe={t.value:.4f}  {t.params}")
+
+    # Final training with best params
+    b = study.best_params
+    bp = {
+        "lr": b["lr"],
+        "n_steps": b["n_steps"],
+        "n_epochs": 4,
+        "gamma": b["gamma"],
+        "gae_lam": 0.95,
+        "ent": b["ent"],
+        "clip": 0.2,
+        "hdim": b["hdim"],
+        "nlayers": 3,
+        "lam_vol": b["lam_vol"],
+        "lam_draw": b["lam_draw"],
+    }
+    seed_budget = FINAL_BUDGET // FINAL_SEEDS
+
+    print(
+        f"\n=== FINAL: {FINAL_SEEDS} seeds x {seed_budget}s, "
+        f"all {len(DEFAULT_SYMBOLS)} symbols ==="
+    )
+    print(f"params: {bp}\n")
+
+    models = []
+    for s in range(FINAL_SEEDS):
+        print(f"Training seed {s}...")
+        models.append(
+            train_model(DEFAULT_SYMBOLS, bp, seed_budget, seed=s, tb_log="./tb_logs")
+        )
+
+    # Ensemble evaluation on TEST split
+    print("\n---")
+    print("=== PER-SYMBOL EVALUATION ===")
+    sh, ps, tr, dd = eval_ensemble(models, DEFAULT_SYMBOLS, split="test")
 
     print("---")
     print("=== PORTFOLIO SUMMARY ===")
-    print(f"symbols_passing: {len(passing_sharpes)}/{len(SYMBOLS)}")
-    print(f"val_sharpe: {portfolio_sharpe:.6f}")
-    print(f"num_trades: {total_trades_all}")
-    print(f"max_drawdown: {worst_drawdown:.4f}")
-    print(f"training_seconds: {training_seconds:.1f}")
+    print(f"symbols_passing: {ps}/{len(DEFAULT_SYMBOLS)}")
+    print(f"val_sharpe: {sh:.6f}")
+    print(f"num_trades: {tr}")
+    print(f"max_drawdown: {dd:.4f}")
+    print(f"training_seconds: {FINAL_BUDGET:.1f}")
     print(f"total_steps: 0")
     print(f"num_updates: 0")
+    print(f"\nbest_params: {bp}")
 
 
 if __name__ == "__main__":
-    train()
+    main()
