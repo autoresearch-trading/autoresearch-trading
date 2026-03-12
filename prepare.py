@@ -144,11 +144,11 @@ def compute_features(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 20 evidence-based features from raw data.
+    """Compute 25 features from raw data.
 
-    Returns: (features, timestamps, prices) where features has shape (num_batches, 20).
+    Returns: (features, timestamps, prices) where features has shape (num_batches, 25).
 
-    Feature layout:
+    Feature layout (0-19: tick-horizon, 20-24: longer-horizon):
       0: returns           - log return of batch VWAP
       1: r_5               - 5-batch log return
       2: r_20              - 20-batch log return
@@ -169,6 +169,11 @@ def compute_features(
      17: ob_slope_asym     - ask price-depth slope minus bid slope
      18: funding_zscore    - z-scored funding rate (event-aligned)
      19: utc_hour_linear   - hour_utc / 24
+     20: r_500             - ~8h log return
+     21: r_2800            - ~24h log return
+     22: cum_tfi_100       - rolling sum of TFI over 100 batches (~1.5h)
+     23: cum_tfi_500       - rolling sum of TFI over 500 batches (~8h)
+     24: funding_rate_raw  - forward-filled raw funding rate
     """
     if trades_df.empty:
         return np.array([]), np.array([]), np.array([])
@@ -213,11 +218,13 @@ def compute_features(
     returns = np.zeros(num_batches)
     returns[1:] = np.log(vwap[1:] / np.maximum(vwap[:-1], 1e-10))
 
-    # --- Features 1-3: multi-horizon returns ---
+    # --- Features 1-3, 20-21: multi-horizon returns ---
     r_5 = np.zeros(num_batches)
     r_20 = np.zeros(num_batches)
     r_100 = np.zeros(num_batches)
-    for k, arr in [(5, r_5), (20, r_20), (100, r_100)]:
+    r_500 = np.zeros(num_batches)
+    r_2800 = np.zeros(num_batches)
+    for k, arr in [(5, r_5), (20, r_20), (100, r_100), (500, r_500), (2800, r_2800)]:
         if num_batches > k:
             arr[k:] = np.log(vwap[k:] / np.maximum(vwap[:-k], 1e-10))
 
@@ -247,6 +254,11 @@ def compute_features(
         (buy_notional - sell_notional) / total_batch_notional,
         0.0,
     )
+
+    # --- Features 22-23: cumulative order flow (rolling sum of TFI) ---
+    tfi_series = pd.Series(tfi)
+    cum_tfi_100 = tfi_series.rolling(window=100, min_periods=1).sum().fillna(0).values
+    cum_tfi_500 = tfi_series.rolling(window=500, min_periods=1).sum().fillna(0).values
 
     # --- Feature 7: volume_spike_ratio ---
     notional_series = pd.Series(total_batch_notional)
@@ -444,8 +456,10 @@ def compute_features(
 
     # Feature 18: funding_zscore
     if not funding_df.empty:
-        fund_ts = funding_df["ts_ms"].values
-        fund_rate = funding_df["rate"].values
+        # Deduplicate: keep first row per unique ts_ms (raw data has ~143k dupes/day)
+        funding_dedup = funding_df.drop_duplicates(subset="ts_ms", keep="first")
+        fund_ts = funding_dedup["ts_ms"].values
+        fund_rate = funding_dedup["rate"].values
 
         # Vectorized z-score over last 21 funding events
         fund_series = pd.Series(fund_rate)
@@ -467,6 +481,17 @@ def compute_features(
     # Feature 19: utc_hour_linear (vectorized)
     extra_features[:, 1] = ((batch_timestamps / 1000 / 3600) % 24) / 24.0
 
+    # === LONGER-HORIZON FEATURES (indices 20-24) ===
+    longer_features = np.zeros((num_batches, 5))
+    longer_features[:, 0] = r_500  # 20
+    longer_features[:, 1] = r_2800  # 21
+    longer_features[:, 2] = cum_tfi_100  # 22
+    longer_features[:, 3] = cum_tfi_500  # 23
+
+    # Feature 24: funding_rate_raw (forward-filled, not z-scored)
+    if not funding_df.empty:
+        longer_features[valid, 4] = fund_rate[indices[valid]]
+
     # Combine all features
     trade_features = np.column_stack(
         [
@@ -485,7 +510,7 @@ def compute_features(
         ]
     )
 
-    features = np.hstack([trade_features, ob_features, extra_features])
+    features = np.hstack([trade_features, ob_features, extra_features, longer_features])
 
     return features, batch_timestamps, batch_prices
 
@@ -493,7 +518,8 @@ def compute_features(
 # Indices of features that get robust (median/IQR) normalization.
 # Tail-heavy: bipower_var, volume_spike_ratio, large_trade_share, kyle_lambda,
 # amihud_illiq, trade_arrival_rate, spread_bps, log_total_depth, ofi, ob_slope_asym
-ROBUST_FEATURE_INDICES = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17}
+# cum_tfi (22, 23) and funding_rate_raw (24) are also tail-heavy
+ROBUST_FEATURE_INDICES = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24}
 
 
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
@@ -526,10 +552,13 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
 
         normalized[:, col] = z.fillna(0).values
 
+    # Clip to prevent extreme outliers from poisoning gradients
+    np.clip(normalized, -5, 5, out=normalized)
+
     return normalized
 
 
-_FEATURE_VERSION = "v3"  # bump when feature set changes
+_FEATURE_VERSION = "v4"  # v4: 25 features (longer-horizon + funding rate raw)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
@@ -659,6 +688,7 @@ class TradingEnv(gymnasium.Env):
         prices: np.ndarray,
         window_size: int = 50,
         fee_bps: float = 5,
+        min_hold: int = 1,
     ):
         super().__init__()
 
@@ -666,6 +696,7 @@ class TradingEnv(gymnasium.Env):
         self.prices = prices.astype(np.float64)
         self.window_size = window_size
         self.fee_bps = fee_bps
+        self.min_hold = min_hold
         self.num_steps = len(features)
 
         self.observation_space = gymnasium.spaces.Box(
@@ -684,6 +715,7 @@ class TradingEnv(gymnasium.Env):
         self._realized_pnl = 0.0
         self._trade_count = 0
         self._hold_duration = 0
+        self._steps_since_trade = 0
         self._episode_step = 0
 
     def _get_obs(self) -> np.ndarray:
@@ -709,12 +741,21 @@ class TradingEnv(gymnasium.Env):
         self._realized_pnl = 0.0
         self._trade_count = 0
         self._hold_duration = 0
+        self._steps_since_trade = self.min_hold  # allow first trade immediately
         self._episode_step = 0
 
         return self._get_obs(), {}
 
     def step(self, action: int):
         prev_position = self._position
+        self._steps_since_trade += 1
+
+        # Enforce min_hold: ignore position changes during hold period
+        # Exception: entering from flat is always allowed
+        if action != prev_position and prev_position != 0:
+            if self._steps_since_trade < self.min_hold:
+                action = prev_position  # override: keep current position
+
         prev_price = self.prices[self._idx - 1]
         curr_price = self.prices[self._idx]
 
@@ -742,6 +783,7 @@ class TradingEnv(gymnasium.Env):
                 step_pnl -= self.fee_bps / 10000
             self._trade_count += 1
             self._hold_duration = 0
+            self._steps_since_trade = 0
             self._position = action
         else:
             if self._position != 0:
@@ -770,6 +812,7 @@ class TradingEnv(gymnasium.Env):
             "drawdown": drawdown,
             "trade_count": self._trade_count,
             "hold_duration": self._hold_duration,
+            "steps_since_trade": self._steps_since_trade,
             "realized_pnl": self._realized_pnl,
             "price": curr_price,
         }
@@ -860,6 +903,7 @@ def make_env(
     split: str = "train",
     window_size: int = 50,
     trade_batch: int = 100,
+    min_hold: int = 1,
 ) -> TradingEnv:
     """Create a TradingEnv for the given symbol and data split."""
     splits = {
@@ -890,7 +934,9 @@ def make_env(
                 symbol, features, timestamps, prices, CACHE_DIR, start, end, trade_batch
             )
 
-    return TradingEnv(features, prices, window_size=window_size, fee_bps=FEE_BPS)
+    return TradingEnv(
+        features, prices, window_size=window_size, fee_bps=FEE_BPS, min_hold=min_hold
+    )
 
 
 if __name__ == "__main__":

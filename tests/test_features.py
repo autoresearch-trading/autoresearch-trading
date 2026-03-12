@@ -1,4 +1,4 @@
-"""Tests for v3 feature engineering in prepare.py (20 features)."""
+"""Tests for v4 feature engineering in prepare.py (25 features)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import pandas as pd
 
 from prepare import compute_features, normalize_features
 
-NUM_FEATURES_V3 = 20
+NUM_FEATURES_V4 = 25
 
 
 class TestFeatureShape:
@@ -17,7 +17,7 @@ class TestFeatureShape:
         features, timestamps, prices = compute_features(
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
-        assert features.shape == (2, NUM_FEATURES_V3)
+        assert features.shape == (2, NUM_FEATURES_V4)
         assert len(timestamps) == 2
         assert len(prices) == 2
 
@@ -31,7 +31,7 @@ class TestFeatureShape:
         self, make_trades, empty_df, make_funding
     ):
         features, _, _ = compute_features(make_trades(), empty_df, make_funding())
-        assert features.shape[1] == NUM_FEATURES_V3
+        assert features.shape[1] == NUM_FEATURES_V4
         # OB features (indices 12-17) should be zero or default
         assert features[0, 12] == 0.0  # spread_bps
         assert features[0, 14] == 0.0  # weighted_imbalance
@@ -40,7 +40,7 @@ class TestFeatureShape:
         self, make_trades, make_orderbook, empty_df
     ):
         features, _, _ = compute_features(make_trades(), make_orderbook(), empty_df)
-        assert features.shape[1] == NUM_FEATURES_V3
+        assert features.shape[1] == NUM_FEATURES_V4
         assert features[0, 18] == 0.0  # funding_zscore
 
 
@@ -636,7 +636,7 @@ class TestIntegration:
         )
         features = normalize_features(features)
         env = TradingEnv(features, prices, window_size=10)
-        assert env.observation_space.shape == (10, NUM_FEATURES_V3)
+        assert env.observation_space.shape == (10, NUM_FEATURES_V4)
 
     def test_batch_prices_are_vwap(self):
         """Verify batch_prices are VWAP-based (training PnL depends on this)."""
@@ -670,7 +670,7 @@ class TestIntegration:
         features = normalize_features(features)
         env = TradingEnv(features, prices, window_size=10)
         obs, _ = env.reset()
-        assert obs.shape == (10, NUM_FEATURES_V3)
+        assert obs.shape == (10, NUM_FEATURES_V4)
         obs, _, done, truncated, info = env.step(1)
-        assert obs.shape == (10, NUM_FEATURES_V3)
+        assert obs.shape == (10, NUM_FEATURES_V4)
         assert "step_pnl" in info

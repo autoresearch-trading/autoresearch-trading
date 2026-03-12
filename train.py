@@ -23,6 +23,7 @@ FINAL_SEEDS = 3
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
+MIN_HOLD = 200  # ~3h between trades — breakeven from fee analysis
 
 DEVICE = torch.device(
     "cuda"
@@ -220,12 +221,16 @@ def eval_policy(policy_fn, symbols, split="test"):
     for sym in symbols:
         try:
             env_test = make_env(
-                sym, split, window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+                sym,
+                split,
+                window_size=WINDOW_SIZE,
+                trade_batch=TRADE_BATCH,
+                min_hold=MIN_HOLD,
             )
             buf = io.StringIO()
             old = sys.stdout
             sys.stdout = buf
-            sh = evaluate(env_test, policy_fn)
+            sh = evaluate(env_test, policy_fn, min_trades=3)
             sys.stdout = old
             out = buf.getvalue()
 
@@ -279,7 +284,11 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
     for sym in symbols:
         try:
             env = make_env(
-                sym, "train", window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH
+                sym,
+                "train",
+                window_size=WINDOW_SIZE,
+                trade_batch=TRADE_BATCH,
+                min_hold=MIN_HOLD,
             )
             train_envs[sym] = env
             env_weights[sym] = env.num_steps
@@ -311,17 +320,17 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
 # ── Optuna objective ───────────────────────────────────────────
 def objective(trial):
     p = {
-        "lr": trial.suggest_float("lr", 5e-5, 3e-3, log=True),
-        "n_steps": trial.suggest_categorical("n_steps", [256, 512, 1024]),
+        "lr": trial.suggest_float("lr", 1e-4, 1e-3, log=True),
+        "n_steps": trial.suggest_categorical("n_steps", [512, 1024]),
         "n_epochs": 4,
-        "gamma": trial.suggest_float("gamma", 0.9, 0.999),
+        "gamma": trial.suggest_float("gamma", 0.95, 0.999),
         "gae_lam": 0.95,
-        "ent": trial.suggest_float("ent", 0.001, 0.05, log=True),
+        "ent": trial.suggest_float("ent", 0.01, 0.05, log=True),  # min 0.01
         "clip": 0.2,
-        "hdim": trial.suggest_categorical("hdim", [64, 128, 256]),
+        "hdim": trial.suggest_categorical("hdim", [128, 256]),
         "nlayers": 3,
-        "lam_vol": trial.suggest_float("lam_vol", 0.0, 2.0),
-        "lam_draw": trial.suggest_float("lam_draw", 0.1, 5.0, log=True),
+        "lam_vol": 0.5,  # FIXED — searching over penalty weights causes inaction
+        "lam_draw": 1.0,  # FIXED
     }
 
     print(f"\n{'='*50}")
@@ -361,7 +370,7 @@ def main():
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
         storage="sqlite:///optuna_study.db",
-        study_name="ppo_v3_handrolled",
+        study_name="ppo_v4_longhorizon",
         load_if_exists=True,
     )
     study.optimize(objective, n_trials=SEARCH_TRIALS)
@@ -387,8 +396,8 @@ def main():
         "clip": 0.2,
         "hdim": b["hdim"],
         "nlayers": 3,
-        "lam_vol": b["lam_vol"],
-        "lam_draw": b["lam_draw"],
+        "lam_vol": 0.5,
+        "lam_draw": 1.0,
     }
 
     print(
