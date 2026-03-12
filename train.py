@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """RL trading agent — Optuna hyperparameter search with hand-rolled PPO."""
 
+import hashlib
 import io
 import os
 import sys
@@ -362,6 +363,12 @@ def objective(trial):
         return -999.0
 
 
+def _code_hash():
+    """Hash of train.py for Optuna study isolation."""
+    with open(__file__, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()[:8]
+
+
 # ── Main ───────────────────────────────────────────────────────
 def main():
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -371,11 +378,13 @@ def main():
         f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
     )
 
+    study_name = f"ppo_{_code_hash()}"
+    print(f"Optuna study: {study_name}")
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
         storage="sqlite:///optuna_study.db",
-        study_name="ppo_v4_longhorizon",
+        study_name=study_name,
         load_if_exists=True,
     )
     study.optimize(objective, n_trials=SEARCH_TRIALS)
