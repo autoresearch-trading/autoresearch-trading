@@ -76,111 +76,45 @@ class RewardNormalizer:
 
 
 def compute_reward(info, reward_state, lam_vol, lam_draw):
-    """Reward with incremental drawdown penalty.
-
-    Instead of penalizing absolute drawdown every step (which punishes recovery),
-    only penalize NEW drawdown — the increase in drawdown since last step.
-    """
+    """Sortino-style reward."""
     pnl = info["step_pnl"]
     reward_state.setdefault("pnl_history", [])
     reward_state["pnl_history"].append(pnl)
     if len(reward_state["pnl_history"]) > 100:
         reward_state["pnl_history"] = reward_state["pnl_history"][-100:]
 
-    # Downside vol (Sortino-style)
     downside_vol = 0.0
     if len(reward_state["pnl_history"]) > 10:
         negatives = [p for p in reward_state["pnl_history"] if p < 0]
         if len(negatives) > 2:
             downside_vol = float(np.std(negatives))
 
-    # Incremental drawdown: only penalize NEW drawdown, not existing
-    prev_dd = reward_state.get("prev_drawdown", 0.0)
-    curr_dd = info["drawdown"]
-    dd_increment = max(0.0, curr_dd - prev_dd)  # only penalize worsening
-    reward_state["prev_drawdown"] = curr_dd
-
-    return pnl - lam_vol * downside_vol - lam_draw * dd_increment
+    return pnl - lam_vol * downside_vol - lam_draw * info["drawdown"]
 
 
 # ── Network ────────────────────────────────────────────────────
 class PolicyNetwork(nn.Module):
-    """Temporal CNN policy with state augmentation.
-
-    1D convolutions over the time axis of (50, 25) observation,
-    then concatenates state vector and feeds through MLP head.
-    """
-
-    STATE_DIM = 6  # 3 (position onehot) + 1 (hold frac) + 1 (steps since frac) + 1 (unrealized pnl)
-
     def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
-        seq_len, n_features = obs_shape  # (50, 25)
-
-        # 1D CNN over time axis: input (batch, n_features, seq_len)
-        self.conv = nn.Sequential(
-            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.Conv1d(64, 64, kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),  # -> (batch, 64, 1)
-        )
-
-        # MLP head: CNN output + state
-        mlp_input = 64 + self.STATE_DIM
-        layers = [nn.Linear(mlp_input, hidden_dim), nn.ReLU()]
+        flat_dim = obs_shape[0] * obs_shape[1]
+        layers = [nn.Linear(flat_dim, hidden_dim), nn.ReLU()]
         for _ in range(num_layers - 1):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
-        self.mlp = nn.Sequential(*layers)
+        self.shared = nn.Sequential(*layers)
         self.actor = nn.Linear(hidden_dim, n_actions)
         self.critic = nn.Linear(hidden_dim, 1)
 
-    def forward(self, x, state=None):
-        # x: (batch, seq_len, n_features) -> (batch, n_features, seq_len) for Conv1d
-        x = x.transpose(1, 2)
-        x = self.conv(x).squeeze(-1)  # (batch, 64)
+    def forward(self, x):
+        x = x.flatten(start_dim=1)
+        shared = self.shared(x)
+        return self.actor(shared), self.critic(shared)
 
-        if state is not None:
-            x = torch.cat([x, state], dim=-1)
-        else:
-            x = torch.cat(
-                [x, torch.zeros(x.shape[0], self.STATE_DIM, device=x.device)], dim=-1
-            )
-
-        h = self.mlp(x)
-        return self.actor(h), self.critic(h)
-
-    def get_action_and_value(self, obs, state=None, action=None):
-        logits, value = self(obs, state)
+    def get_action_and_value(self, obs, action=None):
+        logits, value = self(obs)
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), value.squeeze(-1)
-
-
-def build_state_vector(info, min_hold, device):
-    """Build agent state vector from env info dict.
-
-    Returns tensor of shape (STATE_DIM,):
-      [0:3] position one-hot (flat, long, short)
-      [3]   hold_fraction = hold_duration / min_hold (clipped to [0, 2])
-      [4]   steps_since_fraction = steps_since_trade / min_hold (clipped to [0, 2])
-      [5]   realized_pnl (cumulative episode PnL, clipped to [-0.1, 0.1])
-            Note: this is cumulative realized PnL, not unrealized PnL of the
-            current position. True unrealized PnL would require entry price
-            tracking which the env doesn't expose. Realized PnL is still useful
-            as a risk/equity proxy.
-    """
-    pos = info.get("position", 0)
-    pos_onehot = [0.0, 0.0, 0.0]
-    pos_onehot[pos] = 1.0
-
-    hold_frac = min(info.get("hold_duration", 0) / max(min_hold, 1), 2.0)
-    steps_frac = min(info.get("steps_since_trade", min_hold) / max(min_hold, 1), 2.0)
-    realized = max(-0.1, min(0.1, info.get("realized_pnl", 0.0)))
-
-    state = pos_onehot + [hold_frac, steps_frac, realized]
-    return torch.tensor(state, dtype=torch.float32, device=device)
 
 
 # ── Training ───────────────────────────────────────────────────
@@ -195,19 +129,10 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
 
     env_obs = {}
     env_reward_states = {}
-    env_states = {}
-    _initial_info = {
-        "position": 0,
-        "hold_duration": 0,
-        "steps_since_trade": MIN_HOLD,
-        "realized_pnl": 0.0,
-    }
     for sym in active_symbols:
         obs, _ = train_envs[sym].reset()
         env_obs[sym] = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
         env_reward_states[sym] = {}
-        # Initial state: flat position, hold at MIN_HOLD (can trade immediately), zero PnL
-        env_states[sym] = build_state_vector(_initial_info, MIN_HOLD, DEVICE)
 
     n_steps = p["n_steps"]
     n_minibatches = 4
@@ -221,14 +146,13 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
         obs = env_obs[sym]
         reward_state = env_reward_states[sym]
 
-        batch_obs, batch_states, batch_actions, batch_logprobs = [], [], [], []
+        batch_obs, batch_actions, batch_logprobs = [], [], []
         batch_rewards, batch_values, batch_dones = [], [], []
 
         for _ in range(n_steps):
-            state = env_states[sym]
             with torch.no_grad():
                 action, logprob, _, value = policy.get_action_and_value(
-                    obs.unsqueeze(0), state.unsqueeze(0)
+                    obs.unsqueeze(0)
                 )
 
             next_obs, _, done, truncated, info = env.step(action.item())
@@ -237,33 +161,25 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
             reward = reward_norm.normalize(raw_reward)
 
             batch_obs.append(obs)
-            batch_states.append(state)
             batch_actions.append(action.squeeze())
             batch_logprobs.append(logprob.squeeze())
             batch_rewards.append(reward)
             batch_values.append(value.squeeze())
             batch_dones.append(done or truncated)
 
-            # Update state from env info
-            next_state = build_state_vector(info, MIN_HOLD, DEVICE)
-
             if done or truncated:
                 next_obs, _ = env.reset()
                 reward_state = {}
                 env_reward_states[sym] = reward_state
-                next_state = build_state_vector(_initial_info, MIN_HOLD, DEVICE)
 
             obs = torch.tensor(next_obs, dtype=torch.float32, device=DEVICE)
-            env_states[sym] = next_state
             total_steps += 1
 
         env_obs[sym] = obs
 
         # GAE
         with torch.no_grad():
-            _, _, _, next_value = policy.get_action_and_value(
-                obs.unsqueeze(0), env_states[sym].unsqueeze(0)
-            )
+            _, _, _, next_value = policy.get_action_and_value(obs.unsqueeze(0))
             next_value = next_value.squeeze()
 
         rewards = torch.tensor(batch_rewards, dtype=torch.float32, device=DEVICE)
@@ -281,7 +197,6 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
 
         returns = advantages + values
         b_obs = torch.stack(batch_obs)
-        b_states = torch.stack(batch_states)
         b_actions = torch.stack(batch_actions)
         b_logprobs = torch.stack(batch_logprobs)
         b_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -294,7 +209,7 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
             for start in range(0, n_steps, minibatch_size):
                 mb_idx = indices[start : start + minibatch_size]
                 _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_idx], b_states[mb_idx], b_actions[mb_idx]
+                    b_obs[mb_idx], b_actions[mb_idx]
                 )
                 ratio = (new_logprob - b_logprobs[mb_idx]).exp()
                 surr1 = ratio * b_advantages[mb_idx]
@@ -368,47 +283,17 @@ def eval_policy(policy_fn, symbols, split="test"):
     )
 
 
-def make_ensemble_fn(policies, device, min_hold):
-    """Create ensemble policy function with state tracking.
-
-    Note: We replicate the env's min_hold override logic here so that the
-    state vector matches what the env actually does. Without this, the
-    ensemble would track position changes that the env silently rejects.
-    """
-    state_info = {
-        "position": 0,
-        "hold_duration": 0,
-        "steps_since_trade": min_hold,
-        "realized_pnl": 0.0,
-    }
+def make_ensemble_fn(policies, device):
+    """Create ensemble policy function."""
 
     def fn(obs):
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-            state_t = build_state_vector(state_info, min_hold, device).unsqueeze(0)
             logits_sum = None
             for p in policies:
-                logits, _ = p(obs_t, state_t)
+                logits, _ = p(obs_t)
                 logits_sum = logits if logits_sum is None else logits_sum + logits
-            action = logits_sum.argmax(dim=-1).item()
-
-            # Replicate env's min_hold override (prepare.py:753-757)
-            prev_pos = state_info["position"]
-            if action != prev_pos and prev_pos != 0:
-                if state_info["steps_since_trade"] < min_hold:
-                    action = prev_pos  # env would override this
-
-            # Update state tracking based on effective action
-            if action != prev_pos:
-                state_info["position"] = action
-                state_info["hold_duration"] = 0
-                state_info["steps_since_trade"] = 0
-            else:
-                if state_info["position"] != 0:
-                    state_info["hold_duration"] += 1
-                state_info["steps_since_trade"] += 1
-
-            return action
+            return logits_sum.argmax(dim=-1).item()
 
     return fn
 
@@ -456,7 +341,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         total_steps_all += steps
         total_updates_all += updates
 
-    ensemble_fn = make_ensemble_fn(policies, DEVICE, MIN_HOLD)
+    ensemble_fn = make_ensemble_fn(policies, DEVICE)
     sh, ps, tr, dd = eval_policy(ensemble_fn, symbols, split=split)
     return sh, ps, tr, dd, total_steps_all, total_updates_all
 
