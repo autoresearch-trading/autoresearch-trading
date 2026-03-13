@@ -107,7 +107,9 @@ def _ortho_init(layer, gain=np.sqrt(2)):
 class PolicyNetwork(nn.Module):
     def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
-        flat_dim = obs_shape[0] * obs_shape[1]
+        n_time, n_feat = obs_shape
+        # Flat obs + temporal mean + temporal std = extra 2*n_feat features
+        flat_dim = n_time * n_feat + 2 * n_feat
         layers = [_ortho_init(nn.Linear(flat_dim, hidden_dim)), nn.ReLU()]
         for _ in range(num_layers - 1):
             layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
@@ -116,7 +118,11 @@ class PolicyNetwork(nn.Module):
         self.critic = _ortho_init(nn.Linear(hidden_dim, 1), gain=1.0)
 
     def forward(self, x):
-        x = x.flatten(start_dim=1)
+        # x: (batch, time, feat)
+        t_mean = x.mean(dim=1)  # (batch, feat)
+        t_std = x.std(dim=1)  # (batch, feat)
+        flat = x.flatten(start_dim=1)
+        x = torch.cat([flat, t_mean, t_std], dim=1)
         shared = self.shared(x)
         return self.actor(shared), self.critic(shared)
 
