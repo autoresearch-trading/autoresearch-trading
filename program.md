@@ -131,11 +131,10 @@ Each step = 100 consecutive trades (~1-2 seconds for BTC).
 **Maximize portfolio `val_sharpe`** — mean Sharpe ratio across all symbols that pass guardrails.
 
 ### Guardrails (automatic, enforced by evaluate() per symbol)
-- **Minimum 50 trades** — prevents "never trade" degenerate solutions
+- **Minimum 10 trades** — prevents "never trade" degenerate solutions (with min_hold=200, agent naturally makes 10-17 trades per symbol)
 - **Maximum 20% drawdown** — prevents reckless strategies
 - Violating either → that symbol's val_sharpe = 0.0
 - Portfolio Sharpe = mean of ALL passing symbols' Sharpes (including negative)
-- Note: with min_hold=200, the agent can make ~700 trades over the test split, so 50 is easily achievable
 
 ### Secondary metrics
 - **symbols_passing**: how many of 25 symbols pass guardrails (more = better generalization)

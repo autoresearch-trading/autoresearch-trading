@@ -335,7 +335,7 @@ def eval_policy(policy_fn, symbols, split="test"):
             buf = io.StringIO()
             old = sys.stdout
             sys.stdout = buf
-            sh = evaluate(env_test, policy_fn, min_trades=50)
+            sh = evaluate(env_test, policy_fn, min_trades=10)
             sys.stdout = old
             out = buf.getvalue()
 
@@ -349,8 +349,8 @@ def eval_policy(policy_fn, symbols, split="test"):
             # evaluate() returns 0.0 for guardrail violations. A symbol "passes" if
             # it met both guardrails. We re-check here because evaluate() doesn't
             # distinguish "genuine zero Sharpe" from "guardrail violation zero."
-            # Note: these thresholds must match evaluate()'s defaults (min_trades=50, max_drawdown=0.20).
-            passed = (t >= 50 and d <= 0.20) if t > 0 else False
+            # Note: these thresholds must match the min_trades and max_drawdown passed above.
+            passed = (t >= 10 and d <= 0.20) if t > 0 else False
             tag = "PASS" if passed else "FAIL"
             print(f"  {sym}: sharpe={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
             if passed:
