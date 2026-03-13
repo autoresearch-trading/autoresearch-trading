@@ -77,9 +77,17 @@ def compute_reward(info, reward_state, lam_vol, lam_draw):
 
 # ── Network ────────────────────────────────────────────────────
 class PolicyNetwork(nn.Module):
+    """MLP policy with state augmentation.
+
+    Appends [position_onehot(3), hold_frac, steps_since_frac, unrealized_pnl]
+    to the flattened observation = 6 extra dims.
+    """
+
+    STATE_DIM = 6  # 3 (position onehot) + 1 (hold frac) + 1 (steps since frac) + 1 (unrealized pnl)
+
     def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
-        flat_dim = obs_shape[0] * obs_shape[1]
+        flat_dim = obs_shape[0] * obs_shape[1] + self.STATE_DIM
         layers = [nn.Linear(flat_dim, hidden_dim), nn.ReLU()]
         for _ in range(num_layers - 1):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
@@ -87,13 +95,20 @@ class PolicyNetwork(nn.Module):
         self.actor = nn.Linear(hidden_dim, n_actions)
         self.critic = nn.Linear(hidden_dim, 1)
 
-    def forward(self, x):
+    def forward(self, x, state=None):
         x = x.flatten(start_dim=1)
+        if state is not None:
+            x = torch.cat([x, state], dim=-1)
+        else:
+            # Zero state for backward compat (evaluation without state)
+            x = torch.cat(
+                [x, torch.zeros(x.shape[0], self.STATE_DIM, device=x.device)], dim=-1
+            )
         shared = self.shared(x)
         return self.actor(shared), self.critic(shared)
 
-    def get_action_and_value(self, obs, action=None):
-        logits, value = self(obs)
+    def get_action_and_value(self, obs, state=None, action=None):
+        logits, value = self(obs, state)
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
