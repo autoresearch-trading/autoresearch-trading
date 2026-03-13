@@ -77,35 +77,50 @@ def compute_reward(info, reward_state, lam_vol, lam_draw):
 
 # ── Network ────────────────────────────────────────────────────
 class PolicyNetwork(nn.Module):
-    """MLP policy with state augmentation.
+    """Temporal CNN policy with state augmentation.
 
-    Appends [position_onehot(3), hold_frac, steps_since_frac, unrealized_pnl]
-    to the flattened observation = 6 extra dims.
+    1D convolutions over the time axis of (50, 25) observation,
+    then concatenates state vector and feeds through MLP head.
     """
 
     STATE_DIM = 6  # 3 (position onehot) + 1 (hold frac) + 1 (steps since frac) + 1 (unrealized pnl)
 
     def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
-        flat_dim = obs_shape[0] * obs_shape[1] + self.STATE_DIM
-        layers = [nn.Linear(flat_dim, hidden_dim), nn.ReLU()]
+        seq_len, n_features = obs_shape  # (50, 25)
+
+        # 1D CNN over time axis: input (batch, n_features, seq_len)
+        self.conv = nn.Sequential(
+            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),  # -> (batch, 64, 1)
+        )
+
+        # MLP head: CNN output + state
+        mlp_input = 64 + self.STATE_DIM
+        layers = [nn.Linear(mlp_input, hidden_dim), nn.ReLU()]
         for _ in range(num_layers - 1):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
-        self.shared = nn.Sequential(*layers)
+        self.mlp = nn.Sequential(*layers)
         self.actor = nn.Linear(hidden_dim, n_actions)
         self.critic = nn.Linear(hidden_dim, 1)
 
     def forward(self, x, state=None):
-        x = x.flatten(start_dim=1)
+        # x: (batch, seq_len, n_features) -> (batch, n_features, seq_len) for Conv1d
+        x = x.transpose(1, 2)
+        x = self.conv(x).squeeze(-1)  # (batch, 64)
+
         if state is not None:
             x = torch.cat([x, state], dim=-1)
         else:
-            # Zero state for backward compat (evaluation without state)
             x = torch.cat(
                 [x, torch.zeros(x.shape[0], self.STATE_DIM, device=x.device)], dim=-1
             )
-        shared = self.shared(x)
-        return self.actor(shared), self.critic(shared)
+
+        h = self.mlp(x)
+        return self.actor(h), self.critic(h)
 
     def get_action_and_value(self, obs, state=None, action=None):
         logits, value = self(obs, state)
