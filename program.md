@@ -4,7 +4,7 @@ Autonomous RL research for DEX perpetual futures trading. You are an AI research
 
 **Git note:** Never use blind `git add -A` or `git add .`. Only stage the files you changed.
 
-**Compute:** RunPod RTX 4090 (CUDA), accessed via SSH from local machine. All training runs execute remotely.
+**Compute:** Local MacBook Pro M4 (MPS). All training runs execute locally.
 
 ## Setup (run once at start)
 
@@ -16,20 +16,18 @@ Autonomous RL research for DEX perpetual futures trading. You are an AI research
    ```bash
    git checkout -b autoresearch/<tag>
    ```
-6. Verify data is cached on the pod:
+6. Verify data is cached locally:
    ```bash
-   ssh runpod "ls /workspace/autoresearch-trading/.cache/*.npz | wc -l"
+   ls .cache/*.npz | wc -l
    # Expected: 75 (25 symbols × 3 splits)
    ```
-7. Verify CUDA is available:
+7. Verify MPS is available:
    ```bash
-   ssh runpod "cd /workspace/autoresearch-trading && uv run python -c 'import torch; print(torch.cuda.get_device_name(0))'"
+   uv run python -c "import torch; print('MPS' if torch.backends.mps.is_available() else 'CPU')"
    ```
 8. Run the baseline and record it:
    ```bash
-   rsync -az train.py runpod:/workspace/autoresearch-trading/train.py
-   ssh runpod "cd /workspace/autoresearch-trading && uv run train.py > run.log 2>&1"
-   ssh runpod "tail -20 /workspace/autoresearch-trading/run.log"
+   uv run train.py 2>&1 | tee run.log
    ```
 9. Initialize results log:
    ```bash
@@ -39,7 +37,7 @@ Autonomous RL research for DEX perpetual futures trading. You are an AI research
 
 ## Data
 
-You have **36GB of DEX perpetual futures data** from 25 crypto symbols, pre-computed as cached `.npz` feature files on the pod (~1.1GB).
+You have **36GB of DEX perpetual futures data** from 25 crypto symbols, pre-computed as cached `.npz` feature files locally (~1.1GB).
 
 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
 
@@ -55,51 +53,44 @@ Date range: 2025-10-16 to 2026-03-09 (~145 days)
 - **Validation**: 2026-01-23 to 2026-02-17 (25 days)
 - **Test**: 2026-02-17 to 2026-03-09 (20 days) — used only by evaluate()
 
-### Feature Channels (33 features per step)
+### Feature Channels (25 features per step)
 
 Each step = 100 consecutive trades (~1-2 seconds for BTC).
 
-**Trade features (14):**
+**Tick-horizon features (0-19):**
 
-| # | Feature | Description | Normalization |
-|---|---------|-------------|---------------|
-| 0 | vwap | Volume-weighted average price of batch | z-score |
-| 1 | returns | Log return vs previous batch VWAP | z-score |
-| 2 | net_volume | Buy volume - sell volume | **robust** |
-| 3 | trade_count | Number of trades (always 100) | z-score |
-| 4 | buy_ratio | Fraction of buy trades | z-score |
-| 5 | cvd_delta | Cumulative volume delta change | z-score |
-| 6 | tfi | Trade flow imbalance: (buy-sell)/(buy+sell) | z-score |
-| 7 | large_trade_count | Trades > 95th percentile qty | **robust** |
-| 8 | vpin | Flow toxicity: rolling mean of \|TFI\| (window=50) | **robust** |
-| 9 | liq_cascade_magnitude | Large trade spike × price acceleration | **robust** |
-| 10 | liq_cascade_direction | Signed cascade: sign(returns) × magnitude | **robust** |
-| 11 | realvol_short | Rolling std of returns (window=10 batches) | z-score |
-| 12 | realvol_med | Rolling std of returns (window=50 batches) | z-score |
-| 13 | realvol_long | Rolling std of returns (window=200 batches) | z-score |
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 0 | returns | trade | Log return of batch VWAP |
+| 1 | r_5 | trade | 5-batch log return |
+| 2 | r_20 | trade | 20-batch log return |
+| 3 | r_100 | trade | ~1.5h log return |
+| 4 | realvol_10 | trade | Rolling std of returns (10 batches) |
+| 5 | bipower_var_20 | trade | Bipower variation (jump-robust vol) |
+| 6 | tfi | trade | Trade flow imbalance: (buy-sell)/(buy+sell) |
+| 7 | volume_spike_ratio | trade | Current volume / rolling median |
+| 8 | large_trade_share | trade | Fraction of volume from large trades |
+| 9 | kyle_lambda_50 | trade | Price impact per unit flow |
+| 10 | amihud_illiq_50 | trade | \|return\| / volume (illiquidity) |
+| 11 | trade_arrival_rate | trade | Trades per second |
+| 12 | spread_bps | orderbook | Spread in basis points |
+| 13 | log_total_depth | orderbook | Log of total bid+ask notional depth |
+| 14 | weighted_imbalance_5lvl | orderbook | Depth-weighted bid-ask imbalance |
+| 15 | microprice_dev | orderbook | Microprice deviation from mid |
+| 16 | ofi | orderbook | Order flow imbalance (5-level) |
+| 17 | ob_slope_asym | orderbook | Orderbook slope asymmetry |
+| 18 | funding_zscore | funding | Z-scored funding rate |
+| 19 | utc_hour_linear | time | Hour of day / 24 |
 
-**Orderbook features (17):**
+**Longer-horizon features (20-24):**
 
-| # | Feature | Description | Normalization |
-|---|---------|-------------|---------------|
-| 14 | bid_depth_total | Total bid-side liquidity | **robust** |
-| 15 | ask_depth_total | Total ask-side liquidity | **robust** |
-| 16 | imbalance | (bid-ask)/(bid+ask) depth imbalance | z-score |
-| 17 | spread_bps | Spread in basis points | z-score |
-| 18-22 | level_1-5_bid_vol | Per-level bid volumes | z-score |
-| 23-27 | level_1-5_ask_vol | Per-level ask volumes | z-score |
-| 28 | microprice | Qty-weighted mid-price: (bid×ask_vol + ask×bid_vol)/(bid_vol+ask_vol) | **robust** |
-| 29 | microprice_deviation | Signed distance from mid: microprice - mid | z-score |
-| 30 | ofi | Order flow imbalance: weighted depth changes across top 5 levels | z-score |
-
-**Funding features (2):**
-
-| # | Feature | Description | Normalization |
-|---|---------|-------------|---------------|
-| 31 | funding_rate | Current funding rate | z-score |
-| 32 | funding_rate_change | Change in funding rate | z-score |
-
-Normalization is hybrid: **robust** = rolling median/IQR (resistant to outliers), **z-score** = rolling mean/std. Both use window=1000, min_periods=100.
+| # | Feature | Description |
+|---|---------|-------------|
+| 20 | r_500 | ~8h log return |
+| 21 | r_2800 | ~24h log return |
+| 22 | cum_tfi_100 | Rolling sum of TFI over ~1.5h |
+| 23 | cum_tfi_500 | Rolling sum of TFI over ~8h |
+| 24 | funding_rate_raw | Forward-filled raw funding rate |
 
 ### Domain Context
 
@@ -143,7 +134,8 @@ Normalization is hybrid: **robust** = rolling median/IQR (resistant to outliers)
 - **Minimum 50 trades** — prevents "never trade" degenerate solutions
 - **Maximum 20% drawdown** — prevents reckless strategies
 - Violating either → that symbol's val_sharpe = 0.0
-- Portfolio Sharpe = mean of passing symbols' Sharpes
+- Portfolio Sharpe = mean of ALL passing symbols' Sharpes (including negative)
+- Note: with min_hold=200, the agent can make ~700 trades over the test split, so 50 is easily achievable
 
 ### Secondary metrics
 - **symbols_passing**: how many of 25 symbols pass guardrails (more = better generalization)
@@ -159,25 +151,24 @@ Think about what might improve the score. Read research findings below for ideas
 ### 2. Implement change
 Edit `train.py` locally with your modification. Keep changes focused — one idea per experiment.
 
-### 3. Commit and sync
+### 3. Commit
 ```bash
 git add train.py
 git commit -m "experiment: <brief description of what changed>"
-rsync -az train.py runpod:/workspace/autoresearch-trading/train.py
 ```
 
-### 4. Run training on pod
+### 4. Run training locally
 ```bash
-ssh runpod "cd /workspace/autoresearch-trading && uv run train.py > run.log 2>&1"
+uv run train.py 2>&1 | tee run.log
 ```
 
 ### 5. Extract results
 ```bash
-ssh runpod "grep -E '^(val_sharpe|num_trades|max_drawdown|symbols_passing):' /workspace/autoresearch-trading/run.log | tail -4"
-SHARPE=$(ssh runpod "grep '^val_sharpe:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-TRADES=$(ssh runpod "grep '^num_trades:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-DRAWDOWN=$(ssh runpod "grep '^max_drawdown:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-PASSING=$(ssh runpod "grep '^symbols_passing:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
+grep -E '^(val_sharpe|num_trades|max_drawdown|symbols_passing):' run.log | tail -4
+SHARPE=$(grep '^val_sharpe:' run.log | tail -1 | awk '{print $2}')
+TRADES=$(grep '^num_trades:' run.log | tail -1 | awk '{print $2}')
+DRAWDOWN=$(grep '^max_drawdown:' run.log | tail -1 | awk '{print $2}')
+PASSING=$(grep '^symbols_passing:' run.log | tail -1 | awk '{print $2}')
 COMMIT=$(git rev-parse --short HEAD)
 echo "val_sharpe: $SHARPE, num_trades: $TRADES, max_drawdown: $DRAWDOWN, symbols_passing: $PASSING"
 ```
