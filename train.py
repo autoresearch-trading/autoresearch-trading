@@ -93,16 +93,24 @@ def compute_reward(info, reward_state, lam_vol, lam_draw):
 
 
 # ── Network ────────────────────────────────────────────────────
+def _ortho_init(layer, gain=np.sqrt(2)):
+    """Orthogonal init (PPO best practice from cleanrl)."""
+    if isinstance(layer, nn.Linear):
+        nn.init.orthogonal_(layer.weight, gain=gain)
+        nn.init.constant_(layer.bias, 0.0)
+    return layer
+
+
 class PolicyNetwork(nn.Module):
     def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
         flat_dim = obs_shape[0] * obs_shape[1]
-        layers = [nn.Linear(flat_dim, hidden_dim), nn.ReLU()]
+        layers = [_ortho_init(nn.Linear(flat_dim, hidden_dim)), nn.ReLU()]
         for _ in range(num_layers - 1):
-            layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
+            layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
         self.shared = nn.Sequential(*layers)
-        self.actor = nn.Linear(hidden_dim, n_actions)
-        self.critic = nn.Linear(hidden_dim, 1)
+        self.actor = _ortho_init(nn.Linear(hidden_dim, n_actions), gain=0.01)
+        self.critic = _ortho_init(nn.Linear(hidden_dim, 1), gain=1.0)
 
     def forward(self, x):
         x = x.flatten(start_dim=1)
