@@ -121,6 +121,7 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
     n_minibatches = 4
     start_time = time.time()
     total_steps = 0
+    num_updates = 0
 
     while (time.time() - start_time) < budget:
         sym = np.random.choice(active_symbols, p=weights)
@@ -208,8 +209,9 @@ def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, 
                 loss.backward()
                 nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
                 optimizer.step()
+                num_updates += 1
 
-    return policy
+    return policy, total_steps, num_updates
 
 
 # ── Evaluation ─────────────────────────────────────────────────
@@ -310,17 +312,21 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
 
     budget_per_seed = budget // n_seeds
     policies = []
+    total_steps_all = 0
+    total_updates_all = 0
     for seed in range(n_seeds):
         if verbose:
             print(f"  Training seed {seed} ({budget_per_seed}s)...")
-        policy = train_one_policy(
+        policy, steps, updates = train_one_policy(
             train_envs, active, weights, obs_shape, p, budget_per_seed, seed
         )
         policies.append(policy)
+        total_steps_all += steps
+        total_updates_all += updates
 
     ensemble_fn = make_ensemble_fn(policies, DEVICE)
     sh, ps, tr, dd = eval_policy(ensemble_fn, symbols, split=split)
-    return sh, ps, tr, dd
+    return sh, ps, tr, dd, total_steps_all, total_updates_all
 
 
 # ── Optuna objective ───────────────────────────────────────────
@@ -347,7 +353,7 @@ def objective(trial):
 
     try:
         t0 = time.time()
-        sh, ps, tr, dd = full_run(
+        sh, ps, tr, dd, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
@@ -420,7 +426,7 @@ def main():
     )
     print(f"params: {bp}\n")
 
-    sh, ps, tr, dd = full_run(
+    sh, ps, tr, dd, total_steps, total_updates = full_run(
         DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
     )
 
@@ -431,8 +437,8 @@ def main():
     print(f"num_trades: {tr}")
     print(f"max_drawdown: {dd:.4f}")
     print(f"training_seconds: {FINAL_BUDGET:.1f}")
-    print(f"total_steps: 0")
-    print(f"num_updates: 0")
+    print(f"total_steps: {total_steps}")
+    print(f"num_updates: {total_updates}")
     print(f"\nbest_params: {bp}")
 
 
