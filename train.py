@@ -59,20 +59,31 @@ class RewardNormalizer:
 
 
 def compute_reward(info, reward_state, lam_vol, lam_draw):
-    """Sortino-style reward."""
+    """Reward with incremental drawdown penalty.
+
+    Instead of penalizing absolute drawdown every step (which punishes recovery),
+    only penalize NEW drawdown — the increase in drawdown since last step.
+    """
     pnl = info["step_pnl"]
     reward_state.setdefault("pnl_history", [])
     reward_state["pnl_history"].append(pnl)
     if len(reward_state["pnl_history"]) > 100:
         reward_state["pnl_history"] = reward_state["pnl_history"][-100:]
 
+    # Downside vol (Sortino-style)
     downside_vol = 0.0
     if len(reward_state["pnl_history"]) > 10:
         negatives = [p for p in reward_state["pnl_history"] if p < 0]
         if len(negatives) > 2:
             downside_vol = float(np.std(negatives))
 
-    return pnl - lam_vol * downside_vol - lam_draw * info["drawdown"]
+    # Incremental drawdown: only penalize NEW drawdown, not existing
+    prev_dd = reward_state.get("prev_drawdown", 0.0)
+    curr_dd = info["drawdown"]
+    dd_increment = max(0.0, curr_dd - prev_dd)  # only penalize worsening
+    reward_state["prev_drawdown"] = curr_dd
+
+    return pnl - lam_vol * downside_vol - lam_draw * dd_increment
 
 
 # ── Network ────────────────────────────────────────────────────
