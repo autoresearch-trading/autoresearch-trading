@@ -101,21 +101,28 @@ def _ortho_init(layer, gain=np.sqrt(2)):
     return layer
 
 
+def _make_mlp(in_dim, hidden_dim, num_layers):
+    """Build an MLP trunk with orthogonal init."""
+    layers = [_ortho_init(nn.Linear(in_dim, hidden_dim)), nn.ReLU()]
+    for _ in range(num_layers - 1):
+        layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
+    return nn.Sequential(*layers)
+
+
 class PolicyNetwork(nn.Module):
     def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
         super().__init__()
         flat_dim = obs_shape[0] * obs_shape[1]
-        layers = [_ortho_init(nn.Linear(flat_dim, hidden_dim)), nn.ReLU()]
-        for _ in range(num_layers - 1):
-            layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
-        self.shared = nn.Sequential(*layers)
-        self.actor = _ortho_init(nn.Linear(hidden_dim, n_actions), gain=0.01)
-        self.critic = _ortho_init(nn.Linear(hidden_dim, 1), gain=1.0)
+        self.actor_trunk = _make_mlp(flat_dim, hidden_dim, num_layers)
+        self.actor_head = _ortho_init(nn.Linear(hidden_dim, n_actions), gain=0.01)
+        self.critic_trunk = _make_mlp(flat_dim, hidden_dim, num_layers)
+        self.critic_head = _ortho_init(nn.Linear(hidden_dim, 1), gain=1.0)
 
     def forward(self, x):
         x = x.flatten(start_dim=1)
-        shared = self.shared(x)
-        return self.actor(shared), self.critic(shared)
+        return self.actor_head(self.actor_trunk(x)), self.critic_head(
+            self.critic_trunk(x)
+        )
 
     def get_action_and_value(self, obs, action=None):
         logits, value = self(obs)
