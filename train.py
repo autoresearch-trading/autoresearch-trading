@@ -444,7 +444,7 @@ def objective(trial):
         "ent": trial.suggest_float("ent", 0.01, 0.05, log=True),  # min 0.01
         "clip": 0.2,
         "hdim": trial.suggest_categorical("hdim", [128, 256]),
-        "nlayers": 3,
+        "nlayers": trial.suggest_categorical("nlayers", [2, 3]),
         "lam_vol": 0.5,  # FIXED — searching over penalty weights causes inaction
         "lam_draw": 1.0,  # FIXED
     }
@@ -519,7 +519,7 @@ def main():
         "ent": b["ent"],
         "clip": 0.2,
         "hdim": b["hdim"],
-        "nlayers": 3,
+        "nlayers": b["nlayers"],
         "lam_vol": 0.5,
         "lam_draw": 1.0,
     }
