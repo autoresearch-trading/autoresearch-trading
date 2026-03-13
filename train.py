@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """RL trading agent — Optuna hyperparameter search with hand-rolled PPO."""
 
+import argparse
 import hashlib
 import io
 import os
@@ -25,6 +26,22 @@ FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
 MIN_HOLD = 200  # ~3h between trades — breakeven from fee analysis
+
+# ── Best known params (update after running --search) ──────────
+# Tuned on MLP v4 architecture. Re-run with --search after major arch changes.
+BEST_PARAMS = {
+    "lr": 1.5e-4,
+    "n_steps": 512,
+    "n_epochs": 4,
+    "gamma": 0.951,
+    "gae_lam": 0.95,
+    "ent": 0.015,
+    "clip": 0.2,
+    "hdim": 256,
+    "nlayers": 3,
+    "lam_vol": 0.5,
+    "lam_draw": 1.0,
+}
 
 DEVICE = torch.device(
     "cuda"
@@ -492,48 +509,60 @@ def _code_hash():
 
 # ── Main ───────────────────────────────────────────────────────
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--search",
+        action="store_true",
+        help="Run Optuna hyperparameter search before final training. "
+        "Use after major architecture changes. Updates BEST_PARAMS.",
+    )
+    args = parser.parse_args()
+
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     print(f"device: {DEVICE}")
-    print(
-        f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
-        f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
-    )
 
-    study_name = f"ppo_{_code_hash()}"
-    print(f"Optuna study: {study_name}")
-    study = optuna.create_study(
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=42),
-        storage="sqlite:///optuna_study.db",
-        study_name=study_name,
-        load_if_exists=True,
-    )
-    study.optimize(objective, n_trials=SEARCH_TRIALS)
+    if args.search:
+        print(
+            f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
+            f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
+        )
+        study_name = f"ppo_{_code_hash()}"
+        print(f"Optuna study: {study_name}")
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+            storage="sqlite:///optuna_study.db",
+            study_name=study_name,
+            load_if_exists=True,
+        )
+        study.optimize(objective, n_trials=SEARCH_TRIALS)
 
-    # Top results
-    print(f"\n{'='*50}")
-    print("TOP 5 TRIALS:")
-    ranked = sorted(
-        study.trials, key=lambda t: t.value if t.value else -999, reverse=True
-    )
-    for t in ranked[:5]:
-        print(f"  #{t.number}: sharpe={t.value:.4f}  {t.params}")
+        print(f"\n{'='*50}")
+        print("TOP 5 TRIALS:")
+        ranked = sorted(
+            study.trials, key=lambda t: t.value if t.value else -999, reverse=True
+        )
+        for t in ranked[:5]:
+            print(f"  #{t.number}: sharpe={t.value:.4f}  {t.params}")
 
-    # Final training with best params
-    b = study.best_params
-    bp = {
-        "lr": b["lr"],
-        "n_steps": b["n_steps"],
-        "n_epochs": 4,
-        "gamma": b["gamma"],
-        "gae_lam": 0.95,
-        "ent": b["ent"],
-        "clip": 0.2,
-        "hdim": b["hdim"],
-        "nlayers": b["nlayers"],
-        "lam_vol": 0.5,
-        "lam_draw": 1.0,
-    }
+        b = study.best_params
+        bp = {
+            "lr": b["lr"],
+            "n_steps": b["n_steps"],
+            "n_epochs": 4,
+            "gamma": b["gamma"],
+            "gae_lam": 0.95,
+            "ent": b["ent"],
+            "clip": 0.2,
+            "hdim": b["hdim"],
+            "nlayers": b["nlayers"],
+            "lam_vol": 0.5,
+            "lam_draw": 1.0,
+        }
+        print(f"\nHint: update BEST_PARAMS in train.py with: {bp}")
+    else:
+        print("=== FAST MODE: using BEST_PARAMS (run with --search to tune) ===\n")
+        bp = BEST_PARAMS
 
     print(
         f"\n=== FINAL: {FINAL_SEEDS} seeds x "
