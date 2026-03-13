@@ -3,3 +3,4 @@ bef5923	0.369578	3278	0.1836	1/25	kept	v3 features baseline (reward norm + 3-see
 3dfd2de	0.135522	1984	0.1465	1/25	discarded	128x2 MLP (underfit)
 095721d	0.255238	1738	0.1001	1/25	discarded	window_size=30 (too few trades)
 d260895	0.070862	253	0.1035	16/25	kept	orthogonal init — 4.4x sharpe improvement
+b1545ff	0.068253	291	0.1046	23/25	kept	EMA reward norm — 23/25 passing, quality preserved

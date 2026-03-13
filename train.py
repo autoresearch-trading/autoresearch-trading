@@ -52,24 +52,27 @@ DEVICE = torch.device(
 
 # ── Reward ─────────────────────────────────────────────────────
 class RewardNormalizer:
-    """Welford's online algorithm for running std."""
+    """EMA-based reward normalization — adapts to non-stationarity."""
 
-    def __init__(self):
+    def __init__(self, alpha=0.01):
+        self.alpha = alpha
+        self.ema_var = 1.0
+        self.ema_mean = 0.0
         self.count = 0
-        self.mean = 0.0
-        self.M2 = 0.0
 
     def update(self, x):
         self.count += 1
-        delta = x - self.mean
-        self.mean += delta / self.count
-        self.M2 += delta * (x - self.mean)
+        if self.count == 1:
+            self.ema_mean = x
+            self.ema_var = 1.0
+        else:
+            delta = x - self.ema_mean
+            self.ema_mean += self.alpha * delta
+            self.ema_var = (1 - self.alpha) * self.ema_var + self.alpha * delta * delta
 
     @property
     def std(self):
-        if self.count < 2:
-            return 1.0
-        return max(np.sqrt(self.M2 / self.count), 1e-8)
+        return max(np.sqrt(self.ema_var), 1e-8)
 
     def normalize(self, x):
         return x / self.std
