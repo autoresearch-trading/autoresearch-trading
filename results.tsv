@@ -1,26 +1,2 @@
 commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
-bef5923	0.369578	3278	0.1836	1/25	kept	v3 features baseline (reward norm + 3-seed ensemble)
-3dfd2de	0.135522	1984	0.1465	1/25	discarded	128x2 MLP (underfit)
-095721d	0.255238	1738	0.1001	1/25	discarded	window_size=30 (too few trades)
-d260895	0.070862	253	0.1035	16/25	kept	orthogonal init — 4.4x sharpe improvement
-b1545ff	0.068253	291	0.1046	23/25	kept	EMA reward norm — 23/25 passing, quality preserved
-6523469	0.103963	284	0.1693	21/25	kept	temporal summary (mean+std) concat — 1.5x sharpe, 21/25 passing
-28157d7	0.086356	279	0.1399	25/25	kept	supervised forward-return classifier
-909d466	0.092275	273	0.1114	25/25	kept	supervised 10k samples, fee_mult=1.5
-d64dbee	0.124647	268	0.1032	25/25	kept	supervised horizon=300
-73b29de	0.143491	273	0.1085	25/25	kept	supervised + AdamW wd=1e-4
-8cba0aa	0.151421	276	0.0874	25/25	kept	supervised + AdamW wd=1e-3
-f4178db	0.162855	264	0.0839	25/25	kept	supervised 2-layer, AdamW wd=1e-3
-8b8ff44	0.204860	268	0.0841	25/25	kept	5-seed ensemble (60s each)
-4f652cf	0.123906	268	0.0998	25/25	discarded	BatchNorm in classifier
-1c98ef9	0.113308	271	0.0998	24/25	discarded	7-seed ensemble (42s each, undertrained)
-a3ca7cf	0.099910	260	0.0784	25/25	discarded	hdim=512 with 5-seed (fewer updates)
-5f483be	0.108536	255	0.0828	25/25	discarded	batch_size=512 with 5-seed
-457dcd1	0.127089	433	0.1544	25/25	discarded	multi-horizon consensus labels (150,300,600)
-9b69678	0.183426	279	0.0693	25/25	discarded	residual connections (worse than 5-seed MLP)
-b9348de	0.120150	286	0.1112	25/25	discarded	15k samples (fewer epochs)
-942bb5a	0.099674	303	0.1437	25/25	discarded	lr=2e-3 with 5-seed (overshoots)
-2393c1a	0.121320	269	0.0945	25/25	discarded	fixed 20 epochs (too few)
-c412fea	0.153721	268	0.0859	25/25	discarded	fixed 25 epochs
-ea16442	0.158248	267	0.1017	25/25	kept	fixed 30 epochs deterministic baseline
-8ff9c67	0.190555	260	0.0756	25/25	kept	focal gamma=1.0 + 30 epochs (new best deterministic)
+547bcb9	0.118564	269	0.1390	25/25	kept	v5 baseline (31 features, focal gamma=1.0, 30 epochs)
