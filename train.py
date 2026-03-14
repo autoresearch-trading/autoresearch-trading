@@ -153,7 +153,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     y_t = torch.tensor(y, dtype=torch.long, device=DEVICE)
 
     model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=1e-3)
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
 
     batch_size = p["batch_size"]
