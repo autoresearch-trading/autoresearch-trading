@@ -22,3 +22,5 @@ b9348de	0.120150	286	0.1112	25/25	discarded	15k samples (fewer epochs)
 942bb5a	0.099674	303	0.1437	25/25	discarded	lr=2e-3 with 5-seed (overshoots)
 2393c1a	0.121320	269	0.0945	25/25	discarded	fixed 20 epochs (too few)
 c412fea	0.153721	268	0.0859	25/25	discarded	fixed 25 epochs
+ea16442	0.158248	267	0.1017	25/25	kept	fixed 30 epochs deterministic baseline
+8ff9c67	0.190555	260	0.0756	25/25	kept	focal gamma=1.0 + 30 epochs (new best deterministic)

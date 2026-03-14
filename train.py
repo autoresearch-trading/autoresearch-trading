@@ -156,7 +156,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=1e-3)
     cw = class_weights.to(DEVICE)
 
-    def focal_loss(logits, targets, gamma=2.0):
+    def focal_loss(logits, targets, gamma=1.0):
         ce = nn.functional.cross_entropy(logits, targets, weight=cw, reduction="none")
         pt = torch.exp(-ce)
         return ((1 - pt) ** gamma * ce).mean()
