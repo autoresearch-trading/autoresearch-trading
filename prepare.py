@@ -144,11 +144,11 @@ def compute_features(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 25 features from raw data.
+    """Compute 31 features from raw data.
 
-    Returns: (features, timestamps, prices) where features has shape (num_batches, 25).
+    Returns: (features, timestamps, prices) where features has shape (num_batches, 31).
 
-    Feature layout (0-19: tick-horizon, 20-24: longer-horizon):
+    Feature layout (0-19: tick-horizon, 20-24: longer-horizon, 25-30: cutting-edge):
       0: returns           - log return of batch VWAP
       1: r_5               - 5-batch log return
       2: r_20              - 20-batch log return
@@ -174,6 +174,12 @@ def compute_features(
      22: cum_tfi_100       - rolling sum of TFI over 100 batches (~1.5h)
      23: cum_tfi_500       - rolling sum of TFI over 500 batches (~8h)
      24: funding_rate_raw  - forward-filled raw funding rate
+     25: vpin              - rolling mean of |TFI| (toxicity proxy)
+     26: delta_tfi         - first difference of TFI (flow acceleration)
+     27: hurst_exponent    - rolling R/S Hurst exponent (regime detection)
+     28: realized_skew_20  - rolling skewness of returns
+     29: vol_of_vol_50     - rolling std of realvol_10
+     30: sign_autocorr_20  - return sign autocorrelation (trend persistence)
     """
     if trades_df.empty:
         return np.array([]), np.array([]), np.array([])
@@ -245,6 +251,44 @@ def compute_features(
     )
     bipower_var_20 = np.nan_to_num(bipower_var_20)
 
+    # --- Feature 27: hurst_exponent (rolling R/S analysis, regime detection) ---
+    hurst = np.full(num_batches, 0.5)  # default = random walk
+    hurst_window = 200
+    if num_batches > hurst_window:
+        for i in range(hurst_window, num_batches):
+            r = returns[i - hurst_window : i]
+            r_centered = r - r.mean()
+            cumdev = np.cumsum(r_centered)
+            R = cumdev.max() - cumdev.min()
+            S = r.std()
+            if S > 1e-10 and R > 0:
+                hurst[i] = np.log(R / S) / np.log(hurst_window)
+    hurst = np.clip(hurst, 0, 1)
+
+    # --- Feature 28: realized_skew_20 (rolling skewness of returns) ---
+    realized_skew = (
+        pd.Series(returns).rolling(window=20, min_periods=5).skew().fillna(0).values
+    )
+
+    # --- Feature 29: vol_of_vol_50 (rolling std of realvol_10) ---
+    vol_of_vol = (
+        pd.Series(realvol_10).rolling(window=50, min_periods=10).std().fillna(0).values
+    )
+
+    # --- Feature 30: sign_autocorr_20 (return sign autocorrelation) ---
+    ret_sign = np.sign(returns)
+    sign_autocorr = np.zeros(num_batches)
+    if num_batches > 1:
+        sign_product = ret_sign[1:] * ret_sign[:-1]
+        sa_rolling = (
+            pd.Series(sign_product)
+            .rolling(window=19, min_periods=5)
+            .mean()
+            .fillna(0)
+            .values
+        )
+        sign_autocorr[1:] = sa_rolling
+
     # --- Feature 6: tfi ---
     buy_notional = (notionals_batched * is_buy_batched).sum(axis=1)
     sell_notional = (notionals_batched * ~is_buy_batched).sum(axis=1)
@@ -259,6 +303,14 @@ def compute_features(
     tfi_series = pd.Series(tfi)
     cum_tfi_100 = tfi_series.rolling(window=100, min_periods=1).sum().fillna(0).values
     cum_tfi_500 = tfi_series.rolling(window=500, min_periods=1).sum().fillna(0).values
+
+    # --- Feature 25: VPIN (rolling mean of |TFI|, toxicity proxy) ---
+    abs_tfi = np.abs(tfi)
+    vpin = pd.Series(abs_tfi).rolling(window=50, min_periods=1).mean().fillna(0).values
+
+    # --- Feature 26: delta_tfi (first difference of TFI, flow acceleration) ---
+    delta_tfi = np.zeros(num_batches)
+    delta_tfi[1:] = tfi[1:] - tfi[:-1]
 
     # --- Feature 7: volume_spike_ratio ---
     notional_series = pd.Series(total_batch_notional)
@@ -510,7 +562,27 @@ def compute_features(
         ]
     )
 
-    features = np.hstack([trade_features, ob_features, extra_features, longer_features])
+    # === CUTTING-EDGE FEATURES (indices 25-30) ===
+    cutting_edge_features = np.column_stack(
+        [
+            vpin,  # 25
+            delta_tfi,  # 26
+            hurst,  # 27
+            realized_skew,  # 28
+            vol_of_vol,  # 29
+            sign_autocorr,  # 30
+        ]
+    )
+
+    features = np.hstack(
+        [
+            trade_features,
+            ob_features,
+            extra_features,
+            longer_features,
+            cutting_edge_features,
+        ]
+    )
 
     return features, batch_timestamps, batch_prices
 
@@ -518,8 +590,8 @@ def compute_features(
 # Indices of features that get robust (median/IQR) normalization.
 # Tail-heavy: bipower_var, volume_spike_ratio, large_trade_share, kyle_lambda,
 # amihud_illiq, trade_arrival_rate, spread_bps, log_total_depth, ofi, ob_slope_asym
-# cum_tfi (22, 23) and funding_rate_raw (24) are also tail-heavy
-ROBUST_FEATURE_INDICES = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24}
+# cum_tfi (22, 23), funding_rate_raw (24), vpin (25), vol_of_vol (29) are also tail-heavy
+ROBUST_FEATURE_INDICES = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24, 25, 29}
 
 
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
@@ -558,7 +630,9 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v4"  # v4: 25 features (longer-horizon + funding rate raw)
+_FEATURE_VERSION = (
+    "v5"  # v5: 31 features (+ VPIN, delta_TFI, Hurst, skew, vol-of-vol, sign_autocorr)
+)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:

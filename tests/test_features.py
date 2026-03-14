@@ -1,4 +1,4 @@
-"""Tests for v4 feature engineering in prepare.py (25 features)."""
+"""Tests for v5 feature engineering in prepare.py (31 features)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import pandas as pd
 
 from prepare import compute_features, normalize_features
 
-NUM_FEATURES_V4 = 25
+NUM_FEATURES = 31
 
 
 class TestFeatureShape:
@@ -17,7 +17,7 @@ class TestFeatureShape:
         features, timestamps, prices = compute_features(
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
-        assert features.shape == (2, NUM_FEATURES_V4)
+        assert features.shape == (2, NUM_FEATURES)
         assert len(timestamps) == 2
         assert len(prices) == 2
 
@@ -31,7 +31,7 @@ class TestFeatureShape:
         self, make_trades, empty_df, make_funding
     ):
         features, _, _ = compute_features(make_trades(), empty_df, make_funding())
-        assert features.shape[1] == NUM_FEATURES_V4
+        assert features.shape[1] == NUM_FEATURES
         # OB features (indices 12-17) should be zero or default
         assert features[0, 12] == 0.0  # spread_bps
         assert features[0, 14] == 0.0  # weighted_imbalance
@@ -40,7 +40,7 @@ class TestFeatureShape:
         self, make_trades, make_orderbook, empty_df
     ):
         features, _, _ = compute_features(make_trades(), make_orderbook(), empty_df)
-        assert features.shape[1] == NUM_FEATURES_V4
+        assert features.shape[1] == NUM_FEATURES
         assert features[0, 18] == 0.0  # funding_zscore
 
 
@@ -636,7 +636,7 @@ class TestIntegration:
         )
         features = normalize_features(features)
         env = TradingEnv(features, prices, window_size=10)
-        assert env.observation_space.shape == (10, NUM_FEATURES_V4)
+        assert env.observation_space.shape == (10, NUM_FEATURES)
 
     def test_batch_prices_are_vwap(self):
         """Verify batch_prices are VWAP-based (training PnL depends on this)."""
@@ -670,7 +670,83 @@ class TestIntegration:
         features = normalize_features(features)
         env = TradingEnv(features, prices, window_size=10)
         obs, _ = env.reset()
-        assert obs.shape == (10, NUM_FEATURES_V4)
+        assert obs.shape == (10, NUM_FEATURES)
         obs, _, done, truncated, info = env.step(1)
-        assert obs.shape == (10, NUM_FEATURES_V4)
+        assert obs.shape == (10, NUM_FEATURES)
         assert "step_pnl" in info
+
+
+class TestVPINFeatures:
+    """Tests for VPIN (index 25) and delta_TFI (index 26)."""
+
+    def test_vpin_range(self, make_trades, make_orderbook, make_funding):
+        """VPIN should be in [0, 1] since it's rolling mean of |TFI|."""
+        features, _, _ = compute_features(
+            make_trades(n=5000),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        vpin = features[:, 25]
+        assert np.all(vpin >= 0.0), "VPIN must be non-negative"
+        assert np.all(vpin <= 1.0), "VPIN must be <= 1.0"
+
+    def test_delta_tfi_first_is_zero(self, make_trades, make_orderbook, make_funding):
+        """First delta_TFI should be 0 (no prior to diff against)."""
+        features, _, _ = compute_features(
+            make_trades(n=5000),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        assert features[0, 26] == 0.0
+
+
+class TestHigherOrderFeatures:
+    """Tests for Hurst (27), realized_skew (28), vol_of_vol (29)."""
+
+    def test_hurst_default_is_half(self, make_trades, make_orderbook, make_funding):
+        """Hurst should default to 0.5 (random walk) for short series."""
+        features, _, _ = compute_features(
+            make_trades(n=500),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        hurst = features[:, 27]
+        assert np.allclose(hurst, 0.5), f"Expected 0.5 default, got {hurst}"
+
+    def test_realized_skew_finite(self, make_trades, make_orderbook, make_funding):
+        """Realized skewness should be finite."""
+        features, _, _ = compute_features(
+            make_trades(n=5000),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        assert np.all(np.isfinite(features[:, 28]))
+
+    def test_vol_of_vol_non_negative(self, make_trades, make_orderbook, make_funding):
+        """Vol-of-vol is a std, must be >= 0."""
+        features, _, _ = compute_features(
+            make_trades(n=5000),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        assert np.all(features[:, 29] >= 0.0)
+
+
+class TestSignAutocorrFeature:
+    """Tests for sign_autocorr (index 30)."""
+
+    def test_sign_autocorr_range(self, make_trades, make_orderbook, make_funding):
+        """Sign autocorrelation should be in [-1, 1]."""
+        features, _, _ = compute_features(
+            make_trades(n=5000),
+            make_orderbook(n=100),
+            make_funding(n=10),
+            trade_batch=100,
+        )
+        sa = features[:, 30]
+        assert np.all(sa >= -1.0) and np.all(sa <= 1.0)
