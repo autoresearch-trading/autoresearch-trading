@@ -25,7 +25,7 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-MIN_HOLD = 200  # ~3h between trades — breakeven from fee analysis
+MIN_HOLD = 400  # ~6h between trades — longer hold for full-test eval
 FEE_BPS = 5
 FORWARD_HORIZON = 300  # steps to look ahead for labeling (longer trends)
 
