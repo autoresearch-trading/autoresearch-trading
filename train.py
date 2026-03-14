@@ -36,7 +36,7 @@ BEST_PARAMS = {
     "hdim": 256,
     "nlayers": 3,
     "batch_size": 256,
-    "fee_mult": 1.5,  # multiply fee by this to set label threshold
+    "fee_mult": 3.0,  # multiply fee by this to set label threshold (higher = pickier)
 }
 
 
