@@ -93,6 +93,7 @@ def make_labeled_dataset(env, horizon, fee_threshold, max_samples=10000):
 
     obs_list = []
     labels = []
+    sample_indices = []
 
     for i in idx:
         if prices[i] <= 0:
@@ -108,10 +109,19 @@ def make_labeled_dataset(env, horizon, fee_threshold, max_samples=10000):
 
         obs_list.append(features[i - window : i])
         labels.append(label)
+        sample_indices.append(i)
 
     if not obs_list:
-        return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
-    return np.array(obs_list, dtype=np.float32), np.array(labels, dtype=np.int64)
+        return (
+            np.array([], dtype=np.float32),
+            np.array([], dtype=np.int64),
+            np.array([], dtype=np.int64),
+        )
+    return (
+        np.array(obs_list, dtype=np.float32),
+        np.array(labels, dtype=np.int64),
+        np.array(sample_indices, dtype=np.int64),
+    )
 
 
 # ── Training ───────────────────────────────────────────────────
@@ -125,15 +135,18 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     # Collect labeled data from all symbols
     all_obs = []
     all_labels = []
+    all_indices = []
     for sym in active_symbols:
         env = train_envs[sym]
-        obs, labels = make_labeled_dataset(env, FORWARD_HORIZON, fee_threshold)
+        obs, labels, indices = make_labeled_dataset(env, FORWARD_HORIZON, fee_threshold)
         if len(obs) > 0:
             all_obs.append(obs)
             all_labels.append(labels)
+            all_indices.append(indices)
 
     X = np.concatenate(all_obs)
     y = np.concatenate(all_labels)
+    sample_idx = np.concatenate(all_indices)
 
     # Print class distribution
     unique, counts = np.unique(y, return_counts=True)
@@ -149,30 +162,27 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
         if cnt > 0:
             class_weights[cls] = total / (3 * cnt)
 
+    # Recency weights: exponential decay so recent samples matter more
+    norm_idx = (sample_idx - sample_idx.min()) / max(
+        sample_idx.max() - sample_idx.min(), 1
+    )
+    recency_w = np.exp(1.0 * norm_idx)  # decay=1.0 → recent ~2.7x weight of oldest
+    recency_w /= recency_w.mean()  # normalize so mean weight = 1
+
     X_t = torch.tensor(X, dtype=torch.float32, device=DEVICE)
     y_t = torch.tensor(y, dtype=torch.long, device=DEVICE)
+    w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
     model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=1e-3)
     cw = class_weights.to(DEVICE)
 
-    # Ordinal distance: long↔short=2 is worse than long↔flat=1
-    ordinal_dist = torch.tensor(
-        [[0, 1, 1], [1, 0, 2], [1, 2, 0]], dtype=torch.float32, device=DEVICE
-    )
-
-    def ordinal_focal_loss(logits, targets, gamma=1.0):
-        # Focal CE component
+    def focal_loss(logits, targets, sample_w, gamma=1.0):
         ce = nn.functional.cross_entropy(logits, targets, weight=cw, reduction="none")
         pt = torch.exp(-ce)
-        focal = (1 - pt) ** gamma * ce
-        # Ordinal penalty: penalize more for distant misclassifications
-        probs = torch.softmax(logits, dim=-1)
-        dist_w = ordinal_dist[targets]  # (batch, 3)
-        ordinal_penalty = (probs * dist_w).sum(dim=-1)
-        return (focal + 0.3 * ordinal_penalty).mean()
+        return (sample_w * (1 - pt) ** gamma * ce).mean()
 
-    criterion = ordinal_focal_loss
+    criterion = focal_loss
 
     batch_size = p["batch_size"]
     total_steps = 0
@@ -184,13 +194,15 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
         perm = torch.randperm(len(X_t), device=DEVICE)
         X_shuf = X_t[perm]
         y_shuf = y_t[perm]
+        w_shuf = w_t[perm]
 
         for start in range(0, len(X_t), batch_size):
             batch_x = X_shuf[start : start + batch_size]
             batch_y = y_shuf[start : start + batch_size]
+            batch_w = w_shuf[start : start + batch_size]
 
             logits = model(batch_x)
-            loss = criterion(logits, batch_y)
+            loss = criterion(logits, batch_y, batch_w)
 
             optimizer.zero_grad()
             loss.backward()
