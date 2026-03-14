@@ -27,7 +27,7 @@ WINDOW_SIZE = 50
 TRADE_BATCH = 100
 MIN_HOLD = 200  # ~3h between trades — breakeven from fee analysis
 FEE_BPS = 5
-FORWARD_HORIZON = 200  # steps to look ahead for labeling
+FORWARD_HORIZON = 300  # steps to look ahead for labeling (longer trends)
 
 DEVICE = torch.device("cpu")
 
