@@ -12,3 +12,11 @@ d64dbee	0.124647	268	0.1032	25/25	kept	supervised horizon=300
 8cba0aa	0.151421	276	0.0874	25/25	kept	supervised + AdamW wd=1e-3
 f4178db	0.162855	264	0.0839	25/25	kept	supervised 2-layer, AdamW wd=1e-3
 8b8ff44	0.204860	268	0.0841	25/25	kept	5-seed ensemble (60s each)
+4f652cf	0.123906	268	0.0998	25/25	discarded	BatchNorm in classifier
+1c98ef9	0.113308	271	0.0998	24/25	discarded	7-seed ensemble (42s each, undertrained)
+a3ca7cf	0.099910	260	0.0784	25/25	discarded	hdim=512 with 5-seed (fewer updates)
+5f483be	0.108536	255	0.0828	25/25	discarded	batch_size=512 with 5-seed
+457dcd1	0.127089	433	0.1544	25/25	discarded	multi-horizon consensus labels (150,300,600)
+9b69678	0.183426	279	0.0693	25/25	discarded	residual connections (worse than 5-seed MLP)
+b9348de	0.120150	286	0.1112	25/25	discarded	15k samples (fewer epochs)
+942bb5a	0.099674	303	0.1437	25/25	discarded	lr=2e-3 with 5-seed (overshoots)
