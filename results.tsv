@@ -10,3 +10,4 @@ b1545ff	0.068253	291	0.1046	23/25	kept	EMA reward norm — 23/25 passing, qualit
 d64dbee	0.124647	268	0.1032	25/25	kept	supervised horizon=300
 73b29de	0.143491	273	0.1085	25/25	kept	supervised + AdamW wd=1e-4
 8cba0aa	0.151421	276	0.0874	25/25	kept	supervised + AdamW wd=1e-3
+f4178db	0.162855	264	0.0839	25/25	kept	supervised 2-layer, AdamW wd=1e-3

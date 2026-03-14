@@ -34,7 +34,7 @@ DEVICE = torch.device("cpu")
 BEST_PARAMS = {
     "lr": 1e-3,
     "hdim": 256,
-    "nlayers": 3,
+    "nlayers": 2,
     "batch_size": 256,
     "fee_mult": 1.5,  # multiply fee by this to set label threshold
 }
