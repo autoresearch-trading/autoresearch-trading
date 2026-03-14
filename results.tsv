@@ -6,3 +6,4 @@ d260895	0.070862	253	0.1035	16/25	kept	orthogonal init — 4.4x sharpe improveme
 b1545ff	0.068253	291	0.1046	23/25	kept	EMA reward norm — 23/25 passing, quality preserved
 6523469	0.103963	284	0.1693	21/25	kept	temporal summary (mean+std) concat — 1.5x sharpe, 21/25 passing
 28157d7	0.086356	279	0.1399	25/25	kept	supervised forward-return classifier
+909d466	0.092275	273	0.1114	25/25	kept	supervised 10k samples, fee_mult=1.5

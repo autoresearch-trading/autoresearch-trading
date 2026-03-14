@@ -36,7 +36,7 @@ BEST_PARAMS = {
     "hdim": 256,
     "nlayers": 3,
     "batch_size": 256,
-    "fee_mult": 3.0,  # multiply fee by this to set label threshold (higher = pickier)
+    "fee_mult": 1.5,  # multiply fee by this to set label threshold
 }
 
 
@@ -69,7 +69,7 @@ class DirectionClassifier(nn.Module):
 
 
 # ── Data labeling ──────────────────────────────────────────────
-def make_labeled_dataset(env, horizon, fee_threshold, max_samples=5000):
+def make_labeled_dataset(env, horizon, fee_threshold, max_samples=10000):
     """Extract (obs, label) pairs from env data using forward returns.
     Samples max_samples random indices to keep memory manageable."""
     features = env.features
