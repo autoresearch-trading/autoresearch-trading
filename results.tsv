@@ -3,3 +3,4 @@ commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
 a4b6f57	0.081869	3747	0.4891	12/25	kept	v5 full-test Sortino baseline (reality check)
 88ce1a3	0.192920	909	0.3902	13/25	kept	min_hold=800 + horizon=800 (aligned)
 d188b2e	0.251031	910	0.3296	12/25	kept	recency-weighted focal (decay=1.0)
+skipped	-	-	-	-	skipped	BTC lead feature (blocked: eval doesn't support cross-symbol obs)
