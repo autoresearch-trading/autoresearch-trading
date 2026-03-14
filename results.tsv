@@ -5,3 +5,4 @@ bef5923	0.369578	3278	0.1836	1/25	kept	v3 features baseline (reward norm + 3-see
 d260895	0.070862	253	0.1035	16/25	kept	orthogonal init — 4.4x sharpe improvement
 b1545ff	0.068253	291	0.1046	23/25	kept	EMA reward norm — 23/25 passing, quality preserved
 6523469	0.103963	284	0.1693	21/25	kept	temporal summary (mean+std) concat — 1.5x sharpe, 21/25 passing
+28157d7	0.086356	279	0.1399	25/25	kept	supervised forward-return classifier

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RL trading agent — Optuna hyperparameter search with hand-rolled PPO."""
+"""Supervised forward-return classifier for trading."""
 
 import argparse
 import hashlib
@@ -18,234 +18,180 @@ from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # ── Configuration ──────────────────────────────────────────────
 SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "CRV"]
-SEARCH_BUDGET = 90  # seconds per trial (split across seeds)
-SEARCH_SEEDS = 2  # seeds per search trial
+SEARCH_BUDGET = 90
+SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 3
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
 MIN_HOLD = 200  # ~3h between trades — breakeven from fee analysis
+FEE_BPS = 5
+FORWARD_HORIZON = 200  # steps to look ahead for labeling
 
-# ── Best known params (update after running --search) ──────────
-# Tuned on MLP v4 architecture. Re-run with --search after major arch changes.
+DEVICE = torch.device("cpu")
+
 BEST_PARAMS = {
-    "lr": 1.5e-4,
-    "n_steps": 512,
-    "n_epochs": 4,
-    "gamma": 0.951,
-    "gae_lam": 0.95,
-    "ent": 0.015,
-    "clip": 0.2,
+    "lr": 1e-3,
     "hdim": 256,
     "nlayers": 3,
-    "lam_vol": 0.5,
-    "lam_draw": 1.0,
+    "batch_size": 256,
+    "fee_mult": 1.5,  # multiply fee by this to set label threshold
 }
-
-DEVICE = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
-)
-
-
-# ── Reward ─────────────────────────────────────────────────────
-class RewardNormalizer:
-    """EMA-based reward normalization — adapts to non-stationarity."""
-
-    def __init__(self, alpha=0.01):
-        self.alpha = alpha
-        self.ema_var = 1.0
-        self.ema_mean = 0.0
-        self.count = 0
-
-    def update(self, x):
-        self.count += 1
-        if self.count == 1:
-            self.ema_mean = x
-            self.ema_var = 1.0
-        else:
-            delta = x - self.ema_mean
-            self.ema_mean += self.alpha * delta
-            self.ema_var = (1 - self.alpha) * self.ema_var + self.alpha * delta * delta
-
-    @property
-    def std(self):
-        return max(np.sqrt(self.ema_var), 1e-8)
-
-    def normalize(self, x):
-        return x / self.std
-
-
-def compute_reward(info, reward_state, lam_vol, lam_draw):
-    """Sortino-style reward."""
-    pnl = info["step_pnl"]
-    reward_state.setdefault("pnl_history", [])
-    reward_state["pnl_history"].append(pnl)
-    if len(reward_state["pnl_history"]) > 100:
-        reward_state["pnl_history"] = reward_state["pnl_history"][-100:]
-
-    downside_vol = 0.0
-    if len(reward_state["pnl_history"]) > 10:
-        negatives = [p for p in reward_state["pnl_history"] if p < 0]
-        if len(negatives) > 2:
-            downside_vol = float(np.std(negatives))
-
-    return pnl - lam_vol * downside_vol - lam_draw * info["drawdown"]
 
 
 # ── Network ────────────────────────────────────────────────────
 def _ortho_init(layer, gain=np.sqrt(2)):
-    """Orthogonal init (PPO best practice from cleanrl)."""
     if isinstance(layer, nn.Linear):
         nn.init.orthogonal_(layer.weight, gain=gain)
         nn.init.constant_(layer.bias, 0.0)
     return layer
 
 
-class PolicyNetwork(nn.Module):
-    def __init__(self, obs_shape, n_actions, hidden_dim, num_layers):
+class DirectionClassifier(nn.Module):
+    def __init__(self, obs_shape, n_classes, hidden_dim, num_layers):
         super().__init__()
         n_time, n_feat = obs_shape
-        # Flat obs + temporal mean + temporal std = extra 2*n_feat features
-        flat_dim = n_time * n_feat + 2 * n_feat
+        flat_dim = n_time * n_feat + 2 * n_feat  # flat + temporal mean + std
         layers = [_ortho_init(nn.Linear(flat_dim, hidden_dim)), nn.ReLU()]
         for _ in range(num_layers - 1):
             layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
-        self.shared = nn.Sequential(*layers)
-        self.actor = _ortho_init(nn.Linear(hidden_dim, n_actions), gain=0.01)
-        self.critic = _ortho_init(nn.Linear(hidden_dim, 1), gain=1.0)
+        self.trunk = nn.Sequential(*layers)
+        self.head = _ortho_init(nn.Linear(hidden_dim, n_classes), gain=0.01)
 
     def forward(self, x):
         # x: (batch, time, feat)
-        t_mean = x.mean(dim=1)  # (batch, feat)
-        t_std = x.std(dim=1)  # (batch, feat)
+        t_mean = x.mean(dim=1)
+        t_std = x.std(dim=1)
         flat = x.flatten(start_dim=1)
         x = torch.cat([flat, t_mean, t_std], dim=1)
-        shared = self.shared(x)
-        return self.actor(shared), self.critic(shared)
+        return self.head(self.trunk(x))
 
-    def get_action_and_value(self, obs, action=None):
-        logits, value = self(obs)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), value.squeeze(-1)
+
+# ── Data labeling ──────────────────────────────────────────────
+def make_labeled_dataset(env, horizon, fee_threshold, max_samples=5000):
+    """Extract (obs, label) pairs from env data using forward returns.
+    Samples max_samples random indices to keep memory manageable."""
+    features = env.features
+    prices = env.prices
+    n = len(features)
+    window = env.window_size
+
+    # Valid indices range
+    valid_start = window
+    valid_end = n - horizon
+    if valid_end <= valid_start:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
+
+    # Sample random indices
+    all_idx = np.arange(valid_start, valid_end)
+    if len(all_idx) > max_samples:
+        idx = np.random.choice(all_idx, max_samples, replace=False)
+        idx.sort()
+    else:
+        idx = all_idx
+
+    obs_list = []
+    labels = []
+
+    for i in idx:
+        if prices[i] <= 0:
+            continue
+        fwd_return = (prices[i + horizon] - prices[i]) / prices[i]
+
+        if fwd_return > fee_threshold:
+            label = 1  # long
+        elif fwd_return < -fee_threshold:
+            label = 2  # short
+        else:
+            label = 0  # flat
+
+        obs_list.append(features[i - window : i])
+        labels.append(label)
+
+    if not obs_list:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
+    return np.array(obs_list, dtype=np.float32), np.array(labels, dtype=np.int64)
 
 
 # ── Training ───────────────────────────────────────────────────
-def train_one_policy(train_envs, active_symbols, weights, obs_shape, p, budget, seed):
-    """Train a single policy with given hyperparams and time budget."""
+def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, seed):
+    """Train a classifier on forward return labels."""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    policy = PolicyNetwork(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
-    optimizer = torch.optim.Adam(policy.parameters(), lr=p["lr"])
-    reward_norm = RewardNormalizer()
+    fee_threshold = (2 * FEE_BPS / 10000) * p["fee_mult"]
 
-    env_obs = {}
-    env_reward_states = {}
+    # Collect labeled data from all symbols
+    all_obs = []
+    all_labels = []
     for sym in active_symbols:
-        obs, _ = train_envs[sym].reset()
-        env_obs[sym] = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
-        env_reward_states[sym] = {}
+        env = train_envs[sym]
+        obs, labels = make_labeled_dataset(env, FORWARD_HORIZON, fee_threshold)
+        if len(obs) > 0:
+            all_obs.append(obs)
+            all_labels.append(labels)
 
-    n_steps = p["n_steps"]
-    n_minibatches = 4
+    X = np.concatenate(all_obs)
+    y = np.concatenate(all_labels)
+
+    # Print class distribution
+    unique, counts = np.unique(y, return_counts=True)
+    total = len(y)
+    for cls, cnt in zip(unique, counts):
+        names = {0: "flat", 1: "long", 2: "short"}
+        print(f"    {names[cls]}: {cnt} ({100*cnt/total:.1f}%)")
+
+    # Compute class weights for balanced training
+    class_weights = torch.ones(3)
+    for cls in range(3):
+        cnt = (y == cls).sum()
+        if cnt > 0:
+            class_weights[cls] = total / (3 * cnt)
+
+    X_t = torch.tensor(X, dtype=torch.float32, device=DEVICE)
+    y_t = torch.tensor(y, dtype=torch.long, device=DEVICE)
+
+    model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=p["lr"])
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
+
+    batch_size = p["batch_size"]
     start_time = time.time()
     total_steps = 0
     num_updates = 0
+    best_loss = float("inf")
 
     while (time.time() - start_time) < budget:
-        sym = np.random.choice(active_symbols, p=weights)
-        env = train_envs[sym]
-        obs = env_obs[sym]
-        reward_state = env_reward_states[sym]
+        # Shuffle
+        perm = torch.randperm(len(X_t), device=DEVICE)
+        X_shuf = X_t[perm]
+        y_shuf = y_t[perm]
 
-        batch_obs, batch_actions, batch_logprobs = [], [], []
-        batch_rewards, batch_values, batch_dones = [], [], []
+        epoch_loss = 0.0
+        n_batches = 0
+        for start in range(0, len(X_t), batch_size):
+            batch_x = X_shuf[start : start + batch_size]
+            batch_y = y_shuf[start : start + batch_size]
 
-        for _ in range(n_steps):
-            with torch.no_grad():
-                action, logprob, _, value = policy.get_action_and_value(
-                    obs.unsqueeze(0)
-                )
+            logits = model(batch_x)
+            loss = criterion(logits, batch_y)
 
-            next_obs, _, done, truncated, info = env.step(action.item())
-            raw_reward = compute_reward(info, reward_state, p["lam_vol"], p["lam_draw"])
-            reward_norm.update(raw_reward)
-            reward = reward_norm.normalize(raw_reward)
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
-            batch_obs.append(obs)
-            batch_actions.append(action.squeeze())
-            batch_logprobs.append(logprob.squeeze())
-            batch_rewards.append(reward)
-            batch_values.append(value.squeeze())
-            batch_dones.append(done or truncated)
+            epoch_loss += loss.item()
+            n_batches += 1
+            num_updates += 1
+            total_steps += len(batch_x)
 
-            if done or truncated:
-                next_obs, _ = env.reset()
-                reward_state = {}
-                env_reward_states[sym] = reward_state
+        avg_loss = epoch_loss / max(n_batches, 1)
+        if avg_loss < best_loss:
+            best_loss = avg_loss
 
-            obs = torch.tensor(next_obs, dtype=torch.float32, device=DEVICE)
-            total_steps += 1
-
-        env_obs[sym] = obs
-
-        # GAE
-        with torch.no_grad():
-            _, _, _, next_value = policy.get_action_and_value(obs.unsqueeze(0))
-            next_value = next_value.squeeze()
-
-        rewards = torch.tensor(batch_rewards, dtype=torch.float32, device=DEVICE)
-        values = torch.stack(batch_values).squeeze(-1)
-        dones = torch.tensor(batch_dones, dtype=torch.float32, device=DEVICE)
-
-        advantages = torch.zeros_like(rewards)
-        lastgaelam = 0
-        for t in reversed(range(n_steps)):
-            next_val = next_value if t == n_steps - 1 else values[t + 1]
-            delta = rewards[t] + p["gamma"] * next_val * (1 - dones[t]) - values[t]
-            advantages[t] = lastgaelam = (
-                delta + p["gamma"] * p["gae_lam"] * (1 - dones[t]) * lastgaelam
-            )
-
-        returns = advantages + values
-        b_obs = torch.stack(batch_obs)
-        b_actions = torch.stack(batch_actions)
-        b_logprobs = torch.stack(batch_logprobs)
-        b_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        b_returns = returns
-
-        minibatch_size = n_steps // n_minibatches
-
-        for _ in range(p["n_epochs"]):
-            indices = torch.randperm(n_steps, device=DEVICE)
-            for start in range(0, n_steps, minibatch_size):
-                mb_idx = indices[start : start + minibatch_size]
-                _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_idx], b_actions[mb_idx]
-                )
-                ratio = (new_logprob - b_logprobs[mb_idx]).exp()
-                surr1 = ratio * b_advantages[mb_idx]
-                surr2 = (
-                    torch.clamp(ratio, 1 - p["clip"], 1 + p["clip"])
-                    * b_advantages[mb_idx]
-                )
-                pg_loss = -torch.min(surr1, surr2).mean()
-                v_loss = ((new_value - b_returns[mb_idx]) ** 2).mean()
-                ent_loss = entropy.mean()
-                loss = pg_loss + 0.5 * v_loss - p["ent"] * ent_loss
-
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
-                optimizer.step()
-                num_updates += 1
-
-    return policy, total_steps, num_updates
+    return model, total_steps, num_updates
 
 
 # ── Evaluation ─────────────────────────────────────────────────
@@ -278,10 +224,6 @@ def eval_policy(policy_fn, symbols, split="test"):
                 elif ln.startswith("max_drawdown:"):
                     d = float(ln.split()[1])
 
-            # evaluate() returns 0.0 for guardrail violations. A symbol "passes" if
-            # it met both guardrails. We re-check here because evaluate() doesn't
-            # distinguish "genuine zero Sharpe" from "guardrail violation zero."
-            # Note: these thresholds must match the min_trades and max_drawdown passed above.
             passed = (t >= 10 and d <= 0.20) if t > 0 else False
             tag = "PASS" if passed else "FAIL"
             print(f"  {sym}: sharpe={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
@@ -300,15 +242,15 @@ def eval_policy(policy_fn, symbols, split="test"):
     )
 
 
-def make_ensemble_fn(policies, device):
-    """Create ensemble policy function."""
+def make_ensemble_fn(models, device):
+    """Create ensemble policy function using argmax of summed logits."""
 
     def fn(obs):
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             logits_sum = None
-            for p in policies:
-                logits, _ = p(obs_t)
+            for m in models:
+                logits = m(obs_t)
                 logits_sum = logits if logits_sum is None else logits_sum + logits
             return logits_sum.argmax(dim=-1).item()
 
@@ -317,8 +259,7 @@ def make_ensemble_fn(policies, device):
 
 # ── Full training run ──────────────────────────────────────────
 def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
-    """Train n_seeds policies, evaluate ensemble. Returns (sharpe, passing, trades, dd)."""
-    # Suppress env loading noise
+    """Train n_seeds models, evaluate ensemble."""
     old_stdout = sys.stdout
     sys.stdout = open(os.devnull, "w")
     train_envs = {}
@@ -345,20 +286,20 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
     obs_shape = train_envs[active[0]].observation_space.shape
 
     budget_per_seed = budget // n_seeds
-    policies = []
+    models = []
     total_steps_all = 0
     total_updates_all = 0
     for seed in range(n_seeds):
         if verbose:
             print(f"  Training seed {seed} ({budget_per_seed}s)...")
-        policy, steps, updates = train_one_policy(
+        model, steps, updates = train_one_model(
             train_envs, active, weights, obs_shape, p, budget_per_seed, seed
         )
-        policies.append(policy)
+        models.append(model)
         total_steps_all += steps
         total_updates_all += updates
 
-    ensemble_fn = make_ensemble_fn(policies, DEVICE)
+    ensemble_fn = make_ensemble_fn(models, DEVICE)
     sh, ps, tr, dd = eval_policy(ensemble_fn, symbols, split=split)
     return sh, ps, tr, dd, total_steps_all, total_updates_all
 
@@ -366,23 +307,16 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
 # ── Optuna objective ───────────────────────────────────────────
 def objective(trial):
     p = {
-        "lr": trial.suggest_float("lr", 1e-4, 1e-3, log=True),
-        "n_steps": trial.suggest_categorical("n_steps", [512, 1024]),
-        "n_epochs": 4,
-        "gamma": trial.suggest_float("gamma", 0.95, 0.999),
-        "gae_lam": 0.95,
-        "ent": trial.suggest_float("ent", 0.01, 0.05, log=True),  # min 0.01
-        "clip": 0.2,
+        "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
         "hdim": trial.suggest_categorical("hdim", [128, 256]),
         "nlayers": trial.suggest_categorical("nlayers", [2, 3]),
-        "lam_vol": 0.5,  # FIXED — searching over penalty weights causes inaction
-        "lam_draw": 1.0,  # FIXED
+        "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
+        "fee_mult": trial.suggest_float("fee_mult", 1.0, 3.0),
     }
 
     print(f"\n{'='*50}")
     print(f"Trial {trial.number}")
-    for k in ["lr", "n_steps", "gamma", "ent", "hdim", "lam_vol", "lam_draw"]:
-        v = p[k]
+    for k, v in p.items():
         print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
 
     try:
@@ -395,8 +329,6 @@ def objective(trial):
             f"  => sharpe={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
             f"trades={tr} dd={dd:.4f} ({elapsed:.0f}s)"
         )
-        if DEVICE.type == "mps":
-            torch.mps.empty_cache()
         return sh
     except Exception as e:
         print(f"  => FAILED: {e}")
@@ -404,7 +336,6 @@ def objective(trial):
 
 
 def _code_hash():
-    """Hash of train.py for Optuna study isolation."""
     with open(__file__, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()[:8]
 
@@ -412,12 +343,7 @@ def _code_hash():
 # ── Main ───────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--search",
-        action="store_true",
-        help="Run Optuna hyperparameter search before final training. "
-        "Use after major architecture changes. Updates BEST_PARAMS.",
-    )
+    parser.add_argument("--search", action="store_true")
     args = parser.parse_args()
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -428,7 +354,7 @@ def main():
             f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
             f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
         )
-        study_name = f"ppo_{_code_hash()}"
+        study_name = f"sup_{_code_hash()}"
         print(f"Optuna study: {study_name}")
         study = optuna.create_study(
             direction="maximize",
@@ -450,20 +376,14 @@ def main():
         b = study.best_params
         bp = {
             "lr": b["lr"],
-            "n_steps": b["n_steps"],
-            "n_epochs": 4,
-            "gamma": b["gamma"],
-            "gae_lam": 0.95,
-            "ent": b["ent"],
-            "clip": 0.2,
             "hdim": b["hdim"],
             "nlayers": b["nlayers"],
-            "lam_vol": 0.5,
-            "lam_draw": 1.0,
+            "batch_size": b["batch_size"],
+            "fee_mult": b["fee_mult"],
         }
         print(f"\nHint: update BEST_PARAMS in train.py with: {bp}")
     else:
-        print("=== FAST MODE: using BEST_PARAMS (run with --search to tune) ===\n")
+        print("=== FAST MODE: using BEST_PARAMS ===\n")
         bp = BEST_PARAMS
 
     print(
