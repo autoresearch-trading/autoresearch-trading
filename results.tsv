@@ -1,3 +1,4 @@
 commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
 547bcb9	0.118564	269	0.1390	25/25	kept	v5 baseline (31 features, focal gamma=1.0, 30 epochs)
 a4b6f57	0.081869	3747	0.4891	12/25	kept	v5 full-test Sortino baseline (reality check)
+88ce1a3	0.192920	909	0.3902	13/25	kept	min_hold=800 + horizon=800 (aligned)

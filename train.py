@@ -25,9 +25,9 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-MIN_HOLD = 400  # ~6h between trades — longer hold for full-test eval
+MIN_HOLD = 800  # ~12h between trades
 FEE_BPS = 5
-FORWARD_HORIZON = 300  # steps to look ahead for labeling (longer trends)
+FORWARD_HORIZON = 800  # match min_hold for consistent labeling
 
 DEVICE = torch.device("cpu")
 
