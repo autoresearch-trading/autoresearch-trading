@@ -157,19 +157,16 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
 
     batch_size = p["batch_size"]
-    start_time = time.time()
     total_steps = 0
     num_updates = 0
-    best_loss = float("inf")
+    n_epochs = 30  # Fixed epoch count for deterministic training
 
-    while (time.time() - start_time) < budget:
+    for epoch in range(n_epochs):
         # Shuffle
         perm = torch.randperm(len(X_t), device=DEVICE)
         X_shuf = X_t[perm]
         y_shuf = y_t[perm]
 
-        epoch_loss = 0.0
-        n_batches = 0
         for start in range(0, len(X_t), batch_size):
             batch_x = X_shuf[start : start + batch_size]
             batch_y = y_shuf[start : start + batch_size]
@@ -182,14 +179,8 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            epoch_loss += loss.item()
-            n_batches += 1
             num_updates += 1
             total_steps += len(batch_x)
-
-        avg_loss = epoch_loss / max(n_batches, 1)
-        if avg_loss < best_loss:
-            best_loss = avg_loss
 
     return model, total_steps, num_updates
 
