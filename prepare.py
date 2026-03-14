@@ -912,24 +912,29 @@ class TradingEnv(gymnasium.Env):
 def evaluate(
     env_test: TradingEnv, policy_fn, min_trades: int = 50, max_drawdown: float = 0.20
 ) -> float:
-    """Run policy on test env, return val_sharpe.
+    """Run policy on FULL test env, return Sortino ratio.
 
     policy_fn: callable(obs) -> action
-    Returns sharpe ratio, or 0.0 if guardrails violated.
+    Returns Sortino ratio, or 0.0 if guardrails violated.
+
+    Uses Sortino instead of Sharpe: only penalizes downside volatility.
+    Runs the full test set (no 2000-step truncation).
     """
     obs, _ = env_test.reset(options={"sequential": True})
     step_returns = []
     max_dd = 0.0
     total_trades = 0
-    done = False
-    truncated = False
 
-    while not (done or truncated):
+    # Run full test set — step directly, ignoring episode truncation
+    while env_test._idx < env_test.num_steps:
         action = policy_fn(obs)
         obs, _, done, truncated, info = env_test.step(action)
         step_returns.append(info["step_pnl"])
         max_dd = max(max_dd, info["drawdown"])
         total_trades = info["trade_count"]
+        # If truncated but not at end of data, reset episode counter and continue
+        if truncated and env_test._idx < env_test.num_steps:
+            env_test._episode_step = 0
 
     returns = np.array(step_returns)
 
@@ -946,25 +951,25 @@ def evaluate(
         print(f"max_drawdown: {max_dd:.4f}")
         return 0.0
 
-    # Sharpe ratio
-    # Estimate steps per day from data (trade batches per day)
-    steps_per_day = len(returns) / max(1, (env_test.num_steps / len(returns)))
-    if steps_per_day < 1:
-        steps_per_day = 1000  # reasonable default
+    # Sortino ratio (only penalizes downside vol)
+    # Test period: use actual date range for annualization
+    test_days = 20  # VAL_END (Feb 17) to TEST_END (Mar 9)
+    steps_per_day = max(len(returns) / test_days, 1)
 
     mean_ret = returns.mean()
-    std_ret = returns.std()
+    downside = returns[returns < 0]
+    downside_std = np.sqrt(np.mean(downside**2)) if len(downside) > 0 else 1e-10
 
-    if std_ret < 1e-10:
-        sharpe = 0.0
+    if downside_std < 1e-10:
+        sortino = 0.0
     else:
-        sharpe = mean_ret / std_ret * np.sqrt(steps_per_day)
+        sortino = mean_ret / downside_std * np.sqrt(steps_per_day)
 
-    print(f"val_sharpe: {sharpe:.6f}")
+    print(f"val_sharpe: {sortino:.6f}")
     print(f"num_trades: {total_trades}")
     print(f"max_drawdown: {max_dd:.4f}")
 
-    return sharpe
+    return sortino
 
 
 # ============================================================
