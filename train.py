@@ -187,7 +187,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     batch_size = p["batch_size"]
     total_steps = 0
     num_updates = 0
-    n_epochs = 30  # Fixed epoch count for deterministic training
+    n_epochs = 25  # Fixed epoch count for deterministic training
 
     for epoch in range(n_epochs):
         # Shuffle
