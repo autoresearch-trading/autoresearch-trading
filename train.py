@@ -174,7 +174,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
     model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=5e-4)
     cw = class_weights.to(DEVICE)
 
     def focal_loss(logits, targets, sample_w, gamma=1.0):
