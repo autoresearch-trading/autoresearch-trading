@@ -23,7 +23,7 @@ score = mean_sortino * 0.6 + (passing / 25) * 0.4
 - v5 baseline: 0.230 * 0.6 + 18/25 * 0.4 = 0.138 + 0.288 = **0.426**
 - tape-v1: -0.003 * 0.6 + 3/25 * 0.4 = -0.002 + 0.048 = **0.046**
 
-Both Sortino and breadth matter.
+Both Sortino and breadth matter. Note: `passing` already accounts for the 20% drawdown guardrail — symbols exceeding max_drawdown are excluded by `eval_policy`, so the score implicitly penalizes high-drawdown configs via lower passing counts.
 
 ## Decision Tree
 
@@ -35,7 +35,9 @@ Both Sortino and breadth matter.
 | 2 | 39 | Fixed-horizon (800) | 800 | 1.5 | Isolate: features |
 | 3 | 39 | Triple Barrier (300) | 800 | 1.5 | Isolate: labeling |
 
-Analysis: Compare scores. Run 1 should match v5 baseline (~0.43). Run 2 vs Run 1 = feature impact. Run 3 vs Run 2 = labeling impact.
+Analysis: Compare scores. Run 1 should approximate v5 baseline (~0.43) — it won't match exactly because feature masking zeros out columns 31-38 rather than removing them from normalization, so the first 31 features may differ slightly from the original v5 cache. Run 2 vs Run 1 = feature impact. Run 3 vs Run 2 = labeling impact.
+
+**Note on Run 3:** Triple Barrier labels on a 300-step horizon but min_hold=800 prevents exiting before step 800. This is a known mismatch — the label says "TP hit at step 60" but the model can't act on it until step 800. This is intentional for isolation (we want to test labeling quality independent of trade frequency), but the mismatch may suppress Triple Barrier's advantage. Phase 2 will reveal the true impact when min_hold is reduced.
 
 ### Phase 2: Sweep min_hold (3 runs)
 
@@ -75,38 +77,86 @@ For Run 9 (2-class): relabel flat samples as the direction of the forward return
 
 ### File: `scripts/ablation_agent.py`
 
-Single Python script, ~200 lines. No external dependencies beyond what's already installed.
+Single Python script, ~250 lines. No external dependencies beyond what's already installed.
 
 ### train.py modifications
 
-Add three config flags at the top of train.py (below existing config):
+**CLI arguments** (added to existing argparse): The ablation agent controls train.py via command-line arguments, not file patching. This is safe (no source modification) and easy to verify.
 
 ```python
-# ── Ablation flags (set by ablation agent) ─────────────────────
-USE_TRIPLE_BARRIER = True   # False = fixed-horizon labeling
-FORWARD_HORIZON = 800       # only used when USE_TRIPLE_BARRIER=False
-FEATURE_MASK = None          # None = all 39, or list of indices to keep
-N_CLASSES = 3                # 2 = long/short only (no flat)
+parser.add_argument("--labeling", choices=["triple", "fixed"], default="triple")
+parser.add_argument("--forward-horizon", type=int, default=800)
+parser.add_argument("--min-hold", type=int, default=None)  # overrides MIN_HOLD
+parser.add_argument("--fee-mult", type=float, default=None)  # overrides BEST_PARAMS
+parser.add_argument("--feature-mask", type=int, default=None)  # e.g. 31 = use first 31 only
+parser.add_argument("--n-classes", type=int, choices=[2, 3], default=3)
 ```
 
-**USE_TRIPLE_BARRIER**: When False, `make_labeled_dataset` uses the old fixed-horizon logic (re-added as `make_labeled_dataset_fixed`). When True, uses Triple Barrier.
+When `--min-hold` / `--fee-mult` are provided, they override the module-level constants. When `--feature-mask=31`, features[:,31:] are zeroed after loading in both training and eval.
 
-**FEATURE_MASK**: When set to `list(range(31))`, zeros out features 31-38 after loading. Applied in `train_one_model` before training and in `eval_policy` before evaluation. No cache invalidation needed — all 39 features are loaded, then masked.
+**Fixed-horizon labeling** (re-added as `make_labeled_dataset_fixed`):
 
-**N_CLASSES**: When 2, flat labels (0) are relabeled: if forward return at timeout > 0, label as long (1), else short (2 → remapped to 1 for 2-class). Model output is 2 classes, ensemble picks long (mapped to action 1) or short (mapped to action 2).
+```python
+def make_labeled_dataset_fixed(env, horizon, fee_threshold, max_samples=10000):
+    """Fixed-horizon labeling (v5 method). Label by forward return at exactly step i+horizon.
+    Returns (obs, labels, indices) matching Triple Barrier signature."""
+    features = env.features
+    prices = env.prices
+    n = len(features)
+    window = env.window_size
+
+    valid_start = window
+    valid_end = n - horizon
+    if valid_end <= valid_start:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    all_idx = np.arange(valid_start, valid_end)
+    if len(all_idx) > max_samples:
+        idx = np.random.choice(all_idx, max_samples, replace=False)
+        idx.sort()
+    else:
+        idx = all_idx
+
+    idx = idx[prices[idx] > 0]
+    if len(idx) == 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    fwd_return = (prices[idx + horizon] - prices[idx]) / prices[idx]
+    labels = np.zeros(len(idx), dtype=np.int64)
+    labels[fwd_return > fee_threshold] = 1   # long
+    labels[fwd_return < -fee_threshold] = 2  # short
+
+    obs = np.array([features[i - window:i] for i in idx], dtype=np.float32)
+    return obs, labels, idx
+```
+
+**Labeling dispatch** in `train_one_model`:
+```python
+if args.labeling == "fixed":
+    obs, labels, indices = make_labeled_dataset_fixed(env, args.forward_horizon, fee_threshold)
+else:
+    obs, labels, indices = make_labeled_dataset(env, MAX_HOLD_STEPS, fee_threshold, fee_threshold)
+```
+
+**Feature masking** in `train_one_model` and `eval_policy`:
+```python
+if args.feature_mask is not None:
+    X[:, :, args.feature_mask:] = 0.0  # zero out features beyond mask
+```
+
+**2-class support** (N_CLASSES=2):
+- In `train_one_model`: after labeling, relabel flat (0) samples using sign of forward return at the labeling horizon. Map labels to {0=long, 1=short}. Model outputs 2 classes.
+- In `make_ensemble_fn`: when n_classes=2, map model output 0→action 1 (long), 1→action 2 (short). The model never predicts flat — it always has a position.
 
 ### ablation_agent.py logic
 
 ```python
 def run_experiment(config: dict) -> dict:
-    """Patch train.py config, run, parse results."""
-    # 1. Read train.py
-    # 2. Regex-replace config values
-    # 3. Write patched train.py
-    # 4. subprocess.run(["uv", "run", "python", "train.py"])
-    # 5. Parse PORTFOLIO SUMMARY from stdout
-    # 6. Restore original train.py
-    # 7. Return {sortino, passing, trades, dd, wr, pf, score}
+    """Run train.py with CLI args, parse results."""
+    # 1. Build CLI args from config dict
+    # 2. subprocess.run(["uv", "run", "python", "train.py", ...args], capture_output=True)
+    # 3. Parse PORTFOLIO SUMMARY from stdout
+    # 4. Return {sortino, passing, trades, dd, wr, pf, score}
 
 def run_phase(phase_name, experiments):
     """Run a list of experiments, print results table."""
@@ -184,7 +234,7 @@ Written to `docs/ablation-report.md`:
 
 | File | Change |
 |------|--------|
-| train.py | Add USE_TRIPLE_BARRIER, FORWARD_HORIZON, FEATURE_MASK, N_CLASSES flags. Re-add fixed-horizon labeling as make_labeled_dataset_fixed(). Add feature masking logic. Add 2-class support. |
+| train.py | Add CLI args (--labeling, --forward-horizon, --min-hold, --fee-mult, --feature-mask, --n-classes). Re-add fixed-horizon labeling as make_labeled_dataset_fixed(). Add feature masking logic. Add 2-class support with action remapping in make_ensemble_fn. |
 | scripts/ablation_agent.py | New file. Experiment runner with decision tree logic. |
 
 ## Success Criteria
