@@ -58,13 +58,15 @@ Note the results. If flat > 80% for most symbols, use `fee_mult=1.0` instead of 
 ### Task 2: Add 8 tape reading features to compute_features()
 
 **Files:**
-- Modify: `prepare.py:254-313` (after existing v5 features, before feature combining)
+- Modify: `prepare.py` — insert before `# Combine all features` at line 547 (after ALL existing features are computed: trade 0-11, orderbook 12-17, funding 18-19, longer-horizon 20-24, cutting-edge 25-30)
 - Modify: `prepare.py:594` (ROBUST_FEATURE_INDICES)
 - Modify: `prepare.py:633` (_FEATURE_VERSION)
 
+**Insertion point:** All 8 tape reading features go right before `# Combine all features` (line 547). This is critical — features 7-11 are computed at lines 315-376 and `LOOKBACK_BATCHES`/`flat_notionals` (needed by Step 2) are defined at lines 329-330. Inserting earlier causes NameError.
+
 - [ ] **Step 1: Add features 31-32 (buy_run_max, sell_run_max)**
 
-Add after the existing v5 features (after line ~313, before the feature combining section). These count the longest consecutive buy/sell streak in each 100-trade batch.
+Add before `# Combine all features` at line 547. These count the longest consecutive buy/sell streak in each 100-trade batch.
 
 ```python
 # ── v6 tape-reading features ──────────────────────────────────
@@ -142,6 +144,8 @@ price_change = np.abs(np.diff(vwap, prepend=vwap[0]))
 price_change_safe = np.maximum(price_change, 1e-10)
 # total_batch_notional already exists (line 295, computed for TFI)
 price_level_absorption = total_batch_notional / price_change_safe
+# First batch has price_change=0 (diff with itself), producing ~1e15 spike — zero it out
+price_level_absorption[0] = 0.0
 ```
 
 - [ ] **Step 6: Add feature 38 (tfi_acceleration)**
@@ -269,6 +273,14 @@ class TestTapeReadingFeatures:
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
         assert np.all(features[:, 37] >= 0)
+
+    def test_tfi_acceleration_finite(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        # Second difference of TFI — symmetric, bounded roughly by [-2, 2]
+        assert np.all(np.isfinite(features[:, 38]))
+        assert np.all(features[:, 38] >= -4) and np.all(features[:, 38] <= 4)
 ```
 
 - [ ] **Step 3: Run all tests**
@@ -408,19 +420,7 @@ Only 2 lines changed: `MIN_HOLD` (800→100) and `FORWARD_HORIZON` (800→150).
 
 - [ ] **Step 2: Fix sharpe→sortino naming throughout**
 
-In `eval_policy()` at `train.py:250`:
-
-```python
-print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
-```
-
-In `main()` at `train.py:423`:
-
-```python
-print(f"sortino: {sh:.6f}")
-```
-
-Also in `prepare.py:943,949,968` — the `evaluate()` function still prints `val_sharpe:`. Change all three to `sortino:`:
+In `prepare.py` — the `evaluate()` function prints `val_sharpe:`. Change all three:
 
 ```python
 # Line 943:
@@ -429,6 +429,21 @@ print(f"sortino: 0.000000 (only {total_trades} trades, min={min_trades})")
 print(f"sortino: 0.000000 (drawdown {max_dd:.4f} > {max_drawdown})")
 # Line 968:
 print(f"sortino: {sortino:.6f}")
+```
+
+In `train.py` — change all `sharpe` references to `sortino`:
+
+```python
+# Line 220 (eval_policy docstring):
+"""Run policy_fn on all symbols. Returns (sortino, passing, trades, dd)."""
+# Line 250 (per-symbol output):
+print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
+# Line 350 (Optuna trial output):
+f"  => sortino={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
+# Line 395 (Optuna top trials):
+print(f"  #{t.number}: sortino={t.value:.4f}  {t.params}")
+# Line 423 (PORTFOLIO SUMMARY):
+print(f"sortino: {sh:.6f}")
 ```
 
 - [ ] **Step 3: Commit**
@@ -459,7 +474,8 @@ assert env.features.shape[1] == 39, f'Expected 39 features, got {env.features.sh
 # Check class distribution
 prices = env.prices
 n = len(prices)
-fee_threshold = (2 * FEE_BPS / 10000) * 1.5
+from train import BEST_PARAMS
+fee_threshold = (2 * FEE_BPS / 10000) * BEST_PARAMS['fee_mult']
 valid = np.arange(WINDOW_SIZE, n - FORWARD_HORIZON)
 mask = prices[valid] > 0
 valid = valid[mask]
