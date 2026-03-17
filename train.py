@@ -25,7 +25,7 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-MIN_HOLD = 100  # ~1.5 min between trades (tape reading scale)
+MIN_HOLD = 300  # ~5 min between trades (force selectivity)
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
 
@@ -36,7 +36,7 @@ BEST_PARAMS = {
     "hdim": 256,
     "nlayers": 2,
     "batch_size": 256,
-    "fee_mult": 15.0,  # wider barriers → more flat labels → more selective model
+    "fee_mult": 10.0,  # moderate barrier width
 }
 
 
