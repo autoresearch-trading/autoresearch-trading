@@ -85,16 +85,26 @@ sell_run_max = _max_run_length(~is_buy_batched)
 
 - [ ] **Step 2: Add features 33-34 (large_buy_share, large_sell_share)**
 
-Uses same 50-batch rolling 95th percentile as existing feature 8 (large_trade_share). The rolling threshold variable `rolling_p95` is already computed for feature 8 — reuse it.
+Uses same 50-batch rolling 95th percentile as existing feature 8 (large_trade_share). Feature 8 (line 326-342) computes the threshold inside a per-batch loop — we need to pre-compute it as a vectorized array first. `LOOKBACK_BATCHES` and `flat_notionals` are already defined by feature 8 — reuse them.
 
 ```python
 # Feature 33-34: large buy/sell share (directional large trade volume)
-# rolling_p95 is already computed for feature 8 (large_trade_share)
+# Pre-compute rolling p95 as array (feature 8 computes it per-batch inside a loop)
+# LOOKBACK_BATCHES and flat_notionals are already defined by feature 8 (line 329-330)
+rolling_p95 = np.zeros(num_batches)
+for i in range(num_batches):
+    if i > 0:
+        start_idx = max(0, i - LOOKBACK_BATCHES) * trade_batch
+        end_idx = i * trade_batch
+        rolling_p95[i] = np.percentile(flat_notionals[start_idx:end_idx], 95)
+    else:
+        rolling_p95[i] = np.percentile(notionals_batched[i], 95)
+
 is_large = notionals_batched > rolling_p95[:, np.newaxis]
 large_buy_notional = np.where(is_buy_batched & is_large, notionals_batched, 0).sum(axis=1)
 large_sell_notional = np.where(~is_buy_batched & is_large, notionals_batched, 0).sum(axis=1)
-total_notional_per_batch = notionals_batched.sum(axis=1)
-safe_total = np.maximum(total_notional_per_batch, 1e-10)
+# total_batch_notional already exists (line 295, computed for TFI)
+safe_total = np.maximum(total_batch_notional, 1e-10)
 large_buy_share = large_buy_notional / safe_total
 large_sell_share = large_sell_notional / safe_total
 ```
@@ -130,7 +140,8 @@ High volume + small price change = someone absorbing.
 # Feature 37: price level absorption
 price_change = np.abs(np.diff(vwap, prepend=vwap[0]))
 price_change_safe = np.maximum(price_change, 1e-10)
-price_level_absorption = total_notional_per_batch / price_change_safe
+# total_batch_notional already exists (line 295, computed for TFI)
+price_level_absorption = total_batch_notional / price_change_safe
 ```
 
 - [ ] **Step 6: Add feature 38 (tfi_acceleration)**
@@ -145,9 +156,36 @@ tfi_acceleration = np.diff(delta_tfi, prepend=0.0)
 
 - [ ] **Step 7: Include new features in the feature array**
 
-Find where features are combined into the final array (look for the stacking/combining section after all individual features). Add the 8 new features. The exact line depends on how prepare.py combines features — look for the array that collects all 31 features and extend it to 39.
+At `prepare.py:565-585`. Add a new `np.column_stack` for tape reading features, then include it in the `np.hstack` at line 577.
 
-The new features to append (in order): `buy_run_max, sell_run_max, large_buy_share, large_sell_share, trade_size_entropy, aggressor_imbalance, price_level_absorption, tfi_acceleration`.
+```python
+# === TAPE READING FEATURES (indices 31-38) ===
+tape_reading_features = np.column_stack(
+    [
+        buy_run_max,            # 31
+        sell_run_max,           # 32
+        large_buy_share,        # 33
+        large_sell_share,       # 34
+        trade_size_entropy,     # 35
+        aggressor_imbalance,    # 36
+        price_level_absorption, # 37
+        tfi_acceleration,       # 38
+    ]
+)
+
+features = np.hstack(
+    [
+        trade_features,
+        ob_features,
+        extra_features,
+        longer_features,
+        cutting_edge_features,
+        tape_reading_features,
+    ]
+)
+```
+
+This replaces the existing `np.hstack` at line 577-585.
 
 - [ ] **Step 8: Update ROBUST_FEATURE_INDICES**
 
@@ -261,7 +299,9 @@ git commit -m "test: update feature count to 39, add tape reading feature tests"
 
 Inside `evaluate()`, add accumulators for per-trade PnL and hold duration. Track when position changes (entry/exit).
 
-After the existing loop variables are initialized (around line 924-926), add:
+The env's `step()` returns `info` dict with `"position"` (0=flat, 1=long, 2=short) and `"equity"` (cumulative equity). Use these — do NOT access `env._position` directly (it's private).
+
+After the existing loop variables are initialized (line 924-926), add:
 
 ```python
 trade_pnls = []
@@ -269,35 +309,36 @@ hold_durations = []
 entry_step = None
 entry_equity = 1.0
 prev_position = 0
+step_num = 0
 ```
 
-Inside the main step loop, after the existing step_pnl tracking, add trade detection:
+Inside the main step loop (line 929-937), after the existing `step_returns.append(info["step_pnl"])`, add trade detection:
 
 ```python
-current_position = env.position  # 0=flat, 1=long, 2=short
+step_num += 1
+current_position = info["position"]
+current_equity = info["equity"]
 if prev_position == 0 and current_position != 0:
     # Entry
     entry_step = step_num
-    entry_equity = equity
+    entry_equity = current_equity
 elif prev_position != 0 and current_position == 0:
     # Exit back to flat
-    trade_pnl = equity - entry_equity
-    trade_pnls.append(trade_pnl)
+    trade_pnls.append(current_equity - entry_equity)
     if entry_step is not None:
         hold_durations.append(step_num - entry_step)
     entry_step = None
 elif prev_position != 0 and current_position != 0 and prev_position != current_position:
     # Flip (long→short or short→long): close + open
-    trade_pnl = equity - entry_equity
-    trade_pnls.append(trade_pnl)
+    trade_pnls.append(current_equity - entry_equity)
     if entry_step is not None:
         hold_durations.append(step_num - entry_step)
     entry_step = step_num
-    entry_equity = equity
+    entry_equity = current_equity
 prev_position = current_position
 ```
 
-After the main loop, before printing results, compute and print the new metrics:
+After the main loop, before the guardrails section (before line 941), compute and print the new metrics:
 
 ```python
 # Trade-level metrics
@@ -315,8 +356,6 @@ if trade_pnls:
     print(f"profit_factor: {profit_factor:.4f}")
     print(f"avg_hold_steps: {avg_hold:.0f}")
 ```
-
-Note: This requires access to `env.position` (the current position) and tracking `equity` (cumulative returns). Check how the existing evaluate() tracks these — adapt variable names to match.
 
 - [ ] **Step 2: Run existing tests to verify no regression**
 
@@ -367,25 +406,36 @@ BEST_PARAMS = {
 
 Only 2 lines changed: `MIN_HOLD` (800→100) and `FORWARD_HORIZON` (800→150).
 
-- [ ] **Step 2: Fix sharpe→sortino naming in eval_policy output**
+- [ ] **Step 2: Fix sharpe→sortino naming throughout**
 
-In `eval_policy()` around line 250:
+In `eval_policy()` at `train.py:250`:
 
 ```python
 print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
 ```
 
-And in main() around line 668:
+In `main()` at `train.py:423`:
 
 ```python
 print(f"sortino: {sh:.6f}")
 ```
 
+Also in `prepare.py:943,949,968` — the `evaluate()` function still prints `val_sharpe:`. Change all three to `sortino:`:
+
+```python
+# Line 943:
+print(f"sortino: 0.000000 (only {total_trades} trades, min={min_trades})")
+# Line 949:
+print(f"sortino: 0.000000 (drawdown {max_dd:.4f} > {max_drawdown})")
+# Line 968:
+print(f"sortino: {sortino:.6f}")
+```
+
 - [ ] **Step 3: Commit**
 
 ```bash
-git add train.py
-git commit -m "config: horizon=150, min_hold=100 for tape reading setup detection"
+git add train.py prepare.py
+git commit -m "config: horizon=150, min_hold=100, fix sharpe→sortino naming"
 ```
 
 ---
