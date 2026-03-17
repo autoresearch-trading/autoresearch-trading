@@ -25,9 +25,9 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-MIN_HOLD = 800  # ~12h between trades
+MIN_HOLD = 100  # ~1.5 min between trades (tape reading scale)
 FEE_BPS = 5
-FORWARD_HORIZON = 800  # match min_hold for consistent labeling
+MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
 
 DEVICE = torch.device("cpu")
 
@@ -36,7 +36,7 @@ BEST_PARAMS = {
     "hdim": 256,
     "nlayers": 2,
     "batch_size": 256,
-    "fee_mult": 1.5,  # multiply fee by this to set label threshold
+    "fee_mult": 8.0,  # adjust based on Task 1 class distribution check
 }
 
 
@@ -69,21 +69,30 @@ class DirectionClassifier(nn.Module):
 
 
 # ── Data labeling ──────────────────────────────────────────────
-def make_labeled_dataset(env, horizon, fee_threshold, max_samples=10000):
-    """Extract (obs, label) pairs from env data using forward returns.
-    Samples max_samples random indices to keep memory manageable."""
+def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=10000):
+    """Extract (obs, label) pairs using Triple Barrier labeling.
+
+    For each sample, scan forward up to max_hold steps:
+    - TP barrier hit first (return >= +tp_threshold) → long (1)
+    - SL barrier hit first (return <= -sl_threshold) → short (2)
+    - Neither hit within max_hold → flat (0) (timeout)
+
+    Vectorized via numpy broadcasting. Memory: O(n_samples × max_hold).
+    """
     features = env.features
     prices = env.prices
     n = len(features)
     window = env.window_size
 
-    # Valid indices range
     valid_start = window
-    valid_end = n - horizon
+    valid_end = n - max_hold
     if valid_end <= valid_start:
-        return np.array([], dtype=np.float32), np.array([], dtype=np.int64)
+        return (
+            np.array([], dtype=np.float32),
+            np.array([], dtype=np.int64),
+            np.array([], dtype=np.int64),
+        )
 
-    # Sample random indices
     all_idx = np.arange(valid_start, valid_end)
     if len(all_idx) > max_samples:
         idx = np.random.choice(all_idx, max_samples, replace=False)
@@ -91,37 +100,39 @@ def make_labeled_dataset(env, horizon, fee_threshold, max_samples=10000):
     else:
         idx = all_idx
 
-    obs_list = []
-    labels = []
-    sample_indices = []
-
-    for i in idx:
-        if prices[i] <= 0:
-            continue
-        fwd_return = (prices[i + horizon] - prices[i]) / prices[i]
-
-        if fwd_return > fee_threshold:
-            label = 1  # long
-        elif fwd_return < -fee_threshold:
-            label = 2  # short
-        else:
-            label = 0  # flat
-
-        obs_list.append(features[i - window : i])
-        labels.append(label)
-        sample_indices.append(i)
-
-    if not obs_list:
+    # Filter zero prices
+    idx = idx[prices[idx] > 0]
+    if len(idx) == 0:
         return (
             np.array([], dtype=np.float32),
             np.array([], dtype=np.int64),
             np.array([], dtype=np.int64),
         )
-    return (
-        np.array(obs_list, dtype=np.float32),
-        np.array(labels, dtype=np.int64),
-        np.array(sample_indices, dtype=np.int64),
-    )
+
+    # Forward return matrix: (n_samples, max_hold)
+    offsets = np.arange(1, max_hold + 1)
+    future_prices = prices[idx[:, np.newaxis] + offsets[np.newaxis, :]]
+    entry_prices = prices[idx]
+    fwd_returns = (future_prices - entry_prices[:, np.newaxis]) / entry_prices[
+        :, np.newaxis
+    ]
+
+    # First barrier hit per sample
+    hit_tp = fwd_returns >= tp_threshold
+    hit_sl = fwd_returns <= -sl_threshold
+    tp_any = hit_tp.any(axis=1)
+    sl_any = hit_sl.any(axis=1)
+    tp_first = np.where(tp_any, hit_tp.argmax(axis=1), max_hold)
+    sl_first = np.where(sl_any, hit_sl.argmax(axis=1), max_hold)
+
+    # Label by which barrier hit first
+    labels = np.zeros(len(idx), dtype=np.int64)  # 0 = flat (timeout)
+    labels[tp_first < sl_first] = 1  # long: TP hit first
+    labels[sl_first < tp_first] = 2  # short: SL hit first
+    # tp_first == sl_first: both never hit (flat) or both hit same step (ambiguous → flat)
+
+    obs = np.array([features[i - window : i] for i in idx], dtype=np.float32)
+    return obs, labels, idx
 
 
 # ── Training ───────────────────────────────────────────────────
@@ -138,7 +149,9 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     all_indices = []
     for sym in active_symbols:
         env = train_envs[sym]
-        obs, labels, indices = make_labeled_dataset(env, FORWARD_HORIZON, fee_threshold)
+        obs, labels, indices = make_labeled_dataset(
+            env, MAX_HOLD_STEPS, fee_threshold, fee_threshold
+        )
         if len(obs) > 0:
             all_obs.append(obs)
             all_labels.append(labels)
@@ -217,10 +230,12 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
 
 # ── Evaluation ─────────────────────────────────────────────────
 def eval_policy(policy_fn, symbols, split="test"):
-    """Run policy_fn on all symbols. Returns (sharpe, passing, trades, dd)."""
+    """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor)."""
     passing = []
     trades_all = 0
     worst_dd = 0.0
+    all_win_rates = []
+    all_profit_factors = []
 
     for sym in symbols:
         try:
@@ -239,27 +254,41 @@ def eval_policy(policy_fn, symbols, split="test"):
             out = buf.getvalue()
 
             t, d = 0, 0.0
+            wr, pf = 0.0, 0.0
             for ln in out.strip().split("\n"):
                 if ln.startswith("num_trades:"):
                     t = int(ln.split()[1])
                 elif ln.startswith("max_drawdown:"):
                     d = float(ln.split()[1])
+                elif ln.startswith("win_rate:"):
+                    wr = float(ln.split()[1])
+                elif ln.startswith("profit_factor:"):
+                    pf = float(ln.split()[1])
 
             passed = (t >= 10 and d <= 0.20) if t > 0 else False
             tag = "PASS" if passed else "FAIL"
-            print(f"  {sym}: sharpe={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
+            extra = f" wr={wr:.2f} pf={pf:.2f}" if wr > 0 else ""
+            print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
             if passed:
                 passing.append(sh)
+            if passed and wr > 0:
+                all_win_rates.append(wr)
+                all_profit_factors.append(pf)
             trades_all += t
             worst_dd = max(worst_dd, d)
         except Exception as e:
             print(f"  {sym}: ERROR ({e})")
+
+    mean_wr = float(np.mean(all_win_rates)) if all_win_rates else 0.0
+    mean_pf = float(np.mean(all_profit_factors)) if all_profit_factors else 0.0
 
     return (
         float(np.mean(passing)) if passing else 0.0,
         len(passing),
         trades_all,
         worst_dd,
+        mean_wr,
+        mean_pf,
     )
 
 
@@ -321,8 +350,8 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         total_updates_all += updates
 
     ensemble_fn = make_ensemble_fn(models, DEVICE)
-    sh, ps, tr, dd = eval_policy(ensemble_fn, symbols, split=split)
-    return sh, ps, tr, dd, total_steps_all, total_updates_all
+    sh, ps, tr, dd, wr, pf = eval_policy(ensemble_fn, symbols, split=split)
+    return sh, ps, tr, dd, total_steps_all, total_updates_all, wr, pf
 
 
 # ── Optuna objective ───────────────────────────────────────────
@@ -332,7 +361,7 @@ def objective(trial):
         "hdim": trial.suggest_categorical("hdim", [128, 256]),
         "nlayers": trial.suggest_categorical("nlayers", [2, 3]),
         "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
-        "fee_mult": trial.suggest_float("fee_mult", 1.0, 3.0),
+        "fee_mult": trial.suggest_float("fee_mult", 5.0, 15.0),
     }
 
     print(f"\n{'='*50}")
@@ -342,12 +371,12 @@ def objective(trial):
 
     try:
         t0 = time.time()
-        sh, ps, tr, dd, _, _ = full_run(
+        sh, ps, tr, dd, _, _, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
         print(
-            f"  => sharpe={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
+            f"  => sortino={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
             f"trades={tr} dd={dd:.4f} ({elapsed:.0f}s)"
         )
         return sh
@@ -392,7 +421,7 @@ def main():
             study.trials, key=lambda t: t.value if t.value else -999, reverse=True
         )
         for t in ranked[:5]:
-            print(f"  #{t.number}: sharpe={t.value:.4f}  {t.params}")
+            print(f"  #{t.number}: sortino={t.value:.4f}  {t.params}")
 
         b = study.best_params
         bp = {
@@ -413,16 +442,19 @@ def main():
     )
     print(f"params: {bp}\n")
 
-    sh, ps, tr, dd, total_steps, total_updates = full_run(
+    sh, ps, tr, dd, total_steps, total_updates, wr, pf = full_run(
         DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
     )
 
     print("---")
     print("=== PORTFOLIO SUMMARY ===")
     print(f"symbols_passing: {ps}/{len(DEFAULT_SYMBOLS)}")
-    print(f"val_sharpe: {sh:.6f}")
+    print(f"sortino: {sh:.6f}")
     print(f"num_trades: {tr}")
     print(f"max_drawdown: {dd:.4f}")
+    if wr > 0:
+        print(f"win_rate: {wr:.4f}")
+        print(f"profit_factor: {pf:.4f}")
     print(f"training_seconds: {FINAL_BUDGET:.1f}")
     print(f"total_steps: {total_steps}")
     print(f"num_updates: {total_updates}")
