@@ -21,6 +21,9 @@ if [ -n "${S3_ENDPOINT_URL-}" ]; then
 fi
 
 # --- Main Logic ---
+MAX_RETRIES=3
+RETRY_DELAY=30
+
 echo "▶️ Starting data sync for Fly.io app: $APP_NAME"
 
 # 1. Create local temporary directory
@@ -31,8 +34,20 @@ echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
 # 2. Stream tar directly from Fly.io (no remote temp file needed)
 # This avoids "No space left on device" on Fly.io's limited /tmp
 echo "📦 Streaming data from Fly.io instance..."
-flyctl ssh console -q -a "$APP_NAME" -C "tar --ignore-failed-read -cf - -C ${REMOTE_DATA_PATH} ." | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"
-echo "✅ Data streamed and extracted locally."
+for attempt in $(seq 1 $MAX_RETRIES); do
+  if flyctl ssh console -q -a "$APP_NAME" -C "tar --ignore-failed-read -cf - -C ${REMOTE_DATA_PATH} ." | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
+    echo "✅ Data streamed and extracted locally."
+    break
+  fi
+  if [ "$attempt" -eq "$MAX_RETRIES" ]; then
+    echo "❌ Failed to stream data after $MAX_RETRIES attempts"
+    exit 1
+  fi
+  echo "⚠️ Attempt $attempt/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+  rm -rf "${LOCAL_TEMP_DIR}/extracted"
+  mkdir -p "${LOCAL_TEMP_DIR}/extracted"
+  sleep "$RETRY_DELAY"
+done
 
 # 3. Count files to upload
 FILE_COUNT=$(find "${LOCAL_TEMP_DIR}/extracted" -type f -name "*.parquet" | wc -l)
