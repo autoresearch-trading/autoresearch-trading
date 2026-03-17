@@ -36,7 +36,7 @@ BEST_PARAMS = {
     "hdim": 256,
     "nlayers": 2,
     "batch_size": 256,
-    "fee_mult": 8.0,  # adjust based on Task 1 class distribution check
+    "fee_mult": 15.0,  # wider barriers → more flat labels → more selective model
 }
 
 
