@@ -422,39 +422,50 @@ Only 2 lines changed: `MIN_HOLD` (800→100) and `FORWARD_HORIZON` (800→150).
 
 - [ ] **Step 2: Forward trade-level metrics through eval_policy**
 
-`eval_policy()` (train.py:234-238) captures all of `evaluate()`'s stdout into a StringIO and only parses `num_trades:` and `max_drawdown:`. The new trade metrics from Task 4 are silently discarded. Fix by parsing and forwarding them.
+`eval_policy()` (train.py:234-238) captures all of `evaluate()`'s stdout into a StringIO and only parses `num_trades:` and `max_drawdown:`. The new trade metrics from Task 4 are silently discarded. Fix by parsing and printing them — do NOT change return signatures (that would cascade to `objective()`, `full_run`, and `main()` destructuring).
 
-In `eval_policy()`, expand the parsing loop at `train.py:241-246` to also capture trade metrics:
+In `eval_policy()`, add accumulators before the symbol loop (after line 223):
+
+```python
+all_win_rates = []
+all_profit_factors = []
+```
+
+Expand the parsing loop at `train.py:241-246`:
 
 ```python
 t, d = 0, 0.0
-wr, pf = "", ""
+wr, pf = 0.0, 0.0
 for ln in out.strip().split("\n"):
     if ln.startswith("num_trades:"):
         t = int(ln.split()[1])
     elif ln.startswith("max_drawdown:"):
         d = float(ln.split()[1])
     elif ln.startswith("win_rate:"):
-        wr = ln.split()[1]
+        wr = float(ln.split()[1])
     elif ln.startswith("profit_factor:"):
-        pf = ln.split()[1]
+        pf = float(ln.split()[1])
 ```
 
-Update the per-symbol print (line 250) to include trade metrics when available:
+Update the per-symbol print (line 250) — this also handles the sharpe→sortino rename for this line:
 
 ```python
-extra = f" wr={wr} pf={pf}" if wr else ""
+extra = f" wr={wr:.2f} pf={pf:.2f}" if wr > 0 else ""
 print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
+if passed and wr > 0:
+    all_win_rates.append(wr)
+    all_profit_factors.append(pf)
 ```
 
-Update `eval_policy` return to include aggregate trade metrics. Change the return (line 258-263) and `full_run` (line 324-325) to pass them through. Then in `main()` at the PORTFOLIO SUMMARY section (line 420-428), add:
+After the symbol loop, before the return (line 258), print portfolio-level aggregates:
 
 ```python
-print(f"win_rate: {wr:.4f}")
-print(f"profit_factor: {pf:.4f}")
+if all_win_rates:
+    print(f"win_rate: {np.mean(all_win_rates):.4f}")
+    print(f"profit_factor: {np.mean(all_profit_factors):.4f}")
 ```
 
-The simplest approach: have eval_policy accumulate win_rates and profit_factors per passing symbol, return their means alongside existing metrics.
+No changes to return signatures — eval_policy still returns `(sortino, passing, trades, dd)`, full_run and objective() stay unchanged.
 
 - [ ] **Step 3: Fix sharpe→sortino naming throughout**
 
@@ -469,13 +480,11 @@ print(f"sortino: 0.000000 (drawdown {max_dd:.4f} > {max_drawdown})")
 print(f"sortino: {sortino:.6f}")
 ```
 
-In `train.py` — change all `sharpe` references to `sortino`:
+In `train.py` — change remaining `sharpe` references to `sortino` (line 250 already handled by Step 2):
 
 ```python
 # Line 220 (eval_policy docstring):
 """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd)."""
-# Line 250 (per-symbol output):
-print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f} [{tag}]")
 # Line 350 (Optuna trial output):
 f"  => sortino={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
 # Line 395 (Optuna top trials):
