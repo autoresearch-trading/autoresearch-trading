@@ -1024,6 +1024,14 @@ def evaluate(
     max_dd = 0.0
     total_trades = 0
 
+    # Trade-level tracking
+    trade_pnls = []
+    hold_durations = []
+    entry_step = None
+    entry_equity = 1.0
+    prev_position = 0
+    step_num = 0
+
     # Run full test set — step directly, ignoring episode truncation
     while env_test._idx < env_test.num_steps:
         action = policy_fn(obs)
@@ -1031,21 +1039,53 @@ def evaluate(
         step_returns.append(info["step_pnl"])
         max_dd = max(max_dd, info["drawdown"])
         total_trades = info["trade_count"]
+
+        step_num += 1
+        current_position = info["position"]
+        current_equity = info["equity"]
+        if prev_position == 0 and current_position != 0:
+            # Entry
+            entry_step = step_num
+            entry_equity = current_equity
+        elif prev_position != 0 and current_position == 0:
+            # Exit back to flat
+            trade_pnls.append(current_equity - entry_equity)
+            if entry_step is not None:
+                hold_durations.append(step_num - entry_step)
+            entry_step = None
+        elif (
+            prev_position != 0
+            and current_position != 0
+            and prev_position != current_position
+        ):
+            # Flip (long→short or short→long): close + open
+            trade_pnls.append(current_equity - entry_equity)
+            if entry_step is not None:
+                hold_durations.append(step_num - entry_step)
+            entry_step = step_num
+            entry_equity = current_equity
+        prev_position = current_position
+
         # If truncated but not at end of data, reset episode counter and continue
         if truncated and env_test._idx < env_test.num_steps:
             env_test._episode_step = 0
+
+    # Close any open position at end of data
+    if prev_position != 0 and entry_step is not None:
+        trade_pnls.append(info["equity"] - entry_equity)
+        hold_durations.append(step_num - entry_step)
 
     returns = np.array(step_returns)
 
     # Guardrails
     if total_trades < min_trades:
-        print(f"val_sharpe: 0.000000 (only {total_trades} trades, min={min_trades})")
+        print(f"sortino: 0.000000 (only {total_trades} trades, min={min_trades})")
         print(f"num_trades: {total_trades}")
         print(f"max_drawdown: {max_dd:.4f}")
         return 0.0
 
     if max_dd > max_drawdown:
-        print(f"val_sharpe: 0.000000 (drawdown {max_dd:.4f} > {max_drawdown})")
+        print(f"sortino: 0.000000 (drawdown {max_dd:.4f} > {max_drawdown})")
         print(f"num_trades: {total_trades}")
         print(f"max_drawdown: {max_dd:.4f}")
         return 0.0
@@ -1064,9 +1104,24 @@ def evaluate(
     else:
         sortino = mean_ret / downside_std * np.sqrt(steps_per_day)
 
-    print(f"val_sharpe: {sortino:.6f}")
+    print(f"sortino: {sortino:.6f}")
     print(f"num_trades: {total_trades}")
     print(f"max_drawdown: {max_dd:.4f}")
+
+    # Trade-level metrics
+    if trade_pnls:
+        wins = [p for p in trade_pnls if p > 0]
+        losses = [p for p in trade_pnls if p <= 0]
+        win_rate = len(wins) / len(trade_pnls)
+        avg_profit = np.mean(trade_pnls)
+        gross_wins = sum(wins) if wins else 0
+        gross_losses = abs(sum(losses)) if losses else 1e-10
+        profit_factor = gross_wins / gross_losses
+        avg_hold = np.mean(hold_durations) if hold_durations else 0
+        print(f"win_rate: {win_rate:.4f}")
+        print(f"avg_profit_per_trade: {avg_profit:.6f}")
+        print(f"profit_factor: {profit_factor:.4f}")
+        print(f"avg_hold_steps: {avg_hold:.0f}")
 
     return sortino
 
