@@ -384,10 +384,12 @@ git commit -m "feat: add trade-level metrics to evaluate() (win_rate, profit_fac
 
 ---
 
-### Task 5: Update train.py config for tape reading
+### Task 5: Update train.py config + forward trade metrics
 
 **Files:**
 - Modify: `train.py:19-39` (configuration section)
+- Modify: `train.py:241-250` (eval_policy — parse and forward trade metrics)
+- Modify: `train.py:420-428` (main — aggregate trade metrics in PORTFOLIO SUMMARY)
 
 - [ ] **Step 1: Update horizon and min_hold constants**
 
@@ -418,7 +420,43 @@ BEST_PARAMS = {
 
 Only 2 lines changed: `MIN_HOLD` (800→100) and `FORWARD_HORIZON` (800→150).
 
-- [ ] **Step 2: Fix sharpe→sortino naming throughout**
+- [ ] **Step 2: Forward trade-level metrics through eval_policy**
+
+`eval_policy()` (train.py:234-238) captures all of `evaluate()`'s stdout into a StringIO and only parses `num_trades:` and `max_drawdown:`. The new trade metrics from Task 4 are silently discarded. Fix by parsing and forwarding them.
+
+In `eval_policy()`, expand the parsing loop at `train.py:241-246` to also capture trade metrics:
+
+```python
+t, d = 0, 0.0
+wr, pf = "", ""
+for ln in out.strip().split("\n"):
+    if ln.startswith("num_trades:"):
+        t = int(ln.split()[1])
+    elif ln.startswith("max_drawdown:"):
+        d = float(ln.split()[1])
+    elif ln.startswith("win_rate:"):
+        wr = ln.split()[1]
+    elif ln.startswith("profit_factor:"):
+        pf = ln.split()[1]
+```
+
+Update the per-symbol print (line 250) to include trade metrics when available:
+
+```python
+extra = f" wr={wr} pf={pf}" if wr else ""
+print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
+```
+
+Update `eval_policy` return to include aggregate trade metrics. Change the return (line 258-263) and `full_run` (line 324-325) to pass them through. Then in `main()` at the PORTFOLIO SUMMARY section (line 420-428), add:
+
+```python
+print(f"win_rate: {wr:.4f}")
+print(f"profit_factor: {pf:.4f}")
+```
+
+The simplest approach: have eval_policy accumulate win_rates and profit_factors per passing symbol, return their means alongside existing metrics.
+
+- [ ] **Step 3: Fix sharpe→sortino naming throughout**
 
 In `prepare.py` — the `evaluate()` function prints `val_sharpe:`. Change all three:
 
@@ -446,11 +484,11 @@ print(f"  #{t.number}: sortino={t.value:.4f}  {t.params}")
 print(f"sortino: {sh:.6f}")
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add train.py prepare.py
-git commit -m "config: horizon=150, min_hold=100, fix sharpe→sortino naming"
+git commit -m "config: horizon=150, min_hold=100, forward trade metrics, fix naming"
 ```
 
 ---
