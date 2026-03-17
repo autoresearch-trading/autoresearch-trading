@@ -7,7 +7,7 @@ import pandas as pd
 
 from prepare import compute_features, normalize_features
 
-NUM_FEATURES = 31
+NUM_FEATURES = 39
 
 
 class TestFeatureShape:
@@ -750,3 +750,54 @@ class TestSignAutocorrFeature:
         )
         sa = features[:, 30]
         assert np.all(sa >= -1.0) and np.all(sa <= 1.0)
+
+
+class TestTapeReadingFeatures:
+    """Tests for v6 tape reading features (indices 31-38)."""
+
+    def test_buy_sell_run_max_bounded(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        # Run lengths bounded by batch size (100)
+        assert np.all(features[:, 31] >= 0) and np.all(features[:, 31] <= 100)
+        assert np.all(features[:, 32] >= 0) and np.all(features[:, 32] <= 100)
+
+    def test_large_buy_sell_share_bounded(
+        self, make_trades, make_orderbook, make_funding
+    ):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        # Share ratios in [0, 1]
+        assert np.all(features[:, 33] >= 0) and np.all(features[:, 33] <= 1)
+        assert np.all(features[:, 34] >= 0) and np.all(features[:, 34] <= 1)
+
+    def test_entropy_non_negative(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        assert np.all(features[:, 35] >= 0)
+
+    def test_aggressor_imbalance_bounded(
+        self, make_trades, make_orderbook, make_funding
+    ):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        # Bounded [-1, 1]
+        assert np.all(features[:, 36] >= -1) and np.all(features[:, 36] <= 1)
+
+    def test_absorption_non_negative(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        assert np.all(features[:, 37] >= 0)
+
+    def test_tfi_acceleration_finite(self, make_trades, make_orderbook, make_funding):
+        features, _, _ = compute_features(
+            make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
+        )
+        # Second difference of TFI — symmetric, bounded roughly by [-2, 2]
+        assert np.all(np.isfinite(features[:, 38]))
+        assert np.all(features[:, 38] >= -4) and np.all(features[:, 38] <= 4)
