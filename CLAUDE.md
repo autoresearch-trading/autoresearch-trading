@@ -99,6 +99,16 @@ Device: CPU
 - Add 8 tape reading features (39 total), shorten horizon to 150 steps (~2.5 min), min_hold=100
 - Same flat MLP architecture, runs on CPU
 
+## Workflow
+
+Two distinct modes of work:
+
+1. **Superpowers workflow** (spec → plan → execute) — for structural changes: new features in prepare.py, architecture pivots, eval metric changes, anything that needs design review before code. Specs go in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`.
+
+2. **program.md experiment loop** — for rapid iteration once infrastructure is in place. Hypothesis → change train.py → run → record in results.tsv → keep/discard. One change at a time, autonomous.
+
+The handoff: execute the superpowers plan to build new infrastructure, then program.md takes over for tuning and experimentation. Update program.md after each structural change to reflect the new state.
+
 ## Conventions
 
 - **Commit style**: `feat:`, `fix:`, `chore:`, `experiment:`, `spec:`, `plan:`
