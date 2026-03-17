@@ -544,6 +544,72 @@ def compute_features(
     if not funding_df.empty:
         longer_features[valid, 4] = fund_rate[indices[valid]]
 
+    # ── v6 tape-reading features ──────────────────────────────────
+    # Feature 31-32: buy/sell run max (longest consecutive streak in batch)
+    def _max_run_length(arr):
+        """Max consecutive True count along last axis."""
+        n = arr.shape[-1]
+        result = np.zeros(arr.shape[0], dtype=np.float32)
+        current = np.zeros(arr.shape[0], dtype=np.float32)
+        for i in range(n):
+            current = np.where(arr[:, i], current + 1, 0)
+            result = np.maximum(result, current)
+        return result
+
+    buy_run_max = _max_run_length(is_buy_batched)
+    sell_run_max = _max_run_length(~is_buy_batched)
+
+    # Feature 33-34: large buy/sell share (directional large trade volume)
+    # Pre-compute rolling p95 as array (feature 8 computes it per-batch inside a loop)
+    # LOOKBACK_BATCHES and flat_notionals are already defined by feature 8 (line 329-330)
+    rolling_p95 = np.zeros(num_batches)
+    for i in range(num_batches):
+        if i > 0:
+            start_idx = max(0, i - LOOKBACK_BATCHES) * trade_batch
+            end_idx = i * trade_batch
+            rolling_p95[i] = np.percentile(flat_notionals[start_idx:end_idx], 95)
+        else:
+            rolling_p95[i] = np.percentile(notionals_batched[i], 95)
+
+    is_large = notionals_batched > rolling_p95[:, np.newaxis]
+    large_buy_notional = np.where(is_buy_batched & is_large, notionals_batched, 0).sum(
+        axis=1
+    )
+    large_sell_notional = np.where(
+        ~is_buy_batched & is_large, notionals_batched, 0
+    ).sum(axis=1)
+    # total_batch_notional already exists (line 295, computed for TFI)
+    safe_total = np.maximum(total_batch_notional, 1e-10)
+    large_buy_share = large_buy_notional / safe_total
+    large_sell_share = large_sell_notional / safe_total
+
+    # Feature 35: trade size entropy
+    notional_probs = notionals_batched / np.maximum(
+        notionals_batched.sum(axis=1, keepdims=True), 1e-10
+    )
+    # Clip to avoid log(0)
+    notional_probs = np.clip(notional_probs, 1e-10, 1.0)
+    trade_size_entropy = -np.sum(notional_probs * np.log(notional_probs), axis=1)
+
+    # Feature 36: aggressor imbalance (count-based)
+    buy_count = is_buy_batched.sum(axis=1).astype(np.float32)
+    sell_count = trade_batch - buy_count
+    aggressor_imbalance = (buy_count - sell_count) / trade_batch
+
+    # Feature 37: price level absorption
+    price_change = np.abs(np.diff(vwap, prepend=vwap[0]))
+    price_change_safe = np.maximum(price_change, 1e-10)
+    # total_batch_notional already exists (line 295, computed for TFI)
+    price_level_absorption = total_batch_notional / price_change_safe
+    # Zero out batches with negligible price change (batch 0 always, plus any identical-VWAP batches)
+    # These produce ~1e14+ spikes from notional/1e-10; common for illiquid symbols
+    tiny_move = price_change < 1e-8
+    price_level_absorption[tiny_move] = 0.0
+
+    # Feature 38: TFI acceleration (second difference)
+    # delta_tfi is already computed for feature 26
+    tfi_acceleration = np.diff(delta_tfi, prepend=0.0)
+
     # Combine all features
     trade_features = np.column_stack(
         [
@@ -574,6 +640,20 @@ def compute_features(
         ]
     )
 
+    # === TAPE READING FEATURES (indices 31-38) ===
+    tape_reading_features = np.column_stack(
+        [
+            buy_run_max,  # 31
+            sell_run_max,  # 32
+            large_buy_share,  # 33
+            large_sell_share,  # 34
+            trade_size_entropy,  # 35
+            aggressor_imbalance,  # 36
+            price_level_absorption,  # 37
+            tfi_acceleration,  # 38
+        ]
+    )
+
     features = np.hstack(
         [
             trade_features,
@@ -581,6 +661,7 @@ def compute_features(
             extra_features,
             longer_features,
             cutting_edge_features,
+            tape_reading_features,
         ]
     )
 
@@ -591,7 +672,27 @@ def compute_features(
 # Tail-heavy: bipower_var, volume_spike_ratio, large_trade_share, kyle_lambda,
 # amihud_illiq, trade_arrival_rate, spread_bps, log_total_depth, ofi, ob_slope_asym
 # cum_tfi (22, 23), funding_rate_raw (24), vpin (25), vol_of_vol (29) are also tail-heavy
-ROBUST_FEATURE_INDICES = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24, 25, 29}
+ROBUST_FEATURE_INDICES = {
+    5,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    16,
+    17,
+    22,
+    23,
+    24,
+    25,
+    29,
+    33,
+    34,
+    35,
+    37,
+}
 
 
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
@@ -630,9 +731,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = (
-    "v5"  # v5: 31 features (+ VPIN, delta_TFI, Hurst, skew, vol-of-vol, sign_autocorr)
-)
+_FEATURE_VERSION = "v6"  # v6: 39 features (v5 + 8 tape reading features)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
