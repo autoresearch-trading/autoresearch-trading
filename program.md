@@ -28,7 +28,7 @@ Supervised classification research for DEX perpetual futures trading. You are an
 - **Validation**: 2026-01-23 to 2026-02-17 (25 days)
 - **Test**: 2026-02-17 to 2026-03-09 (20 days) — used by evaluate()
 
-### Feature Channels (31 features per step, v5)
+### Feature Channels (39 features per step, v6)
 
 Each step = 100 consecutive trades (~1-2 seconds for BTC).
 
@@ -43,19 +43,26 @@ Each step = 100 consecutive trades (~1-2 seconds for BTC).
 | 20-24 | r_500, r_2800, cum_tfi_100, cum_tfi_500, funding_rate_raw | longer-horizon |
 | 25-26 | VPIN, delta_TFI | flow |
 | 27-30 | Hurst, realized_skew, vol_of_vol, sign_autocorr | higher-order |
+| 31-32 | buy_run_max, sell_run_max | tape reading |
+| 33-34 | large_buy_share, large_sell_share | tape reading |
+| 35 | trade_size_entropy | tape reading |
+| 36 | aggressor_imbalance | tape reading |
+| 37 | price_level_absorption | tape reading |
+| 38 | tfi_acceleration | tape reading |
 
 ## Current Approach
 
-**Supervised forward-return classifier** with recency-weighted focal loss.
+**Supervised tape-reading classifier** with Triple Barrier labeling and recency-weighted focal loss.
 
-- Labels: forward return over configurable horizon -> long/flat/short based on fee threshold
-- Model: flat MLP (DirectionClassifier) — window flattened + temporal summary stats
+- Labels: Triple Barrier (TP/SL/timeout) with `MAX_HOLD_STEPS=300`, `fee_mult=8.0` (80 bps barriers)
+- Model: flat MLP (DirectionClassifier) — window flattened + temporal summary stats, 39 features
 - Ensemble: multi-seed, logit-sum argmax
-- Evaluation: Sortino ratio on full test set (28K steps/symbol), no truncation
+- Evaluation: Sortino ratio on full test set, plus trade-level metrics (win_rate, profit_factor, avg_hold)
+- Config: min_hold=100 (~1.5 min), window=50
 
-### Current Best (v5 flat MLP)
+### v5 Baseline (fixed-horizon labeling)
 - Sortino=0.230, 18/25 passing, 923 trades, max_dd=0.367
-- Config: lr=1e-3, hdim=256, nlayers=2, AdamW wd=5e-4, 25 epochs, 5 seeds
+- Config: lr=1e-3, hdim=256, nlayers=2, AdamW wd=5e-4, 25 epochs, 5 seeds, FORWARD_HORIZON=800, min_hold=800
 
 ## What You CAN Modify
 
@@ -95,6 +102,8 @@ symbols_passing: N/25
 sortino: X.XXXXXX
 num_trades: N
 max_drawdown: X.XXXX
+win_rate: X.XXXX
+profit_factor: X.XXXX
 total_steps: N
 num_updates: N
 ```

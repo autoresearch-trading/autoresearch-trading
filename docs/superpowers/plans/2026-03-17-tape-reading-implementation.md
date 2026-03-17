@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add 8 tape reading features, shorten labeling horizon to 2.5 min, add trade-level eval metrics, and run locally on CPU.
+**Goal:** Add 8 tape reading features, replace fixed-horizon labeling with Triple Barrier (TP/SL/timeout), add trade-level eval metrics, and run locally on CPU.
 
-**Architecture:** Flat MLP (v5 DirectionClassifier) with 39 features (31 existing + 8 new tape reading), forward_horizon=150, min_hold=100. Setup detection: flat by default, long/short only on high-conviction setups.
+**Architecture:** Flat MLP (v5 DirectionClassifier) with 39 features (31 existing + 8 new tape reading), Triple Barrier labeling (max_hold=300, tp=sl=15 bps), min_hold=100. Setup detection: flat by default, long/short only on high-conviction setups.
 
 **Tech Stack:** Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 
@@ -14,44 +14,65 @@
 
 ## Chunk 1: New Features in prepare.py
 
-### Task 1: Validate class distribution at horizon=150
+### Task 1: Validate Triple Barrier class distribution
 
-Before implementing anything, check that the shorter horizon produces a reasonable class distribution. If flat > 80%, we need to lower fee_mult.
+Before implementing anything, check that Triple Barrier labeling with max_hold=300 and fee_threshold=15 bps produces a reasonable class distribution. If flat > 80%, we need to lower fee_mult or increase max_hold.
 
 **Files:**
 - None modified — exploratory script only
 
-- [ ] **Step 1: Run empirical check on BTC cached data**
+- [ ] **Step 1: Run Triple Barrier distribution check**
 
 ```bash
 uv run python -c "
 from prepare import make_env
 import numpy as np
 
+max_hold = 300
+fee_threshold = 2 * 5 / 10000 * 1.5  # 15 bps (symmetric TP/SL)
+
 for sym in ['BTC', 'ETH', 'SOL', 'LTC', 'UNI']:
     env = make_env(sym, 'train', window_size=50, trade_batch=100, min_hold=100)
     prices = env.prices
     n = len(prices)
-    horizon = 150
-    fee_threshold = 2 * 5 / 10000 * 1.5  # 15 bps
 
-    valid = np.arange(50, n - horizon)
-    mask = prices[valid] > 0
-    valid = valid[mask]
-    fwd = (prices[valid + horizon] - prices[valid]) / prices[valid]
-    n_long = (fwd > fee_threshold).sum()
-    n_short = (fwd < -fee_threshold).sum()
-    n_flat = len(fwd) - n_long - n_short
-    total = len(fwd)
-    print(f'{sym:6s}: flat={100*n_flat/total:.1f}%  long={100*n_long/total:.1f}%  short={100*n_short/total:.1f}%  (n={total})')
+    valid = np.arange(50, n - max_hold)
+    valid = valid[prices[valid] > 0]
+    # Subsample to cap memory: (50K, 300) float64 ≈ 120 MB per symbol
+    if len(valid) > 50000:
+        valid = np.sort(np.random.default_rng(42).choice(valid, 50000, replace=False))
+
+    # Vectorized Triple Barrier
+    offsets = np.arange(1, max_hold + 1)
+    future_prices = prices[valid[:, np.newaxis] + offsets[np.newaxis, :]]
+    entry_prices = prices[valid]
+    fwd = (future_prices - entry_prices[:, np.newaxis]) / entry_prices[:, np.newaxis]
+
+    hit_tp = fwd >= fee_threshold
+    hit_sl = fwd <= -fee_threshold
+    tp_first = np.where(hit_tp.any(axis=1), hit_tp.argmax(axis=1), max_hold)
+    sl_first = np.where(hit_sl.any(axis=1), hit_sl.argmax(axis=1), max_hold)
+
+    n_long = (tp_first < sl_first).sum()
+    n_short = (sl_first < tp_first).sum()
+    n_flat = len(valid) - n_long - n_short
+    total = len(valid)
+    # Median steps to first barrier hit (excluding timeouts)
+    barrier_steps = np.minimum(tp_first, sl_first)
+    hit_mask = barrier_steps < max_hold
+    med_steps = int(np.median(barrier_steps[hit_mask])) if hit_mask.any() else -1
+    print(f'{sym:6s}: flat={100*n_flat/total:.1f}%  long={100*n_long/total:.1f}%  short={100*n_short/total:.1f}%  med_hit={med_steps} steps  (n={total})')
 "
 ```
 
-Expected: flat ~40-60% for volatile symbols, ~60-80% for quiet ones. If flat > 80% across the board, lower fee_mult to 1.0 in subsequent steps.
+Expected: flat ~30-50% for volatile symbols (BTC, ETH, SOL), ~50-70% for quiet ones. The `med_hit` shows typical setup duration. If flat > 80% across the board, lower fee_mult to 1.0 or increase max_hold to 500.
 
-- [ ] **Step 2: Record results and decide fee_mult**
+- [ ] **Step 2: Record results and decide parameters**
 
-Note the results. If flat > 80% for most symbols, use `fee_mult=1.0` instead of 1.5 throughout the rest of the plan.
+Note the results. Key decisions:
+- If flat > 80% for most symbols → lower `fee_mult` to 1.0 or 1.2
+- If med_hit > 200 for most symbols → increase `max_hold` to 500
+- If flat < 20% for most symbols → raise `fee_mult` to 2.0 (barriers too easy to hit)
 
 ---
 
@@ -144,8 +165,10 @@ price_change = np.abs(np.diff(vwap, prepend=vwap[0]))
 price_change_safe = np.maximum(price_change, 1e-10)
 # total_batch_notional already exists (line 295, computed for TFI)
 price_level_absorption = total_batch_notional / price_change_safe
-# First batch has price_change=0 (diff with itself), producing ~1e15 spike — zero it out
-price_level_absorption[0] = 0.0
+# Zero out batches with negligible price change (batch 0 always, plus any identical-VWAP batches)
+# These produce ~1e14+ spikes from notional/1e-10; common for illiquid symbols
+tiny_move = price_change < 1e-8
+price_level_absorption[tiny_move] = 0.0
 ```
 
 - [ ] **Step 6: Add feature 38 (tfi_acceleration)**
@@ -350,7 +373,14 @@ elif prev_position != 0 and current_position != 0 and prev_position != current_p
 prev_position = current_position
 ```
 
-After the main loop, before the guardrails section (before line 941), compute and print the new metrics:
+After the main loop ends, close any position still open at end of data, then compute and print the new metrics (before the guardrails section, before line 941):
+
+```python
+# Close any open position at end of data
+if prev_position != 0 and entry_step is not None:
+    trade_pnls.append(info["equity"] - entry_equity)
+    hold_durations.append(step_num - entry_step)
+```
 
 ```python
 # Trade-level metrics
@@ -384,14 +414,87 @@ git commit -m "feat: add trade-level metrics to evaluate() (win_rate, profit_fac
 
 ---
 
-### Task 5: Update train.py config + forward trade metrics
+### Task 5: Replace labeling + update train.py config + forward trade metrics
 
 **Files:**
 - Modify: `train.py:19-39` (configuration section)
+- Modify: `train.py:72-124` (replace `make_labeled_dataset` with Triple Barrier)
+- Modify: `train.py:141` (update caller to pass tp/sl thresholds)
 - Modify: `train.py:241-250` (eval_policy — parse and forward trade metrics)
 - Modify: `train.py:420-428` (main — aggregate trade metrics in PORTFOLIO SUMMARY)
 
-- [ ] **Step 1: Update horizon and min_hold constants**
+- [ ] **Step 0: Replace make_labeled_dataset with Triple Barrier**
+
+Replace the entire `make_labeled_dataset` function (train.py:72-124) with the vectorized Triple Barrier implementation from the spec:
+
+```python
+# ── Data labeling ──────────────────────────────────────────────
+def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=10000):
+    """Extract (obs, label) pairs using Triple Barrier labeling.
+
+    For each sample, scan forward up to max_hold steps:
+    - TP barrier hit first (return >= +tp_threshold) → long (1)
+    - SL barrier hit first (return <= -sl_threshold) → short (2)
+    - Neither hit within max_hold → flat (0) (timeout)
+
+    Vectorized via numpy broadcasting. Memory: O(n_samples × max_hold).
+    """
+    features = env.features
+    prices = env.prices
+    n = len(features)
+    window = env.window_size
+
+    valid_start = window
+    valid_end = n - max_hold
+    if valid_end <= valid_start:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    all_idx = np.arange(valid_start, valid_end)
+    if len(all_idx) > max_samples:
+        idx = np.random.choice(all_idx, max_samples, replace=False)
+        idx.sort()
+    else:
+        idx = all_idx
+
+    # Filter zero prices
+    idx = idx[prices[idx] > 0]
+    if len(idx) == 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    # Forward return matrix: (n_samples, max_hold)
+    offsets = np.arange(1, max_hold + 1)
+    future_prices = prices[idx[:, np.newaxis] + offsets[np.newaxis, :]]
+    entry_prices = prices[idx]
+    fwd_returns = (future_prices - entry_prices[:, np.newaxis]) / entry_prices[:, np.newaxis]
+
+    # First barrier hit per sample
+    hit_tp = fwd_returns >= tp_threshold
+    hit_sl = fwd_returns <= -sl_threshold
+    tp_any = hit_tp.any(axis=1)
+    sl_any = hit_sl.any(axis=1)
+    tp_first = np.where(tp_any, hit_tp.argmax(axis=1), max_hold)
+    sl_first = np.where(sl_any, hit_sl.argmax(axis=1), max_hold)
+
+    # Label by which barrier hit first
+    labels = np.zeros(len(idx), dtype=np.int64)   # 0 = flat (timeout)
+    labels[tp_first < sl_first] = 1                # long: TP hit first
+    labels[sl_first < tp_first] = 2                # short: SL hit first
+    # tp_first == sl_first: both never hit (flat) or both hit same step (ambiguous → flat)
+
+    obs = np.array([features[i - window:i] for i in idx], dtype=np.float32)
+    return obs, labels, idx
+```
+
+Then update the caller in `train_one_model` (train.py:141):
+
+```python
+# Old:
+obs, labels, indices = make_labeled_dataset(env, FORWARD_HORIZON, fee_threshold)
+# New:
+obs, labels, indices = make_labeled_dataset(env, MAX_HOLD_STEPS, fee_threshold, fee_threshold)
+```
+
+- [ ] **Step 1: Update config constants**
 
 ```python
 # ── Configuration ──────────────────────────────────────────────
@@ -403,9 +506,9 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-MIN_HOLD = 100       # ~1.5 min between trades (tape reading scale)
+MIN_HOLD = 100            # ~1.5 min between trades (tape reading scale)
 FEE_BPS = 5
-FORWARD_HORIZON = 150  # ~2.5 min (setup plays out in minutes)
+MAX_HOLD_STEPS = 300      # Triple Barrier timeout: ~5 min (setup window)
 
 DEVICE = torch.device("cpu")
 
@@ -418,11 +521,13 @@ BEST_PARAMS = {
 }
 ```
 
-Only 2 lines changed: `MIN_HOLD` (800→100) and `FORWARD_HORIZON` (800→150).
+Changes: `MIN_HOLD` (800→100), `FORWARD_HORIZON` removed, `MAX_HOLD_STEPS = 300` added.
 
 - [ ] **Step 2: Forward trade-level metrics through eval_policy**
 
-`eval_policy()` (train.py:234-238) captures all of `evaluate()`'s stdout into a StringIO and only parses `num_trades:` and `max_drawdown:`. The new trade metrics from Task 4 are silently discarded. Fix by parsing and printing them — do NOT change return signatures (that would cascade to `objective()`, `full_run`, and `main()` destructuring).
+`eval_policy()` (train.py:234-238) captures all of `evaluate()`'s stdout into a StringIO and only parses `num_trades:` and `max_drawdown:`. The new trade metrics from Task 4 are silently discarded. Fix by parsing `win_rate` and `profit_factor`, extending the return to a 6-tuple, and threading `wr`/`pf` through `full_run()` (8-tuple), `objective()`, and `main()`.
+
+**Note:** `avg_profit_per_trade` and `avg_hold_steps` are intentionally print-only (visible in per-symbol stdout during verbose runs). Only `win_rate` and `profit_factor` are forwarded to the portfolio summary to keep the return tuple manageable.
 
 In `eval_policy()`, add accumulators before the symbol loop (after line 223):
 
@@ -447,25 +552,64 @@ for ln in out.strip().split("\n"):
         pf = float(ln.split()[1])
 ```
 
-Update the per-symbol print (line 250) — this also handles the sharpe→sortino rename for this line:
+Replace the per-symbol output block (train.py:248-254) with the **complete** modified version below. This replaces the print, preserves the existing accumulation logic, and adds wr/pf tracking:
 
 ```python
-extra = f" wr={wr:.2f} pf={pf:.2f}" if wr > 0 else ""
-print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
-if passed and wr > 0:
-    all_win_rates.append(wr)
-    all_profit_factors.append(pf)
+            passed = (t >= 10 and d <= 0.20) if t > 0 else False
+            tag = "PASS" if passed else "FAIL"
+            extra = f" wr={wr:.2f} pf={pf:.2f}" if wr > 0 else ""
+            print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
+            if passed:
+                passing.append(sh)
+            if passed and wr > 0:
+                all_win_rates.append(wr)
+                all_profit_factors.append(pf)
+            trades_all += t
+            worst_dd = max(worst_dd, d)
 ```
 
-After the symbol loop, before the return (line 258), print portfolio-level aggregates:
+Change `eval_policy()` return to include trade metrics (line 258):
 
 ```python
-if all_win_rates:
-    print(f"win_rate: {np.mean(all_win_rates):.4f}")
-    print(f"profit_factor: {np.mean(all_profit_factors):.4f}")
+    mean_wr = float(np.mean(all_win_rates)) if all_win_rates else 0.0
+    mean_pf = float(np.mean(all_profit_factors)) if all_profit_factors else 0.0
+
+    return (
+        float(np.mean(passing)) if passing else 0.0,
+        len(passing),
+        trades_all,
+        worst_dd,
+        mean_wr,
+        mean_pf,
+    )
 ```
 
-No changes to return signatures — eval_policy still returns `(sortino, passing, trades, dd)`, full_run and objective() stay unchanged.
+Update `full_run()` to forward the new return values. At line 324:
+
+```python
+    sh, ps, tr, dd, wr, pf = eval_policy(ensemble_fn, symbols, split=split)
+    return sh, ps, tr, dd, total_steps_all, total_updates_all, wr, pf
+```
+
+Update `objective()` to ignore the new values. At line 345:
+
+```python
+        sh, ps, tr, dd, _, _, _, _ = full_run(
+```
+
+Update `main()` to destructure and print trade metrics. At line 416:
+
+```python
+    sh, ps, tr, dd, total_steps, total_updates, wr, pf = full_run(
+```
+
+And add to the PORTFOLIO SUMMARY block (after `max_drawdown` line):
+
+```python
+    if wr > 0:
+        print(f"win_rate: {wr:.4f}")
+        print(f"profit_factor: {pf:.4f}")
+```
 
 - [ ] **Step 3: Fix sharpe→sortino naming throughout**
 
@@ -484,7 +628,7 @@ In `train.py` — change remaining `sharpe` references to `sortino` (line 250 al
 
 ```python
 # Line 220 (eval_policy docstring):
-"""Run policy_fn on all symbols. Returns (sortino, passing, trades, dd)."""
+"""Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor)."""
 # Line 350 (Optuna trial output):
 f"  => sortino={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
 # Line 395 (Optuna top trials):
@@ -497,7 +641,7 @@ print(f"sortino: {sh:.6f}")
 
 ```bash
 git add train.py prepare.py
-git commit -m "config: horizon=150, min_hold=100, forward trade metrics, fix naming"
+git commit -m "feat: triple barrier labeling, min_hold=100, forward trade metrics, fix naming"
 ```
 
 ---
@@ -509,26 +653,25 @@ git commit -m "config: horizon=150, min_hold=100, forward trade metrics, fix nam
 ```bash
 uv run python -c "
 from prepare import make_env, evaluate
-from train import WINDOW_SIZE, TRADE_BATCH, MIN_HOLD, FORWARD_HORIZON, FEE_BPS
+from train import WINDOW_SIZE, TRADE_BATCH, MIN_HOLD, MAX_HOLD_STEPS, FEE_BPS, make_labeled_dataset
 import numpy as np
 
-print(f'Config: window={WINDOW_SIZE}, horizon={FORWARD_HORIZON}, min_hold={MIN_HOLD}')
+print(f'Config: window={WINDOW_SIZE}, max_hold={MAX_HOLD_STEPS}, min_hold={MIN_HOLD}')
 
 env = make_env('BTC', 'train', window_size=WINDOW_SIZE, trade_batch=TRADE_BATCH, min_hold=MIN_HOLD)
 print(f'Features shape: {env.features.shape}')
 assert env.features.shape[1] == 39, f'Expected 39 features, got {env.features.shape[1]}'
 
-# Check class distribution
-prices = env.prices
-n = len(prices)
+# Test Triple Barrier labeling
 from train import BEST_PARAMS
 fee_threshold = (2 * FEE_BPS / 10000) * BEST_PARAMS['fee_mult']
-valid = np.arange(WINDOW_SIZE, n - FORWARD_HORIZON)
-mask = prices[valid] > 0
-valid = valid[mask]
-fwd = (prices[valid + FORWARD_HORIZON] - prices[valid]) / prices[valid]
-n_flat = ((fwd >= -fee_threshold) & (fwd <= fee_threshold)).sum()
-print(f'BTC class dist: flat={100*n_flat/len(fwd):.1f}% (n={len(fwd)})')
+obs, labels, indices = make_labeled_dataset(env, MAX_HOLD_STEPS, fee_threshold, fee_threshold, max_samples=5000)
+unique, counts = np.unique(labels, return_counts=True)
+total = len(labels)
+for cls, cnt in zip(unique, counts):
+    tag = {0: 'flat', 1: 'long', 2: 'short'}[cls]
+    print(f'  {tag}: {100*cnt/total:.1f}% ({cnt})')
+print(f'BTC Triple Barrier: {total} samples, obs shape {obs.shape}')
 
 print('PIPELINE SMOKE TEST PASSED')
 "
@@ -539,9 +682,9 @@ print('PIPELINE SMOKE TEST PASSED')
 ```bash
 uv run python -c "
 from train import full_run, BEST_PARAMS, FINAL_BUDGET
-so, ps, tr, dd, steps, updates = full_run(['BTC'], BEST_PARAMS, FINAL_BUDGET, 1, split='val', verbose=True)
-print(f'sortino={so:.4f} passing={ps}/1 trades={tr} dd={dd:.4f}')
-print('QUICK TRAIN TEST PASSED')
+so, ps, tr, dd, steps, updates, wr, pf = full_run(['BTC'], BEST_PARAMS, FINAL_BUDGET, 1, split='val', verbose=True)
+print(f'sortino={so:.4f} passing={ps}/1 trades={tr} dd={dd:.4f} wr={wr:.2f} pf={pf:.2f}')
+print('QUICK TRAIN+EVAL TEST PASSED')
 "
 ```
 
@@ -569,7 +712,7 @@ Expected output: training 5 seeds on 25 symbols, eval with new trade-level metri
 - [ ] **Step 2: Record results**
 
 ```bash
-grep -E "^(sortino|symbols_passing|num_trades|max_drawdown|win_rate|profit_factor|avg_hold)" run_tape_v1.log
+grep -E "^(sortino|symbols_passing|num_trades|max_drawdown|win_rate|profit_factor)" run_tape_v1.log
 ```
 
 - [ ] **Step 3: Compare to v5 baseline and commit**
@@ -579,14 +722,35 @@ SORTINO=$(grep '^sortino:' run_tape_v1.log | tail -1 | awk '{print $2}')
 PASSING=$(grep '^symbols_passing:' run_tape_v1.log | awk '{print $2}')
 TRADES=$(grep '^num_trades:' run_tape_v1.log | awk '{print $2}')
 DRAWDOWN=$(grep '^max_drawdown:' run_tape_v1.log | awk '{print $2}')
-echo -e "$(git rev-parse --short HEAD)\t$SORTINO\t$TRADES\t$DRAWDOWN\t$PASSING\tkept/discarded\ttape-v1: 39 features, horizon=150, min_hold=100" >> results.tsv
+echo -e "$(git rev-parse --short HEAD)\t$SORTINO\t$TRADES\t$DRAWDOWN\t$PASSING\tkept/discarded\ttape-v1: 39 features, triple barrier max_hold=300, min_hold=100" >> results.tsv
 git add results.tsv
 git commit -m "experiment: tape reading v1 (sortino=$SORTINO, passing=$PASSING)"
 ```
 
-- [ ] **Step 4: If flat-dominant (< 10 trades most symbols), retry with fee_mult=1.0**
+- [ ] **Step 4: If flat-dominant (< 10 trades most symbols), adjust barriers**
 
-Update `BEST_PARAMS["fee_mult"]` to 1.0 in train.py, re-run, compare.
+Options: lower `BEST_PARAMS["fee_mult"]` to 1.0 (narrower barriers), or increase `MAX_HOLD_STEPS` to 500 (longer timeout). Re-run, compare.
+
+---
+
+### Task 8: Update documentation
+
+- [ ] **Step 1: Update CLAUDE.md**
+
+Update the feature table (31→39), architecture section (flat_dim 1,612→2,028, features 31→39, ~0.5M→~0.6M params), and add new features 31-38 to the table.
+
+Update the "Current Best" section comment to note this is v5 baseline, and the tape reading section to reflect completed state.
+
+- [ ] **Step 2: Update program.md**
+
+Reflect the new state: 39 features, Triple Barrier labeling (max_hold=300), min_hold=100, new trade-level metrics available. Update any references to v5 feature count or fixed-horizon labeling.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add CLAUDE.md program.md
+git commit -m "docs: update feature count, architecture, and experiment state for v6"
+```
 
 ---
 
@@ -596,6 +760,7 @@ Update `BEST_PARAMS["fee_mult"]` to 1.0 in train.py, re-run, compare.
 2. **Task 2**: Add 8 tape reading features to prepare.py
 3. **Task 3**: Update tests
 4. **Task 4**: Add trade-level eval metrics
-5. **Task 5**: Update train.py config
-6. **Task 6**: Smoke test pipeline
+5. **Task 5**: Replace labeling with Triple Barrier + update train.py config + forward trade metrics
+6. **Task 6**: Smoke test pipeline (features + labeling + training)
 7. **Task 7**: Full run and results
+8. **Task 8**: Update documentation (CLAUDE.md, program.md)

@@ -42,7 +42,7 @@ docs/superpowers/
 - `TRAIN_BUDGET_SECONDS = 300` (legacy, not used by current epoch-based training)
 - Date constants: `TRAIN_START` (2025-10-16), `TRAIN_END` (2026-01-23), `VAL_END` (2026-02-17), `TEST_END` (2026-03-09)
 
-## Features (31, v5)
+## Features (39, v6)
 
 Each step = 100 consecutive trades (~1-2 seconds for BTC).
 
@@ -57,6 +57,12 @@ Each step = 100 consecutive trades (~1-2 seconds for BTC).
 | 20-24 | r_500, r_2800, cum_tfi_100, cum_tfi_500, funding_rate_raw | longer-horizon |
 | 25-26 | VPIN, delta_TFI | v5 flow |
 | 27-30 | Hurst, realized_skew, vol_of_vol, sign_autocorr | v5 higher-order |
+| 31-32 | buy_run_max, sell_run_max | v6 tape reading |
+| 33-34 | large_buy_share, large_sell_share | v6 tape reading |
+| 35 | trade_size_entropy | v6 tape reading |
+| 36 | aggressor_imbalance | v6 tape reading |
+| 37 | price_level_absorption | v6 tape reading |
+| 38 | tfi_acceleration | v6 tape reading |
 
 ## Data
 
@@ -64,7 +70,7 @@ Each step = 100 consecutive trades (~1-2 seconds for BTC).
 - **Date range**: 2025-10-16 to 2026-03-09 (~145 days)
 - **Splits**: Train (100d) / Val (25d) / Test (20d)
 - **Sync**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only`
-- **Cache**: v5, keyed on `(symbol, start, end, trade_batch, _FEATURE_VERSION)`
+- **Cache**: v6, keyed on `(symbol, start, end, trade_batch, _FEATURE_VERSION)`
 
 ## Evaluation
 
@@ -73,31 +79,34 @@ Each step = 100 consecutive trades (~1-2 seconds for BTC).
 - **Portfolio**: mean Sortino across all passing symbols
 - **Annualization**: `steps_per_day = total_steps / 20` (20 test days)
 
-## Architecture (v5 — Flat MLP)
+## Architecture (v6 — Flat MLP + Tape Reading)
 
 ```
-Input: (batch, window=50, features=31)
+Input: (batch, window=50, features=39)
 
-  → Flatten: 50 × 31 = 1,550
-  → Append: per-feature mean(31) + std(31) = 62
-  → flat_dim = 1,612
-  → MLP: 1612 → 256 → 256 → 3 (flat/long/short)
+  → Flatten: 50 × 39 = 1,950
+  → Append: per-feature mean(39) + std(39) = 78
+  → flat_dim = 2,028
+  → MLP: 2028 → 256 → 256 → 3 (flat/long/short)
   → ReLU, orthogonal init
 
 Ensemble: 5 seeds, logit sum argmax
-~0.5M parameters
+~0.6M parameters
 Device: CPU
 ```
 
-### Current Best (v5)
-- Sortino=0.230, 18/25 passing, 923 trades, max_dd=0.367
-- Config: lr=1e-3, hdim=256, nlayers=2, AdamW wd=5e-4, 25 epochs, 5 seeds
+**Labeling:** Triple Barrier (TP/SL/timeout) with `MAX_HOLD_STEPS=300`, `fee_mult=8.0` (80 bps barriers), `MIN_HOLD=100`
 
-### Tape Reading Pivot (v8 — in progress)
+**Trade-level metrics:** evaluate() now reports `win_rate`, `profit_factor`, `avg_profit_per_trade`, `avg_hold_steps`
+
+### v5 Baseline
+- Sortino=0.230, 18/25 passing, 923 trades, max_dd=0.367
+- Config: lr=1e-3, hdim=256, nlayers=2, AdamW wd=5e-4, 25 epochs, 5 seeds, fixed-horizon labeling (FORWARD_HORIZON=800, min_hold=800)
+
+### Tape Reading Pivot (v6)
 - **Spec**: `docs/superpowers/specs/2026-03-17-tape-reading-pivot-design.md`
 - **Plan**: `docs/superpowers/plans/2026-03-17-tape-reading-implementation.md`
-- Add 8 tape reading features (39 total), shorten horizon to 150 steps (~2.5 min), min_hold=100
-- Same flat MLP architecture, runs on CPU
+- 8 new tape reading features (39 total), Triple Barrier labeling, min_hold=100, fee_mult=8.0
 
 ## Workflow
 
@@ -119,9 +128,9 @@ The handoff: execute the superpowers plan to build new infrastructure, then prog
 ## Gotchas
 
 1. **R2 fake timestamps**: Use `--size-only` with rclone — R2 returns 1999-12-31 for all file timestamps
-2. **Cache invalidation**: Bump `_FEATURE_VERSION` in prepare.py to invalidate. Currently `"v5"`
+2. **Cache invalidation**: Bump `_FEATURE_VERSION` in prepare.py to invalidate. Currently `"v6"`
 3. **Fee model**: Switching positions (long->short) pays 2x fees (close + open)
-4. **ROBUST_FEATURE_INDICES**: `{5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24, 25, 29}` — these use IQR-based robust scaling instead of z-score
+4. **ROBUST_FEATURE_INDICES**: `{5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24, 25, 29, 33, 34, 35, 37}` — these use IQR-based robust scaling instead of z-score
 5. **`evaluate()` uses test split**: Despite being called during training runs, it evaluates on test data (2026-02-17 to 2026-03-09)
 6. **Full-test eval is ground truth**: Old 2000-step truncated eval was hiding failures (25/25 was an illusion, reality is 18/25)
 7. **v7 attention overfit**: 2D attention (window=2000, RunPod H100) scored Sortino=0.061, 11/25 — worse than v5 flat MLP. Learnings: temporal architectures need much more data/compute; flat MLP is surprisingly strong
