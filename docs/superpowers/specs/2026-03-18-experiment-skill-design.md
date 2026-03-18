@@ -123,11 +123,13 @@ Early stop: if any phase has a clear winner (gap > 0.1), skip remaining runs in 
 
 ```yaml
 ---
-name: experiment
+name: Experiment Runner
 description: >
-  Use when running structured multi-phase experiments on train.py.
-  Triggers: "run experiment", "run ablation", "test hypothesis",
-  "compare configs", or when a plan exists in plans/.
+  Run structured multi-phase experiments on train.py to compare model configs,
+  isolate regressions, and find optimal hyperparameters. Use when asked to
+  "run experiment", "run ablation", "test hypothesis", "compare configs",
+  "sweep hyperparameters", or when investigating why a model change helped or hurt.
+  Also use when a plan exists in plans/ and needs executing.
 ---
 ```
 
