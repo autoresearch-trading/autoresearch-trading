@@ -13,7 +13,6 @@
 ```
 prepare.py              — Data loading, feature engineering, TradingEnv, evaluate()
 train.py                — Flat MLP model, training loop, Optuna search
-program.md              — Experiment loop instructions
 tests/                  — Feature engineering + env tests (test prepare.py, not train.py)
   conftest.py           — Shared fixtures (synthetic trades/orderbook/funding)
   test_features.py      — Feature shape, bounds, integration tests
@@ -24,6 +23,12 @@ scripts/
   fetch_cloud_data.sh   — R2 -> local
 data/                   — Parquet: {trades,orderbook,funding}/symbol={SYM}/date={DATE}/ (gitignored)
 .cache/                 — Cached .npz feature files, ~240 files (gitignored)
+.claude/skills/autoresearch/
+  SKILL.md              — Autonomous research loop protocol
+  resources/
+    parse_summary.sh    — Extract PORTFOLIO SUMMARY → key=value
+    state.md            — Current research state (updated each cycle)
+docs/experiments/       — Experiment plans, logs, results, reports
 docs/superpowers/
   specs/                — Architecture design specs
   plans/                — Implementation plans
@@ -114,9 +119,9 @@ Two distinct modes of work:
 
 1. **Superpowers workflow** (spec → plan → execute) — for structural changes: new features in prepare.py, architecture pivots, eval metric changes, anything that needs design review before code. Specs go in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`.
 
-2. **program.md experiment loop** — for rapid iteration once infrastructure is in place. Hypothesis → change train.py → run → record in results.tsv → keep/discard. One change at a time, autonomous.
+2. **Autoresearch skill** — for autonomous experimentation. Claude reads current state, forms hypotheses, designs experiments, runs them, draws conclusions, and repeats. Invoked by asking Claude to "run experiments", "investigate", "improve the model", etc. See `.claude/skills/autoresearch/SKILL.md`.
 
-The handoff: execute the superpowers plan to build new infrastructure, then program.md takes over for tuning and experimentation. Update program.md after each structural change to reflect the new state.
+The handoff: execute the superpowers plan to build new infrastructure, then autoresearch takes over for tuning and experimentation.
 
 ## Conventions
 
@@ -134,3 +139,10 @@ The handoff: execute the superpowers plan to build new infrastructure, then prog
 5. **`evaluate()` uses test split**: Despite being called during training runs, it evaluates on test data (2026-02-17 to 2026-03-09)
 6. **Full-test eval is ground truth**: Old 2000-step truncated eval was hiding failures (25/25 was an illusion, reality is 18/25)
 7. **v7 attention overfit**: 2D attention (window=2000, RunPod H100) scored Sortino=0.061, 11/25 — worse than v5 flat MLP. Learnings: temporal architectures need much more data/compute; flat MLP is surprisingly strong
+
+## Key Discoveries
+
+1. **Fee structure is the binding constraint** — alpha exists but is thin per trade. Barrier width (fee_mult) is the most sensitive parameter.
+2. **One change at a time** — multiple arch/config changes simultaneously = regression. Ablation is the only way to attribute improvements.
+3. **MLP beats XGBoost** (18/25 vs 8/25) — temporal pattern extraction from windowed features matters.
+4. **Recency weighting helps** — decay=1.0, recent samples ~2.7x weight of oldest.
