@@ -6,7 +6,7 @@ import numpy as np
 
 from prepare import ROBUST_FEATURE_INDICES, normalize_features
 
-NUM_FEATURES = 25
+NUM_FEATURES = 39
 ZSCORE_INDICES = set(range(NUM_FEATURES)) - ROBUST_FEATURE_INDICES
 
 
@@ -64,7 +64,27 @@ class TestNormalization:
 
     def test_robust_indices_correct(self):
         """Verify ROBUST_FEATURE_INDICES matches expected set."""
-        expected = {5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24}
+        expected = {
+            5,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            16,
+            17,
+            22,
+            23,
+            24,
+            25,
+            29,
+            33,
+            34,
+            35,
+            37,
+        }
         assert ROBUST_FEATURE_INDICES == expected
 
     def test_no_infs(self):

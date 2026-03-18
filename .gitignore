@@ -26,6 +26,9 @@ dist/
 # Runtime
 *.log
 logs/
+*.db
+tb_logs/
+reports/
 
 # Git worktrees
 .worktrees/

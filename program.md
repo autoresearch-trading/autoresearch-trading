@@ -1,269 +1,125 @@
 # autoresearch-trading
 
-Autonomous RL research for DEX perpetual futures trading. You are an AI researcher experimenting with RL trading agents. Your goal is to maximize out-of-sample portfolio Sharpe ratio by iterating on the training code.
+Supervised classification research for DEX perpetual futures trading. You are an AI researcher experimenting with trading models. Your goal is to maximize out-of-sample portfolio Sortino ratio.
 
 **Git note:** Never use blind `git add -A` or `git add .`. Only stage the files you changed.
 
-**Compute:** RunPod RTX 4090 (CUDA), accessed via SSH from local machine. All training runs execute remotely.
+**Compute:** Local M4 MacBook Pro CPU. All training runs execute locally.
 
-## Setup (run once at start)
+## Setup
 
 1. Read this file completely
 2. Read `prepare.py` to understand the environment and features
-3. Read `train.py` to understand the current agent
-4. **Agree on a run tag** with the user: propose a tag based on today's date (e.g. `mar10`). The branch `autoresearch/<tag>` must not already exist.
-5. Create the experiment branch:
+3. Read `train.py` to understand the current model
+4. Verify data caches exist:
    ```bash
-   git checkout -b autoresearch/<tag>
+   ls .cache/*.npz | wc -l
+   # Expected: ~240 (v4 + v5 caches)
    ```
-6. Verify data is cached on the pod:
-   ```bash
-   ssh runpod "ls /workspace/autoresearch-trading/.cache/*.npz | wc -l"
-   # Expected: 75 (25 symbols × 3 splits)
-   ```
-7. Verify CUDA is available:
-   ```bash
-   ssh runpod "cd /workspace/autoresearch-trading && uv run python -c 'import torch; print(torch.cuda.get_device_name(0))'"
-   ```
-8. Run the baseline and record it:
-   ```bash
-   rsync -az train.py runpod:/workspace/autoresearch-trading/train.py
-   ssh runpod "cd /workspace/autoresearch-trading && uv run train.py > run.log 2>&1"
-   ssh runpod "tail -20 /workspace/autoresearch-trading/run.log"
-   ```
-9. Initialize results log:
-   ```bash
-   echo -e "commit\tval_sharpe\tnum_trades\tmax_drawdown\tsymbols_passing\tstatus\tdescription" > results.tsv
-   ```
-10. Record baseline result in results.tsv
 
 ## Data
 
-You have **36GB of DEX perpetual futures data** from 25 crypto symbols, pre-computed as cached `.npz` feature files on the pod (~1.1GB).
+**36GB of DEX perpetual futures data** from 25 crypto symbols, pre-computed as cached `.npz` feature files (~1.1GB).
 
-2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
-
-Raw data sources (Hive-partitioned Parquet, local machine only):
-- **Trades**: `data/trades/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, symbol, side (open_long/open_short/close_long/close_short), price, qty
-- **Orderbook**: `data/orderbook/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, bids/asks (list of {price, qty}, up to 10 levels)
-- **Funding**: `data/funding/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, rate, interval_sec
-
-Date range: 2025-10-16 to 2026-03-09 (~145 days)
+25 symbols: 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
 
 ### Splits
 - **Train**: 2025-10-16 to 2026-01-23 (100 days)
 - **Validation**: 2026-01-23 to 2026-02-17 (25 days)
-- **Test**: 2026-02-17 to 2026-03-09 (20 days) — used only by evaluate()
+- **Test**: 2026-02-17 to 2026-03-09 (20 days) — used by evaluate()
 
-### Feature Channels (33 features per step)
+### Feature Channels (39 features per step, v6)
 
 Each step = 100 consecutive trades (~1-2 seconds for BTC).
 
-**Trade features (14):**
+| # | Feature | Source |
+|---|---------|--------|
+| 0-3 | returns, r_5, r_20, r_100 | trade |
+| 4-5 | realvol_10, bipower_var_20 | trade |
+| 6-8 | tfi, volume_spike_ratio, large_trade_share | trade |
+| 9-11 | kyle_lambda_50, amihud_illiq_50, trade_arrival_rate | trade |
+| 12-17 | spread_bps, log_total_depth, weighted_imbalance_5lvl, microprice_dev, ofi, ob_slope_asym | orderbook |
+| 18-19 | funding_zscore, utc_hour_linear | funding/time |
+| 20-24 | r_500, r_2800, cum_tfi_100, cum_tfi_500, funding_rate_raw | longer-horizon |
+| 25-26 | VPIN, delta_TFI | flow |
+| 27-30 | Hurst, realized_skew, vol_of_vol, sign_autocorr | higher-order |
+| 31-32 | buy_run_max, sell_run_max | tape reading |
+| 33-34 | large_buy_share, large_sell_share | tape reading |
+| 35 | trade_size_entropy | tape reading |
+| 36 | aggressor_imbalance | tape reading |
+| 37 | price_level_absorption | tape reading |
+| 38 | tfi_acceleration | tape reading |
 
-| # | Feature | Description | Normalization |
-|---|---------|-------------|---------------|
-| 0 | vwap | Volume-weighted average price of batch | z-score |
-| 1 | returns | Log return vs previous batch VWAP | z-score |
-| 2 | net_volume | Buy volume - sell volume | **robust** |
-| 3 | trade_count | Number of trades (always 100) | z-score |
-| 4 | buy_ratio | Fraction of buy trades | z-score |
-| 5 | cvd_delta | Cumulative volume delta change | z-score |
-| 6 | tfi | Trade flow imbalance: (buy-sell)/(buy+sell) | z-score |
-| 7 | large_trade_count | Trades > 95th percentile qty | **robust** |
-| 8 | vpin | Flow toxicity: rolling mean of \|TFI\| (window=50) | **robust** |
-| 9 | liq_cascade_magnitude | Large trade spike × price acceleration | **robust** |
-| 10 | liq_cascade_direction | Signed cascade: sign(returns) × magnitude | **robust** |
-| 11 | realvol_short | Rolling std of returns (window=10 batches) | z-score |
-| 12 | realvol_med | Rolling std of returns (window=50 batches) | z-score |
-| 13 | realvol_long | Rolling std of returns (window=200 batches) | z-score |
+## Current Approach
 
-**Orderbook features (17):**
+**Supervised tape-reading classifier** with Triple Barrier labeling and recency-weighted focal loss.
 
-| # | Feature | Description | Normalization |
-|---|---------|-------------|---------------|
-| 14 | bid_depth_total | Total bid-side liquidity | **robust** |
-| 15 | ask_depth_total | Total ask-side liquidity | **robust** |
-| 16 | imbalance | (bid-ask)/(bid+ask) depth imbalance | z-score |
-| 17 | spread_bps | Spread in basis points | z-score |
-| 18-22 | level_1-5_bid_vol | Per-level bid volumes | z-score |
-| 23-27 | level_1-5_ask_vol | Per-level ask volumes | z-score |
-| 28 | microprice | Qty-weighted mid-price: (bid×ask_vol + ask×bid_vol)/(bid_vol+ask_vol) | **robust** |
-| 29 | microprice_deviation | Signed distance from mid: microprice - mid | z-score |
-| 30 | ofi | Order flow imbalance: weighted depth changes across top 5 levels | z-score |
+- Labels: Triple Barrier (TP/SL/timeout) with `MAX_HOLD_STEPS=300`, `fee_mult=8.0` (80 bps barriers)
+- Model: flat MLP (DirectionClassifier) — window flattened + temporal summary stats, 39 features
+- Ensemble: multi-seed, logit-sum argmax
+- Evaluation: Sortino ratio on full test set, plus trade-level metrics (win_rate, profit_factor, avg_hold)
+- Config: min_hold=100 (~1.5 min), window=50
 
-**Funding features (2):**
+### v5 Baseline (fixed-horizon labeling)
+- Sortino=0.230, 18/25 passing, 923 trades, max_dd=0.367
+- Config: lr=1e-3, hdim=256, nlayers=2, AdamW wd=5e-4, 25 epochs, 5 seeds, FORWARD_HORIZON=800, min_hold=800
 
-| # | Feature | Description | Normalization |
-|---|---------|-------------|---------------|
-| 31 | funding_rate | Current funding rate | z-score |
-| 32 | funding_rate_change | Change in funding rate | z-score |
+## What You CAN Modify
 
-Normalization is hybrid: **robust** = rolling median/IQR (resistant to outliers), **z-score** = rolling mean/std. Both use window=1000, min_periods=100.
-
-### Domain Context
-
-- **Side normalization**: open_long/close_short = buy (lifting asks), open_short/close_long = sell (hitting bids)
-- **CVD (Cumulative Volume Delta)**: Running sum of (buy_vol - sell_vol). Divergence from price = reversal signal.
-- **TFI (Trade Flow Imbalance)**: Normalized net flow. Near +1 = aggressive buying, near -1 = aggressive selling.
-- **VPIN (Volume-synchronized Probability of Informed Trading)**: Rolling mean of |TFI|. High VPIN (~1) = one-sided toxic flow (informed traders). Low VPIN (~0) = balanced, uninformed flow. Predicts volatility spikes.
-- **OFI (Order Flow Imbalance)**: Weighted sum of depth changes across top 5 levels between consecutive OB snapshots. Positive = bid depth increasing (bullish pressure). Predicts short-term price moves.
-- **Microprice**: Qty-weighted mid-price. Skews toward the side with less depth (more aggressive). Deviation from mid indicates short-term directional pressure.
-- **Liquidation cascade**: Proxy for forced liquidation events. Magnitude = large trade count × price acceleration. Direction = signed by return direction. High values during price drops suggest cascading liquidations.
-- **Realized volatility**: Multi-horizon (short=10, med=50, long=200 batches). Short vol spikes during events, long vol captures regime. Ratio of short/long vol is a useful regime indicator.
-- **Funding rate**: Periodic payment between longs/shorts. Positive = longs pay shorts (bullish crowd). Large positive → potential long squeeze.
-- **Spread**: Wider spread = lower liquidity = higher adverse selection risk.
-- **Market regimes**: Trending (large directional moves), mean-reverting (range-bound), volatile (wide swings), low-liquidity (thin books). Use realvol ratio + VPIN + spread to detect.
-
-## What You CAN Do
-
-**ONLY modify `train.py`.** You have full freedom to change:
-
-- **Algorithm**: PPO, SAC, TD3, Decision Transformer, CQL, IQL, or anything else
-- **Network architecture**: MLP, CNN, LSTM, Transformer, attention, skip connections
-- **Reward function**: Any function of the info dict (step_pnl, position, equity, drawdown, trade_count, hold_duration)
-- **Hyperparameters**: Learning rate, gamma, batch size, hidden dims, etc.
-- **State representation**: Reshape obs, add engineered features from raw obs, temporal encoding
-- **Training strategy**: Curriculum learning, symbol sampling weights, ensemble methods
-- **Symbol selection**: Train on any subset of SYMBOLS or all DEFAULT_SYMBOLS
-
-## What You CANNOT Do
-
-- **DO NOT modify `prepare.py`** — environment, features, evaluation are fixed
-- **DO NOT install new packages** — only use torch, gymnasium, numpy, pandas, pyarrow
-- **DO NOT change the evaluation** — val_sharpe must come from evaluate() in prepare.py
-- **DO NOT modify the data splits** — train/val/test dates are fixed
-- **DO NOT skip the 5-minute training budget** — TRAIN_BUDGET_SECONDS = 300
+- `train.py` — model architecture, training loop, hyperparameters, ensemble strategy
+- `prepare.py` — features, evaluation (if needed for research)
 
 ## Goal
 
-**Maximize portfolio `val_sharpe`** — mean Sharpe ratio across all symbols that pass guardrails.
+**Maximize portfolio Sortino ratio** — mean Sortino across all symbols that pass guardrails.
 
-### Guardrails (automatic, enforced by evaluate() per symbol)
-- **Minimum 50 trades** — prevents "never trade" degenerate solutions
-- **Maximum 20% drawdown** — prevents reckless strategies
-- Violating either → that symbol's val_sharpe = 0.0
-- Portfolio Sharpe = mean of passing symbols' Sharpes
-
-### Secondary metrics
-- **symbols_passing**: how many of 25 symbols pass guardrails (more = better generalization)
-- **worst drawdown**: max drawdown across all symbols
+### Guardrails (per symbol, enforced by evaluate())
+- **Minimum 10 trades**
+- **Maximum 20% drawdown**
+- Violating either -> that symbol excluded from portfolio mean
 
 ## Experiment Loop
 
-This is the core loop. Repeat forever:
-
 ### 1. Form hypothesis
-Think about what might improve the score. Read research findings below for ideas.
-
 ### 2. Implement change
-Edit `train.py` locally with your modification. Keep changes focused — one idea per experiment.
-
-### 3. Commit and sync
+### 3. Commit
 ```bash
 git add train.py
-git commit -m "experiment: <brief description of what changed>"
-rsync -az train.py runpod:/workspace/autoresearch-trading/train.py
+git commit -m "experiment: <brief description>"
 ```
-
-### 4. Run training on pod
+### 4. Run training
 ```bash
-ssh runpod "cd /workspace/autoresearch-trading && uv run train.py > run.log 2>&1"
+uv run train.py 2>&1 | tee run.log
 ```
-
-### 5. Extract results
-```bash
-ssh runpod "grep -E '^(val_sharpe|num_trades|max_drawdown|symbols_passing):' /workspace/autoresearch-trading/run.log | tail -4"
-SHARPE=$(ssh runpod "grep '^val_sharpe:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-TRADES=$(ssh runpod "grep '^num_trades:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-DRAWDOWN=$(ssh runpod "grep '^max_drawdown:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-PASSING=$(ssh runpod "grep '^symbols_passing:' /workspace/autoresearch-trading/run.log | tail -1 | awk '{print \$2}'")
-COMMIT=$(git rev-parse --short HEAD)
-echo "val_sharpe: $SHARPE, num_trades: $TRADES, max_drawdown: $DRAWDOWN, symbols_passing: $PASSING"
-```
-
+### 5. Record results in results.tsv
 ### 6. Keep or discard
-```bash
-# If score improved or is promising:
-echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\t$PASSING\tkept\t<description>" >> results.tsv
-git add results.tsv && git commit --amend --no-edit
-
-# If score regressed or crashed:
-echo -e "$COMMIT\t$SHARPE\t$TRADES\t$DRAWDOWN\t$PASSING\tdiscarded\t<description>" >> results.tsv
-git reset --hard HEAD~1   # discard the experiment commit cleanly
-```
-
-### 7. Repeat
-Go back to step 1. Review results.tsv to understand what works.
-
-## Research Hints
-
-Ordered by expected impact. Based on deep research into RL for trading (2025-2026 state of the art).
-
-1. **Risk-Aware Reward**: Current reward = pnl - vol_penalty - dd_penalty. Try Sortino-style (only penalize downside vol), CVaR tail penalty for crypto's heavy tails, or use **EMA for mean/variance** (differentiable, less noisy than rolling window). See [RF-Agent](https://arxiv.org/html/2602.23876v1) for automated reward function discovery.
-
-2. **CNN + Attention Encoder (DeepLOB style)**: Replace flat MLP with temporal CNN over the (50, 33) observation window + multi-head attention. The obs is naturally a 2D image (time x features). Reference architecture:
-   ```python
-   # Conv2d(in_channels, 32, kernel_size=(1,3)) → Conv2d(32, 64, (1,3)) → MultiheadAttention(64, 4)
-   ```
-   See [DeepLOB guide](https://arxiv.org/html/2403.09267v4).
-
-3. **Per-Symbol Embedding**: Add a learnable embedding per symbol to condition the shared policy. Allows the network to specialize behavior per market while sharing the encoder.
-
-4. **Decision Transformer**: Reframe as offline sequence modeling — predict action conditioned on desired return-to-go. Handles non-stationarity via explicit regime labels. Try Critic-Guided DT for Q-value reweighting. Refs: [kzl/decision-transformer](https://github.com/kzl/decision-transformer), [critic-guided-decision-transformer](https://github.com/sharkwyf/critic-guided-decision-transformer).
-
-5. **Regime Conditioning (SAPPO/TimesNet)**: Detect market regime (trending/mean-reverting/volatile) from features 1,5,6,8,11-13,16,17 (returns, cvd, tfi, vpin, realvol, imbalance, spread). Use as multiplicative gate on PPO advantage (SAPPO) or feed regime latent state to policy (TimesNet + Actor-Critic).
-
-6. **Funding Rate Alpha**: Large funding rate changes predict short-term reversals. Add **Fourier features** for funding periodicity. Weight funding features higher or create explicit funding-based trading rules.
-
-7. **Adversarial Robustness**: Add Gaussian noise to observations during training. Also consider **Bayesian adversarial training** with synthetic market data for extreme scenarios. Ref: [Bayesian-Robust-Trading](https://github.com/XiaHaochong98/Bayesian-Robust-Financial-Trading-with-Adversarial-Synthetic-Market-Data).
-
-8. **Temporal Encoding**: Add relative time deltas between steps as features. Fourier features for funding periodicity. Helps the network understand event spacing.
-
-9. **Position-Aware Features**: Add current position, hold duration, unrealized P&L as explicit observation features (augment the 33 env features in the forward pass, not in prepare.py).
-
-10. **Curriculum Learning**: Start with easy regimes (trending), gradually add harder ones (choppy/volatile). Or start with longer episodes, reduce over time.
-
-11. **Ensemble**: Train N policies with different seeds, average their action probabilities. Reduces variance.
-
-12. **Conservative Offline RL** (CQL/IQL): Penalizes over-estimation in unseen states. Good for extracting policies from historical data without reward shaping. Ref: [FinRL Contest 2025](https://github.com/Open-Finance-Lab/FinRL_Contest_2025).
 
 ## Output Format
 
-`train.py` MUST print these lines in the PORTFOLIO SUMMARY section (parsed by grep):
+`train.py` MUST print these lines in the PORTFOLIO SUMMARY section:
 ```
 symbols_passing: N/25
-val_sharpe: X.XXXXXX
+sortino: X.XXXXXX
 num_trades: N
 max_drawdown: X.XXXX
-training_seconds: X.X
+win_rate: X.XXXX
+profit_factor: X.XXXX
 total_steps: N
 num_updates: N
 ```
 
 ## Logging
 
-Maintain `results.tsv` with columns:
+`results.tsv` columns:
 ```
-commit	val_sharpe	num_trades	max_drawdown	symbols_passing	status	description
+commit	sortino	num_trades	max_drawdown	symbols_passing	status	description
 ```
 
-Review this file periodically to identify patterns in what works.
+## Key Discoveries
 
-## Timeout
-
-Each experiment should take ~7 minutes total (5 min training + ~2 min data loading/eval). If a run exceeds 15 minutes, kill it and treat it as a failure (discard and revert).
-
-## Crashes
-
-If a run crashes, use your judgment:
-- **Easy fix** (typo, missing import, shape mismatch): fix it and re-run.
-- **Fundamentally broken idea** (OOM, divergence): skip it, log `crash` as the status in results.tsv, and move on.
-
-## NEVER STOP
-
-Once the experiment loop has begun (after initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep or away and expects you to continue working **indefinitely** until you are manually stopped. You are autonomous.
-
-If you run out of ideas, think harder — re-read prepare.py for new angles, try combining previous near-misses, try more radical changes. The loop runs until the human interrupts you, period.
-
-As a reference: each experiment takes ~7 minutes, so you can run ~8-9/hour, ~70 overnight. The user wakes up to results.tsv full of experimental data.
+1. **Fee structure is the binding constraint** — alpha exists but is thin per trade
+2. **One change at a time** — multiple arch changes simultaneously = regression
+3. **Full-test eval is ground truth** — 2000-step truncation was hiding failures
+4. **MLP beats XGBoost** (18/25 vs 8/25) — temporal pattern extraction matters
+5. **v7 attention overfit** — 2D attention (Sortino=0.061, 11/25) lost badly to flat MLP
+6. **Recency weighting helps** — decay=1.0, recent samples ~2.7x weight of oldest
