@@ -13,10 +13,10 @@ A structured document (JSON phases + markdown decision logic) that defines:
 - How to score results
 - How to decide what to test next
 
-Plans live in `.claude/skills/experiment/plans/`. Each plan is a folder:
+Plans live in `docs/experiments/` at the project level. Each plan is a folder:
 
 ```
-plans/v6-ablation/
+docs/experiments/v6-ablation/
 ├── plan.md          — hypothesis, context, decision logic (natural language)
 ├── phases.json      — structured phase/config definitions
 └── results.json     — populated during execution (append-only)
@@ -106,17 +106,20 @@ Early stop: if any phase has a clear winner (gap > 0.1), skip remaining runs in 
 
 ## Skill Structure
 
+The skill contains the **protocol and helpers**. Experiment plans and results live in the **project** (`docs/experiments/`), not inside the skill — they're project artifacts that should persist independently of the skill.
+
 ```
 .claude/skills/experiment/
 ├── SKILL.md                  — skill definition, protocol, instructions
-├── resources/
-│   ├── parse_summary.sh      — extract PORTFOLIO SUMMARY → key=value
-│   └── report_template.md    — template for final report
-└── plans/                    — experiment plans (one folder each)
-    └── v6-ablation/
-        ├── plan.md
-        ├── phases.json
-        └── results.json
+└── resources/
+    ├── parse_summary.sh      — extract PORTFOLIO SUMMARY → key=value
+    └── report_template.md    — template for final report
+
+docs/experiments/                — experiment plans (project-level, not skill-level)
+└── v6-ablation/
+    ├── plan.md               — hypothesis, decision logic (natural language)
+    ├── phases.json           — configs, scoring formula (structured)
+    └── results.json          — populated during execution (append-only)
 ```
 
 ### SKILL.md
@@ -136,7 +139,7 @@ description: >
 The skill body contains:
 1. **Protocol**: how to execute an experiment plan (load → run → store → reason → repeat)
 2. **Result parsing**: use `resources/parse_summary.sh` or grep PORTFOLIO SUMMARY
-3. **Result storage**: append to `plans/<name>/results.json`
+3. **Result storage**: append to `docs/experiments/<name>/results.json`
 4. **Scoring**: evaluate the plan's scoring formula against each result
 5. **Phase transitions**: read `plan.md` decision logic, read accumulated results, configure next phase
 6. **Report generation**: after all phases, write report from template
@@ -159,7 +162,7 @@ The skill body contains:
    f. Print phase summary with analysis
 3. After all phases:
    - Pick overall best config
-   - Write report to docs/ablation-report.md (or docs/{plan-name}-report.md)
+   - Write report to docs/experiments/{plan-name}/report.md
    - Print recommended config and key findings
 ```
 
@@ -210,8 +213,8 @@ Implementation of these args is a prerequisite, not part of this spec. The imple
 | `.claude/skills/experiment/SKILL.md` | New. Skill definition with protocol. |
 | `.claude/skills/experiment/resources/parse_summary.sh` | New. Deterministic result parser. |
 | `.claude/skills/experiment/resources/report_template.md` | New. Report template. |
-| `.claude/skills/experiment/plans/v6-ablation/plan.md` | New. First experiment plan (decision logic). |
-| `.claude/skills/experiment/plans/v6-ablation/phases.json` | New. Phase/config definitions. |
+| `docs/experiments/v6-ablation/plan.md` | New. First experiment plan (decision logic). |
+| `docs/experiments/v6-ablation/phases.json` | New. Phase/config definitions. |
 | `train.py` | Add CLI args, fixed-horizon labeling, feature masking, 2-class support. |
 
 ## Success Criteria
