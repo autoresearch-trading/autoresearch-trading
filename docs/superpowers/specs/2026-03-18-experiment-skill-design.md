@@ -212,20 +212,13 @@ Between phases: read results.json + plan.md decision logic, reason about what to
 - Update `resources/state.md` with new current best and open questions
 - If the best config improved on the previous best, recommend updating train.py defaults
 
-## train.py prerequisite
+## train.py contract
 
-The skill assumes train.py accepts CLI args that override its module-level config:
+The skill does NOT require specific CLI args. Instead:
 
-| Arg | Type | Purpose |
-|-----|------|---------|
-| `--labeling` | `{triple, fixed}` | Labeling method |
-| `--forward-horizon` | int | Steps for fixed-horizon labeling |
-| `--min-hold` | int | Override MIN_HOLD |
-| `--fee-mult` | float | Override BEST_PARAMS["fee_mult"] |
-| `--feature-mask` | int | Use only first N features (zero the rest) |
-| `--n-classes` | `{2, 3}` | Number of output classes |
-
-Implementation of these args is a prerequisite, not part of this spec.
+- **Output contract**: train.py prints a PORTFOLIO SUMMARY block with `sortino:`, `symbols_passing:`, `num_trades:`, `max_drawdown:`, `win_rate:`, `profit_factor:` lines. The skill parses these.
+- **Modification**: When Claude needs to test a hypothesis that requires changing train.py (e.g., adding a labeling method, masking features, changing min_hold), Claude modifies train.py directly as part of the experiment. This is what a researcher does — the code is the experiment.
+- **Rollback**: Claude commits before each experiment and can revert if a change breaks things. Each experiment's plan.md documents what was changed.
 
 ## File Changes
 
@@ -234,22 +227,20 @@ Implementation of these args is a prerequisite, not part of this spec.
 | `.claude/skills/autoresearch/SKILL.md` | New. Research loop protocol. |
 | `.claude/skills/autoresearch/resources/parse_summary.sh` | New. Deterministic result parser. |
 | `.claude/skills/autoresearch/resources/state.md` | New. Living research state document. |
-| `train.py` | Add CLI args, fixed-horizon labeling, feature masking, 2-class support. |
-| `program.md` | Remove. Replaced by the autoresearch skill. |
+| `program.md` | Remove. Unique content merged into CLAUDE.md. |
+| `CLAUDE.md` | Update. Merge key discoveries and experiment conventions from program.md. |
 
 ## Gotchas
 
-1. **Feature masking ≠ v5 features.** Zeroing columns 31-38 is not identical to v5's 31-feature cache. Normalization window statistics differ. Run 1 of any ablation will approximate but not exactly match the v5 baseline.
+1. **Cache rebuild time.** Bumping `_FEATURE_VERSION` in prepare.py invalidates all caches. First train.py invocation per symbol/split rebuilds caches (~2 min/symbol, ~30 min total). Avoid changes to prepare.py mid-experiment.
 
-2. **Cache rebuild on first run.** v6 caches for all symbol/split combos must exist. First train.py invocation per split rebuilds missing caches (~2 min/symbol). After that, runs take ~8 min.
+2. **PORTFOLIO SUMMARY is the contract.** The skill parses train.py stdout for `sortino:`, `symbols_passing:`, etc. If Claude modifies train.py's output format, the parse_summary.sh helper breaks. Keep the output format stable.
 
-3. **Triple Barrier + high min_hold mismatch.** Triple Barrier labels on 300-step horizon + min_hold=800 means the model can't exit when the barrier hits. Intentional for isolation but may understate Triple Barrier's advantage.
+3. **Commit before each experiment.** Claude modifies train.py to test hypotheses. Always commit before running so the change is traceable and revertible. Each experiment in results.tsv links to a commit.
 
-4. **2-class relabeling needs forward return.** For N_CLASSES=2, flat samples need the forward return at the labeling horizon to decide long vs short. Available in both labeling functions.
+4. **One variable per phase.** The most important research discipline. Changing two things at once makes attribution impossible. Claude should resist the temptation to "also try X while we're at it."
 
-5. **args must reach train_one_model and eval_policy.** Currently these functions don't receive CLI args. Either pass args as a parameter or promote relevant flags to module-level globals set in main().
-
-6. **Don't change multiple variables at once.** The skill's guardrail — each phase should isolate one variable. This is the most important research discipline.
+5. **results.tsv is the source of truth.** state.md is a summary for fast context loading. If they conflict, results.tsv wins.
 
 ## Success Criteria
 
