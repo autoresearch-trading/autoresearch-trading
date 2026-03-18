@@ -1,172 +1,75 @@
-# Experiment Skill — Design Spec
+# Autoresearch Skill — Design Spec
 
 ## Goal
 
-A reusable Claude Code skill for running structured, multi-phase experiments on `train.py`. Defines a general protocol for hypothesis testing: load an experiment plan, run configs, store results, reason between phases, produce a report.
+A Claude Code skill that IS the research loop. Claude autonomously analyzes current state, forms hypotheses, designs experiments, runs them, draws conclusions, and repeats. Replaces `program.md` as the primary way research gets done.
 
-## Core Concepts
-
-### Experiment Plan
-
-A structured document (JSON phases + markdown decision logic) that defines:
-- What to test (configs)
-- How to score results
-- How to decide what to test next
-
-Plans live in `docs/experiments/` at the project level. Each plan is a folder:
+## Core Loop
 
 ```
-docs/experiments/v6-ablation/
-├── plan.md          — hypothesis, context, decision logic (natural language)
-├── phases.json      — structured phase/config definitions
-└── results.json     — populated during execution (append-only)
+1. Analyze  → read results.tsv, current config, recent experiments
+2. Hypothesize → identify the most impactful question to answer next
+3. Design  → create experiment phases with configs and decision logic
+4. Execute  → run train.py with each config, store results
+5. Conclude → analyze results, write report, update config if improved
+6. Repeat  → form next hypothesis based on what was learned
 ```
 
-### Phase
+Claude drives the entire loop. No human writes experiment plans — Claude generates them as artifacts of its reasoning.
 
-A group of experiments that test one variable. After a phase completes, Claude reads results, applies the decision logic from `plan.md`, and configures the next phase.
+## Scoring
 
-### Config
+Each experiment plan defines its own scoring formula. For the current trading research:
 
-A single train.py invocation defined by CLI args. Each config has a name and a dict of arguments.
-
-## Plan Schema
-
-### phases.json
-
-```json
-{
-  "scoring": "sortino * 0.6 + (passing / 25) * 0.4",
-  "train_command": "uv run python train.py",
-  "phases": [
-    {
-      "name": "Phase 1: Isolate variables",
-      "experiments": [
-        {
-          "name": "v5-sanity",
-          "args": {
-            "--labeling": "fixed",
-            "--forward-horizon": 800,
-            "--min-hold": 800,
-            "--fee-mult": 1.5,
-            "--feature-mask": 31
-          }
-        },
-        {
-          "name": "v6-features",
-          "args": {
-            "--labeling": "fixed",
-            "--forward-horizon": 800,
-            "--min-hold": 800,
-            "--fee-mult": 1.5
-          }
-        }
-      ]
-    },
-    {
-      "name": "Phase 2: Sweep min_hold",
-      "template": {
-        "args": "inherit_from_phase1_winner"
-      },
-      "sweep": {
-        "--min-hold": [500, 300, 100]
-      }
-    }
-  ]
-}
+```
+score = mean_sortino * 0.6 + (passing / 25) * 0.4
 ```
 
-Key fields:
-- **scoring**: formula evaluated against result fields (sortino, passing, trades, dd, wr, pf). Claude evaluates this as a Python expression.
-- **train_command**: how to invoke train.py
-- **phases[].experiments**: explicit configs (Phase 1 style — fully specified)
-- **phases[].sweep**: parameterized configs (Phase 2+ style — Claude fills in the base from prior results and sweeps one variable)
-- **phases[].template.args = "inherit_from_phase1_winner"**: tells Claude to use the best config from a prior phase as the base
+Note: `passing` already accounts for the 20% drawdown guardrail — symbols exceeding max_drawdown are excluded by `eval_policy`, so the score implicitly penalizes high-drawdown configs via lower passing counts.
 
-### plan.md
+## Experiment Artifacts
 
-Natural language document that Claude reads for:
-- **Hypothesis**: what we're testing and why
-- **Decision logic**: how to pick winners between phases, when to early-stop, how to handle ambiguous results
-- **Gotchas**: known pitfalls for this specific experiment
+Claude produces experiment artifacts in `docs/experiments/`. Each experiment is a folder:
 
-Example excerpt:
+```
+docs/experiments/YYYY-MM-DD-<name>/
+├── plan.md          — hypothesis, phases, decision logic (Claude-written)
+├── results.json     — accumulated results (append-only)
+└── report.md        — conclusions, recommended config (Claude-written)
+```
+
+### plan.md (Claude-generated)
+
+Before running any experiments, Claude writes the plan:
+
 ```markdown
+# Experiment: <name>
+
+## Hypothesis
+<What Claude thinks is happening and why>
+
+## Scoring
+<formula>
+
+## Phases
+
+### Phase 1: <description>
+| Run | Config | Purpose |
+|-----|--------|---------|
+| 1   | ...    | ...     |
+
+### Phase 2: <description>
+Depends on Phase 1 results. Base config inherited from winner.
+Sweep: <variable> over [values]
+
 ## Decision Logic
+<How to pick winners, when to early-stop, how to handle ambiguity>
 
-After Phase 1, pick features and labeling independently:
-- If Run 2 scores > Run 1 by 0.02+, keep 39 features. Otherwise use 31.
-- If Run 3 scores > Run 2 by 0.02+, keep Triple Barrier. Otherwise use fixed-horizon.
-- If Run 3 scored poorly, note the min_hold/labeling mismatch — Phase 2 may reveal Triple Barrier's true value.
-
-After Phase 2, take the min_hold with highest score.
-
-Early stop: if any phase has a clear winner (gap > 0.1), skip remaining runs in that phase.
+## Gotchas
+<Known pitfalls for this specific experiment>
 ```
 
-## Skill Structure
-
-The skill contains the **protocol and helpers**. Experiment plans and results live in the **project** (`docs/experiments/`), not inside the skill — they're project artifacts that should persist independently of the skill.
-
-```
-.claude/skills/experiment/
-├── SKILL.md                  — skill definition, protocol, instructions
-└── resources/
-    ├── parse_summary.sh      — extract PORTFOLIO SUMMARY → key=value
-    └── report_template.md    — template for final report
-
-docs/experiments/                — experiment plans (project-level, not skill-level)
-└── v6-ablation/
-    ├── plan.md               — hypothesis, decision logic (natural language)
-    ├── phases.json           — configs, scoring formula (structured)
-    └── results.json          — populated during execution (append-only)
-```
-
-### SKILL.md
-
-```yaml
----
-name: Experiment Runner
-description: >
-  Run structured multi-phase experiments on train.py to compare model configs,
-  isolate regressions, and find optimal hyperparameters. Use when asked to
-  "run experiment", "run ablation", "test hypothesis", "compare configs",
-  "sweep hyperparameters", or when investigating why a model change helped or hurt.
-  Also use when a plan exists in plans/ and needs executing.
----
-```
-
-The skill body contains:
-1. **Protocol**: how to execute an experiment plan (load → run → store → reason → repeat)
-2. **Result parsing**: use `resources/parse_summary.sh` or grep PORTFOLIO SUMMARY
-3. **Result storage**: append to `docs/experiments/<name>/results.json`
-4. **Scoring**: evaluate the plan's scoring formula against each result
-5. **Phase transitions**: read `plan.md` decision logic, read accumulated results, configure next phase
-6. **Report generation**: after all phases, write report from template
-
-### Protocol (what SKILL.md tells Claude to do)
-
-```
-1. Load the experiment plan (plan.md + phases.json)
-2. For each phase:
-   a. Read phases.json to get configs (or generate from sweep + inherited base)
-   b. For each experiment in the phase:
-      - Run: {train_command} {args} 2>&1 | tee run_{name}.log
-      - Parse PORTFOLIO SUMMARY from output
-      - Compute score using the plan's scoring formula
-      - Append result to results.json
-      - Print: "  {name}: score={score:.3f} sortino={sortino:.3f} passing={passing}/25"
-   c. Read plan.md decision logic
-   d. Read accumulated results.json
-   e. Reason: which config won? What does this mean for the next phase?
-   f. Print phase summary with analysis
-3. After all phases:
-   - Pick overall best config
-   - Write report to docs/experiments/{plan-name}/report.md
-   - Print recommended config and key findings
-```
-
-### results.json format
+### results.json
 
 ```json
 [
@@ -182,18 +85,136 @@ The skill body contains:
 ]
 ```
 
-### parse_summary.sh
+### report.md (Claude-generated)
 
-```bash
-#!/bin/bash
-# Extract PORTFOLIO SUMMARY fields from train.py log
-# Usage: bash parse_summary.sh run_v5-sanity.log
-grep -E "^(sortino|symbols_passing|num_trades|max_drawdown|win_rate|profit_factor):" "$1"
+After all phases complete:
+
+```markdown
+# Experiment Report: <name>
+
+## Results
+| Run | Name | Config summary | Sortino | Passing | Score |
+|-----|------|---------------|---------|---------|-------|
+
+## Analysis
+<Phase-by-phase breakdown of what each ablation revealed>
+
+## Conclusion
+<What caused the regression / what improved performance>
+
+## Recommended Config
+<config dict to use going forward>
+
+## Next Hypotheses
+<What to investigate next, informed by these results>
 ```
+
+## Skill Structure
+
+```
+.claude/skills/autoresearch/
+├── SKILL.md                  — the research protocol
+└── resources/
+    ├── parse_summary.sh      — extract PORTFOLIO SUMMARY → key=value
+    └── state.md              — current research state (Claude updates this)
+```
+
+### SKILL.md
+
+```yaml
+---
+name: Autoresearch
+description: >
+  Autonomous research loop for trading model optimization. Use when asked to
+  "run experiments", "investigate", "improve the model", "find what's wrong",
+  "optimize", or at the start of any research session. Also triggers on
+  "autoresearch", "experiment loop", "hypothesis", "ablation".
+  Reads results.tsv and current train.py config to decide what to do next.
+---
+```
+
+The skill body contains:
+
+1. **The research loop** — analyze → hypothesize → design → execute → conclude → repeat
+2. **How to analyze** — read results.tsv, train.py config, docs/experiments/ history
+3. **How to hypothesize** — identify the highest-leverage question (isolate variables, sweep parameters, test architecture changes)
+4. **How to design experiments** — write plan.md with phases, configs, decision logic. One variable per phase. Score formula per plan.
+5. **How to execute** — run `uv run python train.py {args}`, parse output, store in results.json
+6. **How to conclude** — compare scores, write report.md, update results.tsv, recommend config changes
+7. **How to repeat** — the report's "Next Hypotheses" feeds the next cycle's analysis
+8. **Guardrails** — max budget per cycle (e.g., 12 runs / ~2 hours), don't change multiple variables at once, always have a control run
+
+### resources/state.md
+
+A living document Claude reads at the start of each session and updates after each experiment cycle:
+
+```markdown
+# Research State
+
+## Current Best
+- Config: {lr=1e-3, hdim=256, nlayers=2, fee_mult=1.5, min_hold=800, labeling=fixed, features=31}
+- Score: 0.426 (sortino=0.230, passing=18/25)
+- Commit: wd5e4
+
+## Open Questions
+- Do tape reading features (31→39) help or hurt?
+- Does Triple Barrier labeling improve over fixed-horizon?
+- What is the optimal min_hold for the new setup?
+
+## Completed Experiments
+- docs/experiments/2026-03-18-v6-ablation/ — in progress
+```
+
+This is the skill's memory across sessions — Claude reads it to know where it left off and what to investigate next.
+
+## Research Protocol Details
+
+### Analyze
+
+Claude reads:
+- `resources/state.md` — where we are, open questions
+- `results.tsv` — full experiment history
+- `train.py` — current config constants
+- Recent `docs/experiments/*/report.md` — what was learned
+
+### Hypothesize
+
+Claude identifies the most impactful question. Priority:
+1. **Regressions** — if something got worse, isolate why (ablation)
+2. **Untested variables** — if a variable hasn't been swept, sweep it
+3. **Interactions** — if two variables both helped individually, test them together
+4. **Refinement** — if a variable has a clear trend, narrow the search
+
+### Design
+
+Claude writes `docs/experiments/YYYY-MM-DD-<name>/plan.md` with:
+- Clear hypothesis
+- Phases that change one variable at a time
+- Scoring formula
+- Decision logic between phases
+- Budget (max N runs)
+
+### Execute
+
+For each experiment in each phase:
+```bash
+uv run python train.py {args} 2>&1 | tee docs/experiments/<name>/run_{exp_name}.log
+```
+
+Parse PORTFOLIO SUMMARY, compute score, append to results.json.
+
+Between phases: read results.json + plan.md decision logic, reason about what to test next.
+
+### Conclude
+
+- Write `docs/experiments/<name>/report.md`
+- Update `results.tsv` with the best config from this cycle
+- Update `resources/state.md` with new current best and open questions
+- If the best config improved on the previous best, recommend updating train.py defaults
 
 ## train.py prerequisite
 
-The skill assumes train.py accepts CLI args that override its module-level config. Required args:
+The skill assumes train.py accepts CLI args that override its module-level config:
 
 | Arg | Type | Purpose |
 |-----|------|---------|
@@ -204,23 +225,37 @@ The skill assumes train.py accepts CLI args that override its module-level confi
 | `--feature-mask` | int | Use only first N features (zero the rest) |
 | `--n-classes` | `{2, 3}` | Number of output classes |
 
-Implementation of these args is a prerequisite, not part of this spec. The implementation plan will handle it.
+Implementation of these args is a prerequisite, not part of this spec.
 
 ## File Changes
 
 | File | Change |
 |------|--------|
-| `.claude/skills/experiment/SKILL.md` | New. Skill definition with protocol. |
-| `.claude/skills/experiment/resources/parse_summary.sh` | New. Deterministic result parser. |
-| `.claude/skills/experiment/resources/report_template.md` | New. Report template. |
-| `docs/experiments/v6-ablation/plan.md` | New. First experiment plan (decision logic). |
-| `docs/experiments/v6-ablation/phases.json` | New. Phase/config definitions. |
+| `.claude/skills/autoresearch/SKILL.md` | New. Research loop protocol. |
+| `.claude/skills/autoresearch/resources/parse_summary.sh` | New. Deterministic result parser. |
+| `.claude/skills/autoresearch/resources/state.md` | New. Living research state document. |
 | `train.py` | Add CLI args, fixed-horizon labeling, feature masking, 2-class support. |
+| `program.md` | Remove. Replaced by the autoresearch skill. |
+
+## Gotchas
+
+1. **Feature masking ≠ v5 features.** Zeroing columns 31-38 is not identical to v5's 31-feature cache. Normalization window statistics differ. Run 1 of any ablation will approximate but not exactly match the v5 baseline.
+
+2. **Cache rebuild on first run.** v6 caches for all symbol/split combos must exist. First train.py invocation per split rebuilds missing caches (~2 min/symbol). After that, runs take ~8 min.
+
+3. **Triple Barrier + high min_hold mismatch.** Triple Barrier labels on 300-step horizon + min_hold=800 means the model can't exit when the barrier hits. Intentional for isolation but may understate Triple Barrier's advantage.
+
+4. **2-class relabeling needs forward return.** For N_CLASSES=2, flat samples need the forward return at the labeling horizon to decide long vs short. Available in both labeling functions.
+
+5. **args must reach train_one_model and eval_policy.** Currently these functions don't receive CLI args. Either pass args as a parameter or promote relevant flags to module-level globals set in main().
+
+6. **Don't change multiple variables at once.** The skill's guardrail — each phase should isolate one variable. This is the most important research discipline.
 
 ## Success Criteria
 
-- Skill can execute any well-formed experiment plan autonomously
-- Results are stored persistently and readable between phases
-- Claude reasons about results (not just mechanically picking highest score)
+- Claude autonomously identifies the right experiments to run
+- Experiment plans are well-reasoned (clear hypothesis, one variable per phase)
+- Results are stored persistently and inform future sessions
 - Reports clearly attribute outcomes to specific variables
-- The v6-ablation plan completes in ~2 hours and identifies the regression cause
+- The first cycle (v6 ablation) completes in ~2 hours and identifies the regression cause
+- The skill replaces program.md as the primary research workflow
