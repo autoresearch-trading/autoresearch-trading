@@ -77,13 +77,18 @@ Sweep: <variable> over [values]
     "run": 1,
     "phase": "Phase 1: Isolate variables",
     "name": "v5-sanity",
-    "args": {"--labeling": "fixed", "--min-hold": 800, "--fee-mult": 1.5, "--feature-mask": 31},
+    "config": {"labeling": "fixed", "min_hold": 800, "fee_mult": 1.5, "features": 31},
     "results": {"sortino": 0.225, "passing": 17, "trades": 890, "dd": 0.35, "wr": 0.0, "pf": 0.0},
     "score": 0.407,
     "timestamp": "2026-03-18T14:30:00"
   }
 ]
 ```
+
+Notes:
+- `config` documents what was changed in train.py for this run (descriptive metadata, not CLI args)
+- `passing` is an integer (parsed from `symbols_passing: 17/25` by splitting on `/`)
+- `wr` and `pf` default to 0.0 when not printed by train.py
 
 ### report.md (Claude-generated)
 
@@ -167,6 +172,20 @@ A living document Claude reads at the start of each session and updates after ea
 
 This is the skill's memory across sessions — Claude reads it to know where it left off and what to investigate next.
 
+### resources/parse_summary.sh
+
+```bash
+#!/bin/bash
+# Extract PORTFOLIO SUMMARY fields from train.py log as key=value pairs
+# Usage: bash parse_summary.sh run_v5-sanity.log
+#
+# Parsing notes:
+# - symbols_passing prints "3/25" — split on "/" to get integer
+# - win_rate and profit_factor are conditionally printed (only when wr > 0)
+#   treat missing values as 0.0
+grep -E "^(sortino|symbols_passing|num_trades|max_drawdown|win_rate|profit_factor):" "$1"
+```
+
 ## Research Protocol Details
 
 ### Analyze
@@ -228,7 +247,8 @@ The skill does NOT require specific CLI args. Instead:
 | `.claude/skills/autoresearch/resources/parse_summary.sh` | New. Deterministic result parser. |
 | `.claude/skills/autoresearch/resources/state.md` | New. Living research state document. |
 | `program.md` | Remove. Unique content merged into CLAUDE.md. |
-| `CLAUDE.md` | Update. Merge key discoveries and experiment conventions from program.md. |
+| `CLAUDE.md` | Update: (1) remove `program.md` from Structure section, (2) remove program.md reference from Workflow section, (3) merge Key Discoveries from program.md into Gotchas or new section, (4) rename `val_sharpe` to `sortino` in results.tsv column docs. |
+| `results.tsv` | Rename header `val_sharpe` → `sortino`. |
 
 ## Gotchas
 
@@ -241,6 +261,8 @@ The skill does NOT require specific CLI args. Instead:
 4. **One variable per phase.** The most important research discipline. Changing two things at once makes attribution impossible. Claude should resist the temptation to "also try X while we're at it."
 
 5. **results.tsv is the source of truth.** state.md is a summary for fast context loading. If they conflict, results.tsv wins.
+
+6. **results.tsv column name mismatch.** The existing header says `val_sharpe` but the values are Sortino ratios. Rename to `sortino` when merging program.md content into CLAUDE.md.
 
 ## Success Criteria
 
