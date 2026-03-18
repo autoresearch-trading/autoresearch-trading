@@ -25,7 +25,7 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50
 TRADE_BATCH = 100
-MIN_HOLD = 300  # ~5 min between trades (force selectivity)
+MIN_HOLD = 500  # ~8 min between trades (closer to v5 selectivity)
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
 

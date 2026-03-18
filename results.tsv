@@ -6,3 +6,5 @@ d188b2e	0.251031	910	0.3296	12/25	kept	recency-weighted focal (decay=1.0)
 skipped	-	-	-	-	skipped	BTC lead feature (blocked: eval doesn't support cross-symbol obs)
 wd5e4	0.229896	923	0.3672	18/25	kept	wd=5e-4 (18/25 passing, new best)
 81f8d70	-0.003032	7635	0.4742	3/25	kept	tape-v1: 39 features, triple barrier max_hold=300, min_hold=100, fee_mult=8.0
+4552f05	0.058126	10282	0.5177	3/25	discarded	tape-v2: fee_mult=15.0
+c4f55fb	0.056714	2904	0.4874	8/25	kept	tape-v3: min_hold=300, fee_mult=10.0
