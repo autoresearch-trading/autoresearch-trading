@@ -12,19 +12,28 @@ Add 7 new features (3 orderbook-priority, 4 trade-based) and introduce a hybrid 
 
 ## New Features (7)
 
-### Orderbook-priority features (indices 39-41)
+### Orderbook-derived features (indices 39-40)
 
-All computed at orderbook snapshot resolution (~24s), forward-filled to trade batches.
+Computed at orderbook snapshot resolution (~24s), forward-filled to trade batches.
 
 | Index | Feature | Formula | Description |
 |-------|---------|---------|-------------|
 | 39 | integrated_ofi | `sum(weights_exp * (delta_bid - delta_ask))` where `weights_exp = [1.0, 0.6, 0.36, 0.22, 0.13]` (exponential decay=0.6 across 5 levels) | Per-level OFI with exponential weighting. Approximates PC1 of multi-level OFI per Cont et al. Coexists with existing OFI (feature 16) which uses harmonic decay. |
 | 40 | ob_symmetric_mode | `sum(weights_exp * (delta_bid + delta_ask))` | Total liquidity change (sum, not difference). Positive = liquidity added both sides (market calming). Negative = liquidity pulled (market tensing). Existing OFI only captures the asymmetric component. |
+
+**Data requirements:** Features 39-40 use existing `bids`/`asks` arrays from orderbook snapshots (already loaded) and reuse the `prev_bid_vols`/`prev_ask_vols` delta mechanism from existing OFI computation.
+
+**OB snapshot sparsity:** Snapshots arrive every ~24s. Trade batches are ~1-2s (BTC). Features 39-40 update only when a new OB snapshot arrives (~every 15-25 batches); intermediate batches see the forward-filled value. The TCN branch effectively has ~43 useful temporal channels since features 39-40 are constant for long stretches — the flat branch handles them as static context.
+
+### Orderbook-conceptual feature (index 41)
+
+Trade-derived but conceptually related to orderbook absorption — measures how effectively the book absorbs flow during sustained price moves.
+
+| Index | Feature | Formula | Description |
+|-------|---------|---------|-------------|
 | 41 | eff_liquidity_density | Accumulated `run_volume / run_displacement` during monotonic VWAP runs | Volume per unit price displacement during sustained moves. High values = market absorbing heavy flow without accelerating. Different from price_level_absorption (feature 37) which is single-batch. |
 
-**Data requirements:** All use existing `bids`/`asks` arrays from orderbook snapshots (already loaded). Features 39-40 reuse the `prev_bid_vols`/`prev_ask_vols` delta mechanism from existing OFI computation. Feature 41 uses VWAP and notional from trade batches.
-
-**OB snapshot sparsity:** Snapshots arrive every ~24s. Trade batches are ~1-2s (BTC). Features 39-40 update only when a new OB snapshot arrives (~every 15-25 batches); intermediate batches see the forward-filled value. Feature 41 updates every batch (computed from trades, not OB).
+**Data requirements:** Uses VWAP and notional from trade batches. Updates every batch (no OB dependency).
 
 ### Trade features (indices 42-45)
 
@@ -47,8 +56,10 @@ Computed inside the existing OB loop (prepare.py lines 397-504). Uses the same `
 weights_exp = np.array([1.0, 0.6, 0.36, 0.22, 0.13])  # exponential decay
 
 # Inside OB loop, after computing delta_bid and delta_ask:
-ob_edge_features[i, 0] = (weights_exp[:n_bid_lvls] * (delta_bid[:n_bid_lvls] - delta_ask[:n_ask_lvls])).sum()
-ob_edge_features[i, 1] = (weights_exp[:n_bid_lvls] * (delta_bid[:n_bid_lvls] + delta_ask[:n_ask_lvls])).sum()
+# delta_bid and delta_ask are already zero-padded 5-element arrays
+# (from curr_bid_vols - prev_bid_vols, same as existing OFI)
+ob_edge_features[i, 0] = (weights_exp * (delta_bid - delta_ask)).sum()
+ob_edge_features[i, 1] = (weights_exp * (delta_bid + delta_ask)).sum()
 ```
 
 **Feature 41 (effective liquidity density):**
@@ -99,12 +110,12 @@ hawkes_ratio = (hawkes_buy - hawkes_sell) / denom
 push_response_asym = np.zeros(num_batches)
 lookback = 50
 for i in range(lookback + 1, num_batches):
-    window_returns = returns[i - lookback:i]
-    window_responses = returns[i - lookback + 1:i + 1]  # 1-step forward response
-    down_mask = window_returns < 0
-    up_mask = window_returns > 0
-    mean_resp_down = window_responses[down_mask[:-1]].mean() if down_mask[:-1].any() else 0.0
-    mean_resp_up = window_responses[up_mask[:-1]].mean() if up_mask[:-1].any() else 0.0
+    pushes = returns[i - lookback:i - 1]         # push returns (49 elements)
+    responses = returns[i - lookback + 1:i]      # 1-step forward responses (49 elements)
+    down_mask = pushes < 0
+    up_mask = pushes > 0
+    mean_resp_down = responses[down_mask].mean() if down_mask.any() else 0.0
+    mean_resp_up = responses[up_mask].mean() if up_mask.any() else 0.0
     push_response_asym[i] = mean_resp_down - mean_resp_up
 ```
 
@@ -197,7 +208,7 @@ def forward(self, x):
 | Linear(256→3) | 771 |
 | **Total** | **~692K** |
 
-Up from ~600K. Still CPU-trainable. TCN adds <2% of parameters.
+Up from ~600K (18% total growth: mostly from larger flat_dim 2,392 vs 2,028 due to 7 more features; TCN itself adds only 9K params / 1.3%). Still CPU-trainable.
 
 ### Why this won't overfit like v7 attention
 
@@ -206,7 +217,7 @@ Up from ~600K. Still CPU-trainable. TCN adds <2% of parameters.
 | Window | 2,000 steps | 50 steps |
 | Temporal params | ~5M | ~9K |
 | Compute | H100 GPU | CPU |
-| Receptive field | Global | Local (5 steps) |
+| Receptive field | Global | Local (7 steps effective: k=5 + k=3 stacked) |
 | Regularization | Minimal | Dropout 0.2 |
 
 ### Initialization
@@ -220,17 +231,19 @@ Unchanged: 5 seeds, logit sum argmax. Each seed may learn different temporal pat
 
 ## Cache Invalidation
 
-- Bump `_FEATURE_VERSION`: `"v6"` → `"v7"`
-- v6 caches remain on disk (keyed by version), v7 computed lazily on first run
-- Full recompute: ~20-30 min for 25 symbols
+- Bump `_FEATURE_VERSION`: `"v6"` → `"v8"` (skipping "v7" to avoid confusion with the v7 attention experiment)
+- v6 caches remain on disk (keyed by version), v8 computed lazily on first run
+- Incremental migration is not practical: features 42-45 require raw batch-level arrays (`prices_batched`, `is_buy_batched`, `returns`) that aren't stored in the v6 cache (only final normalized features are cached). Full recompute required: ~20-30 min for 25 symbols.
 
 ## File Changes
 
 | File | Change |
 |------|--------|
-| prepare.py | Add 7 features (39-45) to `compute_features()`, bump `_FEATURE_VERSION` to `"v7"`, update `ROBUST_FEATURE_INDICES` (add `{39, 40, 41}`), update docstring feature layout |
+| prepare.py | Add 7 features (39-45) to `compute_features()`, bump `_FEATURE_VERSION` to `"v8"`, update `ROBUST_FEATURE_INDICES` (add `{39, 40, 41}`), update docstring feature layout |
 | train.py | Add `HybridClassifier` class (flat MLP + TCN branch), replace `DirectionClassifier` usage, update `flat_dim` calculation |
 | tests/test_features.py | Update expected feature count 39→46, add tests for new features (bounds, NaN-free, shape, OB forward-fill behavior) |
+| CLAUDE.md | Update features table (39→46), architecture description (hybrid TCN), `ROBUST_FEATURE_INDICES`, version references (v6→v8) |
+| program.md | Update feature count and current approach description to reflect hybrid architecture |
 
 ## Success Criteria
 
@@ -239,14 +252,14 @@ Unchanged: 5 seeds, logit sum argmax. Each seed may learn different temporal pat
 **Target**: Improvement in Sortino or more passing symbols, with the hybrid TCN exploiting temporal patterns in the orderbook-edge features.
 
 **Validation**: Follow program.md experiment loop:
-1. Run v7 (46 features + hybrid TCN) with current hyperparameters
+1. Run v8 (46 features + hybrid TCN) with current hyperparameters
 2. Record in results.tsv, compare to v6 history
 3. If promising: Optuna search over TCN hyperparameters (major arch change)
-4. If worse: isolate by running v7 features with flat MLP to determine if it's features or architecture
+4. If worse: isolate by running v8 features with flat MLP to determine if it's features or architecture
 
 ## Risks
 
-1. **Two changes at once.** New features + new architecture. If results change, unclear which caused it. Mitigated by: fallback test (v7 features + flat MLP) to isolate.
+1. **Two changes at once.** New features + new architecture. If results change, unclear which caused it. Mitigated by: fallback test (v8 features + flat MLP) to isolate.
 
 2. **TCN overfitting.** 9K temporal params with 145 days of data. Mitigated by: dropout 0.2, tiny model, monitor train/val gap.
 
