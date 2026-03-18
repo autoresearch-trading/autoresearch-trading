@@ -73,15 +73,85 @@ For Run 9 (2-class): relabel flat samples as the direction of the forward return
 
 **Total budget:** 10 runs × ~8 min = ~80 min. Up to 12 runs if no early stopping = ~96 min.
 
-## Implementation
+## Implementation: Skill-Based Agent
 
-### File: `scripts/ablation_agent.py`
+### Architecture shift: skill, not script
 
-Single Python script, ~250 lines. No external dependencies beyond what's already installed.
+Instead of a rigid Python script (`scripts/ablation_agent.py`) with hardcoded decision logic, the ablation agent is implemented as a **Claude Code skill**. Claude itself is the agent — guided by the skill's protocol, it runs experiments, stores results, reasons about them between phases, and adapts.
 
-### train.py modifications
+**Why:** A Python script hardcodes `if/else` decisions. A skill lets Claude reason about results — e.g., "Run 3 scored 0.38 but had suspiciously few trades, maybe the min_hold/labeling mismatch is suppressing it — I should weight Phase 2 results more heavily." This adaptive reasoning is exactly what Claude is good at and what a script can't do.
 
-**CLI arguments** (added to existing argparse): The ablation agent controls train.py via command-line arguments, not file patching. This is safe (no source modification) and easy to verify.
+### Skill folder structure
+
+```
+.claude/skills/ablation/
+├── SKILL.md                        — main skill: protocol, decision tree, scoring
+├── resources/
+│   ├── phase1_configs.json         — pre-defined experiment configs
+│   ├── phase2_configs.json
+│   ├── phase3_configs.json
+│   ├── parse_summary.sh            — deterministic PORTFOLIO SUMMARY → JSON
+│   └── report_template.md          — template for final report
+└── data/
+    └── results.json                — accumulated results (Claude reads between phases)
+```
+
+### SKILL.md role
+
+The skill file contains:
+- **Trigger**: "Use when running ablation experiments on train.py configs"
+- **Protocol**: The 4-phase decision tree from this spec
+- **Scoring formula**: `score = sortino * 0.6 + (passing/25) * 0.4`
+- **Decision criteria**: How to pick winners between phases (score comparison, early stopping rules)
+- **Output requirements**: Results table, per-phase analysis, recommended config
+- **Gotchas section** (see below)
+
+### How Claude executes
+
+1. **Read skill** → understands the protocol and phases
+2. **Load phase configs** from `resources/phase1_configs.json`
+3. **For each experiment**: run `uv run python train.py --labeling fixed --min-hold 800 --fee-mult 1.5 ...`
+4. **Parse results** using `resources/parse_summary.sh` (deterministic extraction)
+5. **Append to `data/results.json`** — persistent memory across phases
+6. **Reason about results** — compare scores, decide next phase's configs
+7. **After all phases**: write report from template to `docs/ablation-report.md`
+
+### Progressive disclosure
+
+Claude doesn't load all configs upfront. Each phase's configs are in separate files. After completing Phase 1, Claude reads `data/results.json`, reasons about which labeling/features won, then reads `resources/phase2_configs.json` and adapts the configs based on Phase 1 outcomes. This mirrors the decision tree but with Claude's reasoning in the loop.
+
+### Memory between phases
+
+`data/results.json` accumulates all experiment results:
+
+```json
+[
+  {
+    "run": 1,
+    "phase": 1,
+    "name": "v5-sanity",
+    "config": {"features": 31, "labeling": "fixed", "min_hold": 800, "fee_mult": 1.5, "n_classes": 3},
+    "results": {"sortino": 0.225, "passing": 17, "trades": 890, "dd": 0.35, "wr": 0.0, "pf": 0.0},
+    "score": 0.407
+  }
+]
+```
+
+Claude reads this between phases to make decisions. This is the "standup log" pattern — Claude reads its own history and knows what changed.
+
+### Deterministic helper: parse_summary.sh
+
+```bash
+#!/bin/bash
+# Extract PORTFOLIO SUMMARY from train.py stdout into greppable key=value pairs
+grep -E "^(sortino|symbols_passing|num_trades|max_drawdown|win_rate|profit_factor):" "$1"
+```
+
+Claude uses this for reliable extraction rather than re-parsing stdout each time.
+
+## train.py modifications
+
+**CLI arguments** (added to existing argparse): The skill controls train.py via command-line arguments. Safe (no source modification) and easy to verify.
 
 ```python
 parser.add_argument("--labeling", choices=["triple", "fixed"], default="triple")
@@ -148,58 +218,19 @@ if args.feature_mask is not None:
 - In `train_one_model`: after labeling, relabel flat (0) samples using sign of forward return at the labeling horizon. Map labels to {0=long, 1=short}. Model outputs 2 classes.
 - In `make_ensemble_fn`: when n_classes=2, map model output 0→action 1 (long), 1→action 2 (short). The model never predicts flat — it always has a position.
 
-### ablation_agent.py logic
+## Gotchas
 
-```python
-def run_experiment(config: dict) -> dict:
-    """Run train.py with CLI args, parse results."""
-    # 1. Build CLI args from config dict
-    # 2. subprocess.run(["uv", "run", "python", "train.py", ...args], capture_output=True)
-    # 3. Parse PORTFOLIO SUMMARY from stdout
-    # 4. Return {sortino, passing, trades, dd, wr, pf, score}
+1. **Feature masking ≠ v5 features.** Zeroing columns 31-38 is not identical to v5's 31-feature cache. The normalization window statistics differ because 39 features are present during z-score/IQR computation. Run 1 will approximate but not exactly match the v5 baseline.
 
-def run_phase(phase_name, experiments):
-    """Run a list of experiments, print results table."""
-    results = []
-    for exp in experiments:
-        print(f"[{phase_name}] Running: {exp['name']}...")
-        result = run_experiment(exp)
-        results.append(result)
-        print(f"  score={result['score']:.3f} sortino={result['sortino']:.3f} passing={result['passing']}/25")
-    return results
+2. **Cache rebuild on first run.** v6 caches for all symbol/split combos must exist. The first train.py invocation per split will rebuild missing caches (~2 min/symbol). After the first full run, subsequent runs use cache and take ~8 min.
 
-def main():
-    # Phase 1
-    p1_results = run_phase("Phase 1", [
-        {"name": "v5-sanity", "features": 31, "labeling": "fixed", "min_hold": 800, "fee_mult": 1.5},
-        {"name": "v6-features", "features": 39, "labeling": "fixed", "min_hold": 800, "fee_mult": 1.5},
-        {"name": "triple-barrier", "features": 39, "labeling": "triple", "min_hold": 800, "fee_mult": 1.5},
-    ])
+3. **Phase 1 Run 3 mismatch.** Triple Barrier labels on 300-step horizon + min_hold=800 means the model can't exit when the barrier hits. This intentionally isolates labeling quality from trade frequency, but may understate Triple Barrier's true advantage.
 
-    # Decide: which features? which labeling?
-    best_features = pick_features(p1_results)
-    best_labeling = pick_labeling(p1_results)
+4. **2-class relabeling needs the forward return.** For `N_CLASSES=2`, flat samples need the forward return at the labeling horizon to decide long vs short. For Triple Barrier, this is `prices[i + max_hold]`; for fixed-horizon, `prices[i + horizon]`. Both are already available in the labeling functions.
 
-    # Phase 2: sweep min_hold
-    p2_experiments = [make_exp(best_features, best_labeling, mh, 1.5) for mh in [500, 300, 100]]
-    p2_results = run_phase("Phase 2", p2_experiments)
-    best_min_hold = pick_best(p2_results, "min_hold")
+5. **train.py `args` must be accessible in `train_one_model` and `eval_policy`.** Currently these functions don't receive CLI args. Either pass `args` as a parameter, or promote the relevant flags to module-level globals set in `main()`.
 
-    # Phase 3: sweep fee_mult + 2-class
-    p3_experiments = [
-        make_exp(best_features, best_labeling, best_min_hold, fm) for fm in [5.0, 10.0]
-    ] + [make_2class_exp(best_features, best_labeling, best_min_hold)]
-    p3_results = run_phase("Phase 3", p3_experiments)
-
-    # Phase 4: confirmation
-    best_config = pick_overall_best(p1_results + p2_results + p3_results)
-    final = run_phase("Phase 4", [best_config])
-
-    # Write report
-    write_report(all_results, final)
-```
-
-### Report format
+## Report format
 
 Written to `docs/ablation-report.md`:
 
@@ -234,8 +265,10 @@ Written to `docs/ablation-report.md`:
 
 | File | Change |
 |------|--------|
-| train.py | Add CLI args (--labeling, --forward-horizon, --min-hold, --fee-mult, --feature-mask, --n-classes). Re-add fixed-horizon labeling as make_labeled_dataset_fixed(). Add feature masking logic. Add 2-class support with action remapping in make_ensemble_fn. |
-| scripts/ablation_agent.py | New file. Experiment runner with decision tree logic. |
+| train.py | Add CLI args (--labeling, --forward-horizon, --min-hold, --fee-mult, --feature-mask, --n-classes). Re-add fixed-horizon labeling as make_labeled_dataset_fixed(). Add feature masking logic. Add 2-class support with action remapping in make_ensemble_fn. Pass args to train_one_model and eval_policy. |
+| .claude/skills/ablation/SKILL.md | New file. Skill definition with protocol, decision tree, scoring, gotchas. |
+| .claude/skills/ablation/resources/ | New folder. Phase configs (JSON), parse helper (sh), report template (md). |
+| .claude/skills/ablation/data/ | New folder. results.json populated during execution. |
 
 ## Success Criteria
 
