@@ -694,6 +694,256 @@ ROBUST_FEATURE_INDICES = {
     37,
 }
 
+# ============================================================
+# v9 Aristotle-Proven Features (5 features)
+# ============================================================
+
+V9_FEATURE_NAMES = [
+    "lambda_ofi",
+    "directional_conviction",
+    "vpin",
+    "hawkes_branching",
+    "reservation_price_dev",
+]
+
+V9_NUM_FEATURES = 5
+V9_ROBUST_FEATURE_INDICES = {4}  # reservation_price_dev (heavy-tailed)
+
+
+def compute_features_v9(
+    trades_df: pd.DataFrame,
+    orderbook_df: pd.DataFrame,
+    funding_df: pd.DataFrame,
+    trade_batch: int = 100,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute 5 Aristotle-proven features from raw data.
+
+    Returns: (features, timestamps, prices, raw_hawkes_branching)
+    where features has shape (num_batches, 5).
+
+    Feature layout:
+      0: lambda_ofi              - kyle_lambda * signed_notional (sufficient statistic)
+      1: directional_conviction  - TFI * |signed_notional| (sufficient statistic)
+      2: vpin                    - rolling mean of |TFI| (toxicity proxy)
+      3: hawkes_branching        - 1 - 1/sqrt(Var(N)/E[N]) (self-excitation)
+      4: reservation_price_dev   - orderbook_imbalance * realvol^2 (inventory pressure)
+    """
+    if trades_df.empty:
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
+    # --- Reuse batching logic from compute_features ---
+    trades_df = trades_df.copy()
+    trades_df["norm_side"] = trades_df["side"].apply(normalize_side)
+    trades_df["is_buy"] = trades_df["norm_side"] == "buy"
+    trades_df["notional"] = trades_df["price"] * trades_df["qty"]
+
+    num_trades = len(trades_df)
+    num_batches = num_trades // trade_batch
+    if num_batches == 0:
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
+    prices_arr = (
+        trades_df["price"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+    notionals_batched = (
+        trades_df["notional"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+    is_buy_batched = (
+        trades_df["is_buy"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+    ts_batched = (
+        trades_df["ts_ms"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+
+    # VWAP per batch
+    total_batch_notional = notionals_batched.sum(axis=1)
+    total_batch_qty = (
+        trades_df["qty"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+        .sum(axis=1)
+    )
+    vwap = np.where(total_batch_qty > 0, total_batch_notional / total_batch_qty, 0)
+    vwap = np.where(vwap == 0, prices_arr[:, -1], vwap)
+
+    # Returns
+    returns = np.zeros(num_batches)
+    returns[1:] = np.diff(np.log(np.clip(vwap, 1e-10, None)))
+
+    # --- Intermediate: TFI ---
+    buy_vol = (notionals_batched * is_buy_batched).sum(axis=1)
+    sell_vol = (notionals_batched * ~is_buy_batched).sum(axis=1)
+    total_vol = buy_vol + sell_vol
+    tfi = np.where(total_vol > 0, (buy_vol - sell_vol) / total_vol, 0.0)
+
+    # --- Intermediate: signed_notional ---
+    signed_notional = buy_vol - sell_vol
+
+    # --- Intermediate: kyle_lambda (rolling 50-batch) ---
+    ret_s = pd.Series(returns)
+    sn_s = pd.Series(signed_notional)
+    rolling_cov = ret_s.rolling(window=50, min_periods=10).cov(sn_s)
+    rolling_var = sn_s.rolling(window=50, min_periods=10).var()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        kyle_lambda = np.where(
+            rolling_var.values > 1e-20,
+            rolling_cov.values / rolling_var.values,
+            0.0,
+        )
+    kyle_lambda = np.nan_to_num(kyle_lambda)
+
+    # --- Intermediate: realvol (rolling 10-batch std) ---
+    realvol = (
+        pd.Series(returns).rolling(window=10, min_periods=2).std().fillna(0).values
+    )
+
+    # --- Intermediate: weighted_imbalance_5lvl (from orderbook) ---
+    weighted_imbalance = _compute_orderbook_imbalance(
+        orderbook_df, ts_batched[:, -1], num_batches
+    )
+
+    # === Feature 0: lambda_ofi ===
+    lambda_ofi = kyle_lambda * signed_notional
+
+    # === Feature 1: directional_conviction ===
+    directional_conviction = tfi * np.abs(signed_notional)
+
+    # === Feature 2: vpin ===
+    abs_tfi = np.abs(tfi)
+    vpin = pd.Series(abs_tfi).rolling(window=50, min_periods=1).mean().fillna(0).values
+
+    # === Feature 3: hawkes_branching ===
+    # Theorem 11 proved: for fixed-size batches, use arrival RATE (B/duration),
+    # not event counts. Var(rate)/E[rate] incorporates the rate-dependence that
+    # the fixed-time-window formula misses. The naive count-based estimator is
+    # wrong because total trades per batch = trade_batch (constant).
+    #
+    # Proved: n_hat = 1 - 1/sqrt(Var(R)/E[R]) is monotone, in (0,1) when overdispersed,
+    # and = 0 at Poisson baseline.
+    batch_first_ts = ts_batched[:, 0]
+    batch_last_ts = ts_batched[:, -1]
+    batch_duration_s = (batch_last_ts - batch_first_ts) / 1000.0
+    # Arrival rate per batch: R_k = B / D_k
+    arrival_rates = np.where(
+        batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+    )
+
+    hawkes_branching = np.zeros(num_batches)
+    hawkes_window = 50
+    for i in range(hawkes_window, num_batches):
+        window_rates = arrival_rates[i - hawkes_window : i]
+        window_rates = window_rates[window_rates > 0]  # skip zero-duration batches
+        if len(window_rates) < 10:
+            continue
+        mean_r = window_rates.mean()
+        var_r = window_rates.var()
+        if mean_r > 0:
+            ratio = var_r / mean_r
+            if ratio > 1.0:  # overdispersed rates -> self-excitation
+                hawkes_branching[i] = 1.0 - 1.0 / np.sqrt(ratio)
+        # else: stays 0.0 (Poisson or sub-dispersed)
+    hawkes_branching = np.clip(hawkes_branching, 0.0, 0.99)
+    raw_hawkes_branching = hawkes_branching.copy()
+
+    # === Feature 4: reservation_price_dev ===
+    reservation_price_dev = weighted_imbalance * (realvol**2)
+
+    # --- Stack features ---
+    features = np.column_stack(
+        [
+            lambda_ofi,
+            directional_conviction,
+            vpin,
+            hawkes_branching,
+            reservation_price_dev,
+        ]
+    )
+
+    batch_timestamps = ts_batched[:, -1]
+    batch_prices = vwap
+
+    return features, batch_timestamps, batch_prices, raw_hawkes_branching
+
+
+def _compute_orderbook_imbalance(
+    orderbook_df: pd.DataFrame, batch_timestamps: np.ndarray, num_batches: int
+) -> np.ndarray:
+    """Compute weighted 5-level orderbook imbalance aligned to batch timestamps."""
+    imbalance = np.zeros(num_batches)
+    if orderbook_df.empty:
+        return imbalance
+
+    ob_ts = orderbook_df["ts_ms"].values
+    ob_idx = 0
+
+    for i in range(num_batches):
+        # Find latest orderbook snapshot before this batch
+        while ob_idx < len(ob_ts) - 1 and ob_ts[ob_idx + 1] <= batch_timestamps[i]:
+            ob_idx += 1
+
+        if ob_idx >= len(ob_ts) or ob_ts[ob_idx] > batch_timestamps[i]:
+            continue
+
+        row = orderbook_df.iloc[ob_idx]
+        bids = row.get("bids", [])
+        asks = row.get("asks", [])
+
+        # Exponential weights matching v6 weighted_imbalance_5lvl (prepare.py ~line 454)
+        weights = [1.0, 0.5, 1 / 3, 0.25, 0.2]
+        bid_depth = (
+            sum(
+                w * b["qty"] * b["price"]
+                for w, b in zip(weights[: min(5, len(bids))], bids[:5])
+            )
+            if len(bids) > 0
+            else 0
+        )
+        ask_depth = (
+            sum(
+                w * a["qty"] * a["price"]
+                for w, a in zip(weights[: min(5, len(asks))], asks[:5])
+            )
+            if len(asks) > 0
+            else 0
+        )
+        total = bid_depth + ask_depth
+        if total > 0:
+            imbalance[i] = (bid_depth - ask_depth) / total
+
+    return imbalance
+
+
+def normalize_features_v9(features: np.ndarray, window: int = 1000) -> np.ndarray:
+    """Normalize v9 features. IQR for feature 4, z-score for rest."""
+    if features.ndim != 2 or len(features) == 0:
+        return features
+
+    normalized = np.zeros_like(features)
+    for col in range(features.shape[1]):
+        series = pd.Series(features[:, col])
+        if col in V9_ROBUST_FEATURE_INDICES:
+            rolling_median = series.rolling(window=window, min_periods=100).median()
+            rolling_q75 = series.rolling(window=window, min_periods=100).quantile(0.75)
+            rolling_q25 = series.rolling(window=window, min_periods=100).quantile(0.25)
+            iqr = (rolling_q75 - rolling_q25).replace(0, 1)
+            z = (series - rolling_median) / iqr
+        else:
+            rolling_mean = series.rolling(window=window, min_periods=100).mean()
+            rolling_std = series.rolling(window=window, min_periods=100).std()
+            z = (series - rolling_mean) / rolling_std.replace(0, 1)
+        normalized[:, col] = z.fillna(0).values
+
+    np.clip(normalized, -5, 5, out=normalized)
+    return normalized
+
 
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     """Hybrid rolling normalization.
@@ -731,7 +981,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v6"  # v6: 39 features (v5 + 8 tape reading features)
+_FEATURE_VERSION = "v9"  # v9: 5 Aristotle-proven features
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
