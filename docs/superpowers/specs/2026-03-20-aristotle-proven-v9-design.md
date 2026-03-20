@@ -2,11 +2,11 @@
 
 **Date**: 2026-03-20
 **Status**: Design approved, pending implementation
-**Branch**: `autoresearch/v9-hybrid-tcn`
+**Branch**: `autoresearch/v9-aristotle-proven`
 
 ## Motivation
 
-The v8 architecture (46 features, window=50, ~692K params) regressed from v5 baseline (Sortino 0.230 → 0.137). Root cause: dimensionality overfitting — flat MLP can't separate signal from noise across 46 features.
+The v6 baseline (39 features, window=50, flat MLP, ~600K params) achieved Sortino 0.230 with 18/25 passing symbols. Attempts to add more features (v8: 46 features) regressed to 0.137. Root cause: dimensionality overfitting — flat MLP can't separate signal from noise across many features.
 
 We submitted 10 theorems to Harmonic's Aristotle formal theorem prover and obtained **133 formally verified results in Lean 4** (zero sorry statements). These proofs provide mathematically guaranteed design principles rather than empirical guesswork.
 
@@ -22,7 +22,7 @@ We submitted 10 theorems to Harmonic's Aristotle formal theorem prover and obtai
 - **Window ≥ 75 is the proved minimum** for TCN to extract temporal structure with AR(1) autocorrelation ρ=0.95 and n features (Theorem 5).
 - **Hybrid weak dominance proved** (hybrid ≤ min(flat, tcn) risk), but strict dominance is false — if flat MLP already achieves Bayes risk, TCN adds nothing (Theorem 5).
 - **Ensemble majority voting requires α > 1/2** to help, not α > 1/3. At α=0.4, ensembling hurts (Theorem 10).
-- **v9 model complexity is 16.3% of v8** (375 vs 2300 effective dims, 55K vs 692K params) (Theorem 10).
+- **v9 model complexity is ~20% of v6** (375 vs 1950 flat dims, 55K vs ~600K params) (Theorem 10).
 
 ### Labeling & Barriers
 - **α_min(f) = 1/2 + 1/(2f)** is the minimum accuracy for profitability (Theorem 3, 9).
@@ -43,14 +43,14 @@ We submitted 10 theorems to Harmonic's Aristotle formal theorem prover and obtai
 - **Hurst exponent can go negative** when S > R (Theorem 0) — our clip to [0,1] hides a bug.
 - **f* formula was wrong** in original conjecture — Aristotle provided the correct derivation (Theorem 3).
 - **Hawkes supercritical threshold is α/β=1**, not 0.5 (Theorem 4).
-- **Current feature 44 (hawkes_ratio) is NOT the branching ratio** — it's buy/sell imbalance, not self-excitation.
+- **v8's feature 44 (hawkes_ratio) was NOT the branching ratio** — it was buy/sell imbalance, not self-excitation. (v6 base doesn't have this feature, so not relevant here, but recorded for context.)
 - **Growth threshold ≠ accuracy threshold** — α_min is for expected value, log-growth threshold depends on both f and c (Theorem 9).
 
 ## Design
 
 ### Feature Engineering (5 features, v9)
 
-Replace all 46 features with 5 formally verified features:
+Replace all 39 v6 features with 5 formally verified features:
 
 | # | Feature | Formula | Proved By |
 |---|---------|---------|-----------|
@@ -61,17 +61,17 @@ Replace all 46 features with 5 formally verified features:
 | 4 | `reservation_price_dev` | weighted_imbalance_5lvl × realvol² | Theorem 7 (Avellaneda-Stoikov) |
 
 **Intermediate features needed** (computed but not used as model inputs):
-- `kyle_lambda`: rolling 50-batch Cov(return, signed_notional) / Var(signed_notional) — same as v8 feature 9
+- `kyle_lambda`: rolling 50-batch Cov(return, signed_notional) / Var(signed_notional) — same as v6 feature 9
 - `signed_notional`: buy_notional - sell_notional per batch (trade-based flow, NOT orderbook OFI)
-- `TFI`: (n_buys - n_sells) / (n_buys + n_sells) — same as v8 feature 6
-- `realvol`: rolling 10-batch std of returns — same as v8 feature 4
-- `weighted_imbalance_5lvl`: orderbook imbalance — same as v8 feature 14
+- `TFI`: (n_buys - n_sells) / (n_buys + n_sells) — same as v6 feature 6
+- `realvol`: rolling 10-batch std of returns — same as v6 feature 4
+- `weighted_imbalance_5lvl`: orderbook imbalance — same as v6 feature 14
 - `trade_counts_per_batch`: number of trades per batch (for Hawkes variance/mean)
 
 **Clarification on signed_flow vs OFI**:
-- Feature 0 (`lambda_ofi`): `kyle_lambda × signed_notional` — trade-based signed flow (v8 line 345)
+- Feature 0 (`lambda_ofi`): `kyle_lambda × signed_notional` — trade-based signed flow (prepare.py ~line 345)
 - Feature 1 (`directional_conviction`): `TFI × |signed_notional|` — trade-based flow magnitude
-- These are both trade-derived, not orderbook-derived OFI (feature 16 in v8)
+- These are both trade-derived, not orderbook-derived OFI (feature 16 in v6)
 
 **Hawkes branching domain guards**:
 - When `Var(N) <= E[N]` (not overdispersed): clamp `hawkes_branching` to 0.0
@@ -80,7 +80,7 @@ Replace all 46 features with 5 formally verified features:
 
 **Normalization**: All 5 features use rolling z-score (window=1000, min_periods=100). Exception: `reservation_price_dev` (feature 4) uses IQR-based robust scaling since realvol² is heavy-tailed. Clip to [-5, 5].
 
-**Cache**: Bump `_FEATURE_VERSION` from "v8" to "v9".
+**Cache**: Bump `_FEATURE_VERSION` from "v6" to "v9".
 
 ### Architecture
 
@@ -109,11 +109,11 @@ Ensemble: 5 seeds, logit sum argmax
 ~55K parameters (at hdim=128)
 ```
 
-**Implementation**: Modify `HybridClassifier.__init__` — change Conv1d intermediate channels from 32→16, pool output from 16→8. The `n_feat` input channel is already parameterized via `obs_shape`. Drop `temporal_summaries` (v8 experiment, not carried forward).
+**Implementation**: Add `HybridClassifier` to train.py (v6 base only has `DirectionClassifier`). Conv1d channels: 5→16→8, pool to 8. The existing `DirectionClassifier` stays for Step 1a comparison.
 
 **Rationale**:
-- 375 flat dims (vs 2300) — 84% reduction in input dimensionality
-- 55K params (vs 692K) — P/N ratio drops from 0.28 to 0.022 (Theorem 10)
+- 375 flat dims (vs 1950 in v6) — 81% reduction in input dimensionality
+- 55K params (vs ~600K in v6) — P/N ratio drops significantly (Theorem 10)
 - TCN gets 75 timesteps (proved minimum for temporal extraction)
 - Ensemble of 5 is valid only if per-model α > 0.5 (Theorem 10 correction)
 
@@ -179,7 +179,7 @@ hawkes_branching_mean: {mean_branching:.4f}
 
 | Step | Change | Expected Effect |
 |------|--------|----------------|
-| 1a | Replace 46 features with 5, keep DirectionClassifier, window=50, fee_mult=1.5 | Isolate feature reduction effect |
+| 1a | Replace 39 features with 5, keep DirectionClassifier, window=50, fee_mult=1.5 | Isolate feature reduction effect |
 | 1b | Switch to smaller HybridClassifier (55K params) | Isolate model size effect |
 | 2 | Increase window 50→75 | TCN branch contributes → Sortino ↑ |
 | 3 | Increase fee_mult to [4, 12] range | Lower α_min → more profitable trades |
@@ -193,7 +193,7 @@ Each step is a separate experiment in `results.tsv`. If any step regresses, stop
 1. **Feature sanity** — verify 5 features have correct shapes, no NaNs, expected bounds
 2. **Hawkes estimator** — synthetic Hawkes process with known α/β, verify n̂ recovers true branching ratio
 3. **Regime gate** — verify gate forces flat when hawkes_branching < r_min
-4. **Backward compat** — v8 cache untouched, v9 gets new cache key
+4. **Backward compat** — v6 cache untouched, v9 gets new cache key
 5. **Accuracy diagnostic** — verify α_min computation matches proved values
 
 ## Proof Artifacts
