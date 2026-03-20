@@ -109,6 +109,26 @@ class TestV9HawkesBranching:
         # Var = 0, so ratio = 0, which is <= 1, so branching = 0
         assert var_mean_ratio == 0.0
 
+    def test_hawkes_synthetic_overdispersed(self, make_trades, make_orderbook, make_funding):
+        """Synthetic data with clustered buys should produce non-zero branching."""
+        # Create trades where buys cluster heavily in some batches
+        # This creates variance in buy-counts > mean, triggering overdispersion
+        trades = make_trades(n=5000, seed=99)
+        # Force heavy buy clustering in first half
+        sides = trades["side"].values.copy()
+        for i in range(0, 2500):
+            if i % 100 < 80:  # 80% buys in first batches
+                sides[i] = "open_long"
+        for i in range(2500, 5000):
+            if i % 100 < 20:  # 20% buys in later batches
+                sides[i] = "open_long"
+        trades["side"] = sides
+        features, _, _, raw_hawkes = compute_features_v9(
+            trades, make_orderbook(n=1250), make_funding(n=50), trade_batch=100
+        )
+        # With clustered buys, some hawkes values should be > 0
+        assert np.any(raw_hawkes > 0), "Expected non-zero branching from clustered buys"
+
 class TestV9ReservationPriceDev:
     def test_reservation_finite(self, make_trades, make_orderbook, make_funding):
         features, _, _, _ = compute_features_v9(
@@ -125,7 +145,7 @@ Expected: FAIL with `ImportError: cannot import name 'compute_features_v9' from 
 
 - [ ] **Step 3: Implement compute_features_v9()**
 
-Add to `prepare.py` after the existing `compute_features()` function (~line 680):
+Add to `prepare.py` after `ROBUST_FEATURE_INDICES` (after line 695, before `normalize_features`):
 
 ```python
 V9_FEATURE_NAMES = [
@@ -235,11 +255,13 @@ def compute_features_v9(
     vpin = pd.Series(abs_tfi).rolling(window=50, min_periods=1).mean().fillna(0).values
 
     # === Feature 3: hawkes_branching ===
-    trade_counts = is_buy_batched.sum(axis=1) + (~is_buy_batched).sum(axis=1)
+    # Use buy-trade counts per batch (NOT total trades, which is always trade_batch).
+    # Buy counts vary per batch and capture clustering/self-excitation.
+    buy_counts = is_buy_batched.sum(axis=1).astype(float)
     hawkes_branching = np.zeros(num_batches)
     hawkes_window = 50
     for i in range(hawkes_window, num_batches):
-        window_counts = trade_counts[i - hawkes_window : i].astype(float)
+        window_counts = buy_counts[i - hawkes_window : i]
         mean_n = window_counts.mean()
         var_n = window_counts.var()
         if mean_n > 0 and var_n > mean_n:  # overdispersed
@@ -290,8 +312,16 @@ def _compute_orderbook_imbalance(
         bids = row.get("bids", [])
         asks = row.get("asks", [])
 
-        bid_depth = sum(b["qty"] for b in bids[:5]) if len(bids) > 0 else 0
-        ask_depth = sum(a["qty"] for a in asks[:5]) if len(asks) > 0 else 0
+        # Exponential weights matching v6 weighted_imbalance_5lvl (prepare.py ~line 454)
+        weights = [1.0, 0.5, 1/3, 0.25, 0.2]
+        bid_depth = sum(
+            w * b["qty"] * b["price"]
+            for w, b in zip(weights[:min(5, len(bids))], bids[:5])
+        ) if len(bids) > 0 else 0
+        ask_depth = sum(
+            w * a["qty"] * a["price"]
+            for w, a in zip(weights[:min(5, len(asks))], asks[:5])
+        ) if len(asks) > 0 else 0
         total = bid_depth + ask_depth
         if total > 0:
             imbalance[i] = (bid_depth - ask_depth) / total
@@ -390,9 +420,37 @@ def load_cached(symbol, cache_dir, start, end, trade_batch):
     return data["features"], data["timestamps"], data["prices"], raw_hawkes
 ```
 
-- [ ] **Step 2: Update make_env to use v9 features when version is v9**
+- [ ] **Step 2: Update prepare_data and make_env for v9**
 
-In `make_env()`, detect v9 and use `compute_features_v9` + `normalize_features_v9`. Store `raw_hawkes` on the env object for the regime gate.
+The `load_cached` return changes from 3-tuple to 4-tuple. Update all callers:
+
+In `prepare_data()` (~line 810), update the unpack:
+
+```python
+cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
+if cached is not None:
+    features, timestamps, prices, raw_hawkes = cached
+    result[symbol][split_name] = (features, timestamps, prices, raw_hawkes)
+    continue
+```
+
+And the compute path (~line 824):
+
+```python
+features, timestamps, prices, raw_hawkes = compute_features_v9(
+    trades_df, orderbook_df, funding_df, trade_batch
+)
+cache_features(symbol, features, timestamps, prices, CACHE_DIR, start, end, trade_batch, raw_hawkes=raw_hawkes)
+```
+
+In `make_env()`, store `raw_hawkes` on the TradingEnv:
+
+```python
+# After creating env
+env.raw_hawkes = raw_hawkes  # for regime gate in evaluate()
+```
+
+Add a `USE_V9 = True` flag at the top of prepare.py to control which feature function is used. When `USE_V9 = False`, the original `compute_features` + `normalize_features` path is used (for Step 1a comparison).
 
 - [ ] **Step 3: Run all tests**
 
@@ -432,7 +490,7 @@ def test_hybrid_forward_shape():
 def test_hybrid_param_count():
     model = HybridClassifier(obs_shape=(75, 5), n_classes=3, hidden_dim=128, num_layers=2)
     n_params = sum(p.numel() for p in model.parameters())
-    assert n_params < 100_000  # should be ~55K
+    assert 60_000 < n_params < 80_000  # ~68K (flat=385+8=393 combined, TCN=808)
 
 def test_hybrid_different_window():
     model = HybridClassifier(obs_shape=(50, 5), n_classes=3, hidden_dim=128, num_layers=2)
@@ -575,16 +633,51 @@ if r_min > 0 and hasattr(env_test, 'raw_hawkes') and env_test.raw_hawkes is not 
         action = 0
 ```
 
-Add diagnostics at the end of evaluate():
+Add diagnostics at the end of evaluate(), after the trade-level metrics:
 
 ```python
-# Regime gate diagnostics
+# Regime gate diagnostics (spec lines 170-176)
 fee_mult = getattr(env_test, '_fee_mult', 1.0)
-alpha_min = 0.5 + 1.0 / (2.0 * fee_mult) if fee_mult > 0 else 1.0
-print(f"alpha_min: {alpha_min:.4f}")
-if hasattr(env_test, 'raw_hawkes') and env_test.raw_hawkes is not None:
-    mean_branching = np.mean(env_test.raw_hawkes)
-    print(f"hawkes_branching_mean: {mean_branching:.4f}")
+alpha_min_val = 0.5 + 1.0 / (2.0 * fee_mult) if fee_mult > 0 else 1.0
+print(f"alpha_min: {alpha_min_val:.4f}")
+
+# Empirical directional accuracy: fraction of long/short predictions that matched return sign
+if directional_total > 0:
+    print(f"empirical_accuracy: {directional_correct / directional_total:.4f}")
+
+# Regime filter rate: fraction of steps forced to flat by gate
+if r_min > 0 and hasattr(env_test, 'raw_hawkes') and env_test.raw_hawkes is not None:
+    filtered = np.sum(env_test.raw_hawkes[:env_test.num_steps] < r_min)
+    total_s = env_test.num_steps
+    print(f"regime_filter_rate: {filtered / total_s:.4f}")
+    print(f"hawkes_branching_mean: {np.mean(env_test.raw_hawkes):.4f}")
+
+# Kelly optimal fee_mult from empirical win/loss rates
+if trade_pnls:
+    c = FEE_BPS / 10000
+    p_w = len(wins) / len(trade_pnls) if trade_pnls else 0
+    p_l = len(losses) / len(trade_pnls) if trade_pnls else 0
+    if (p_w + p_l) > 0 and c > 0:
+        f_kelly = (p_w - p_l) * (1 - c) / ((p_w + p_l) * c)
+        print(f"f_opt_kelly: {f_kelly:.4f}")
+```
+
+Note: `directional_correct` and `directional_total` must be tracked in the step loop. Add counters:
+
+```python
+directional_correct = 0
+directional_total = 0
+```
+
+In the step loop, after `action = policy_fn(obs)` and before the gate:
+
+```python
+# Track directional accuracy (for diagnostics)
+if action in (1, 2):  # model predicts long or short
+    directional_total += 1
+    actual_return = info.get("step_pnl", 0)
+    if (action == 1 and actual_return > 0) or (action == 2 and actual_return < 0):
+        directional_correct += 1
 ```
 
 - [ ] **Step 4: Run all tests**
