@@ -13,7 +13,7 @@ We submitted 10 theorems to Harmonic's Aristotle formal theorem prover and obtai
 ## Key Proven Results
 
 ### Features
-- **(λ·OFI, TFI·|OFI|) is a sufficient statistic** for forward returns under the Kyle model (Theorem 1). All 46 features are redundant — 2 numbers capture all predictive information.
+- **(λ·OFI, TFI·|OFI|) is a sufficient statistic** for forward returns under the Kyle model (Theorem 1). Under Kyle's assumptions, 2 numbers capture all predictive information. **Caveat**: real DEX markets deviate from Kyle (multiple informed traders, no designated MM, funding mechanics). The 46→5 reduction is a hypothesis to be validated empirically at Step 1 of the rollout — if Sortino drops, the Kyle model's assumptions don't transfer and we add features back.
 - **VPIN ∈ [0,1]**, quasi-convex, =0 iff balanced flow, =1 iff one-sided (Theorem 7).
 - **Hawkes branching ratio n̂ = 1 - 1/√(Var(N)/E[N])** is a consistent estimator, in (0,1) for overdispersed counts (Theorem 8).
 - **Avellaneda-Stoikov reservation price deviation** increases in inventory, volatility, and time; spread is always positive and decreasing in arrival intensity (Theorem 7).
@@ -58,17 +58,27 @@ Replace all 46 features with 5 formally verified features:
 | 1 | `directional_conviction` | TFI × |OFI| | Theorem 1 (sufficient statistic) |
 | 2 | `vpin` | rolling 50-batch mean of |TFI| | Theorem 7 (bounds, quasi-convexity) |
 | 3 | `hawkes_branching` | 1 - 1/√(Var(N)/E[N]) over rolling 50-batch window | Theorem 8 (consistent estimator) |
-| 4 | `reservation_price_dev` | weighted_imbalance_5lvl × realvol² × time_proxy | Theorem 7 (Avellaneda-Stoikov) |
+| 4 | `reservation_price_dev` | weighted_imbalance_5lvl × realvol² | Theorem 7 (Avellaneda-Stoikov) |
 
 **Intermediate features needed** (computed but not used as model inputs):
-- `kyle_lambda`: rolling 50-batch Cov(return, signed_flow) / Var(signed_flow) — same as v8 feature 9
-- `signed_flow` (OFI): net buy - sell notional per batch — same as v8
+- `kyle_lambda`: rolling 50-batch Cov(return, signed_notional) / Var(signed_notional) — same as v8 feature 9
+- `signed_notional`: buy_notional - sell_notional per batch (trade-based flow, NOT orderbook OFI)
 - `TFI`: (n_buys - n_sells) / (n_buys + n_sells) — same as v8 feature 6
 - `realvol`: rolling 10-batch std of returns — same as v8 feature 4
 - `weighted_imbalance_5lvl`: orderbook imbalance — same as v8 feature 14
 - `trade_counts_per_batch`: number of trades per batch (for Hawkes variance/mean)
 
-**Normalization**: All 5 features use rolling z-score (window=1000, min_periods=100). No IQR split needed — feature set is small and well-behaved. Clip to [-5, 5].
+**Clarification on signed_flow vs OFI**:
+- Feature 0 (`lambda_ofi`): `kyle_lambda × signed_notional` — trade-based signed flow (v8 line 345)
+- Feature 1 (`directional_conviction`): `TFI × |signed_notional|` — trade-based flow magnitude
+- These are both trade-derived, not orderbook-derived OFI (feature 16 in v8)
+
+**Hawkes branching domain guards**:
+- When `Var(N) <= E[N]` (not overdispersed): clamp `hawkes_branching` to 0.0
+- When `E[N] = 0` (empty batch): set to 0.0
+- Clip final values to [0.0, 0.99] for numerical safety
+
+**Normalization**: All 5 features use rolling z-score (window=1000, min_periods=100). Exception: `reservation_price_dev` (feature 4) uses IQR-based robust scaling since realvol² is heavy-tailed. Clip to [-5, 5].
 
 **Cache**: Bump `_FEATURE_VERSION` from "v8" to "v9".
 
@@ -99,6 +109,8 @@ Ensemble: 5 seeds, logit sum argmax
 ~55K parameters (at hdim=128)
 ```
 
+**Implementation**: Modify `HybridClassifier.__init__` — change Conv1d intermediate channels from 32→16, pool output from 16→8. The `n_feat` input channel is already parameterized via `obs_shape`. Drop `temporal_summaries` (v8 experiment, not carried forward).
+
 **Rationale**:
 - 375 flat dims (vs 2300) — 84% reduction in input dimensionality
 - 55K params (vs 692K) — P/N ratio drops from 0.28 to 0.022 (Theorem 10)
@@ -108,10 +120,11 @@ Ensemble: 5 seeds, logit sum argmax
 ### Labeling
 
 - Triple barrier stays (mutual exclusivity and exhaustiveness proved, Theorem 0)
-- `fee_mult` Optuna range: **[4.0, 12.0]** (up from [1.0, 4.0])
-  - At f=4: α_min=62.5%. At f=8: α_min=56.25%. At f=12: α_min=54.2%
-  - Current f=1.5 requires 83.3% — proved to be nearly impossible
+- `fee_mult` Optuna range: **[1.5, 12.0]** (widened from [1.0, 4.0])
+  - At f=1.5: α_min=83.3%. At f=4: α_min=62.5%. At f=8: α_min=56.25%
+  - Theory says higher is easier, but empirical history shows high fee_mult underperformed (f=8→Sortino -0.003). Keep f=1.5 accessible since it's the historical best; the feature reduction may change the dynamics.
 - `MAX_HOLD_STEPS` stays at 300
+- `MIN_HOLD`: 200 (moderate — regime gate handles quality filtering, so MIN_HOLD can be relaxed from current 500)
 - `FEE_BPS` stays at 5
 
 ### Regime Gate
@@ -119,9 +132,11 @@ Ensemble: 5 seeds, logit sum argmax
 Post-classifier gate in `evaluate()` and inference:
 
 ```python
-if hawkes_branching[step] < r_min:
+if raw_hawkes_branching[step] < r_min:
     action = 0  # force flat
 ```
+
+**Raw feature storage**: `compute_features()` returns both the normalized feature array AND a separate `raw_hawkes_branching` array (un-normalized). This is stored alongside features in the `.npz` cache. The gate operates on raw values, not z-scored values.
 
 - `r_min` is an Optuna hyperparameter, range [0.3, 0.7]
 - Proved: gating improves accuracy when SNR is monotone in Hawkes branching (Theorem 9)
@@ -137,13 +152,15 @@ if hawkes_branching[step] < r_min:
 - Recency weighting: decay=1.0 (recent samples ~2.7x weight)
 - Epochs: 25
 - Ensemble: 5 seeds (valid when α > 0.5; monitor and disable if α < 0.5)
+- **Ensemble validity check**: After training each seed, compute directional accuracy on validation set. If mean α < 0.5, fall back to single best model instead of ensemble. Log warning.
+- **α_min early stopping**: During training, if validation accuracy < α_min for 5 consecutive epochs, skip remaining seeds (classifier can't profit at current fee_mult)
 
 **Optuna search space**:
 | Parameter | Range | Rationale |
 |-----------|-------|-----------|
 | `lr` | [5e-4, 5e-3] | Same |
 | `hdim` | [64, 128, 256] | Smaller model |
-| `fee_mult` | [4.0, 12.0] | Proved: low fee_mult requires impossible accuracy |
+| `fee_mult` | [1.5, 12.0] | Theory favors higher, empirical history keeps 1.5 accessible |
 | `r_min` | [0.3, 0.7] | Regime gate threshold |
 | `batch_size` | [128, 256, 512] | Same |
 
@@ -162,7 +179,8 @@ hawkes_branching_mean: {mean_branching:.4f}
 
 | Step | Change | Expected Effect |
 |------|--------|----------------|
-| 1 | Replace 46 features with 5, keep window=50, fee_mult=1.5 | Reduced overfitting → Sortino ↑ |
+| 1a | Replace 46 features with 5, keep DirectionClassifier, window=50, fee_mult=1.5 | Isolate feature reduction effect |
+| 1b | Switch to smaller HybridClassifier (55K params) | Isolate model size effect |
 | 2 | Increase window 50→75 | TCN branch contributes → Sortino ↑ |
 | 3 | Increase fee_mult to [4, 12] range | Lower α_min → more profitable trades |
 | 4 | Add regime gate (r_min via Optuna) | Higher quality trades → Sortino ↑ |
