@@ -1291,7 +1291,12 @@ class TradingEnv(gymnasium.Env):
 
 
 def evaluate(
-    env_test: TradingEnv, policy_fn, min_trades: int = 50, max_drawdown: float = 0.20
+    env_test: TradingEnv,
+    policy_fn,
+    min_trades: int = 50,
+    max_drawdown: float = 0.20,
+    r_min: float = 0.0,
+    fee_mult: float = 1.0,
 ) -> float:
     """Run policy on FULL test env, return Sortino ratio.
 
@@ -1314,10 +1319,32 @@ def evaluate(
     prev_position = 0
     step_num = 0
 
+    # Directional accuracy tracking
+    directional_correct = 0
+    directional_total = 0
+    prev_action = 0
+
     # Run full test set — step directly, ignoring episode truncation
     while env_test._idx < env_test.num_steps:
         action = policy_fn(obs)
+        # Regime gate: force flat when Hawkes branching below threshold
+        if (
+            r_min > 0
+            and hasattr(env_test, "raw_hawkes")
+            and env_test.raw_hawkes is not None
+        ):
+            if env_test.raw_hawkes[env_test._idx] < r_min:
+                action = 0
         obs, _, done, truncated, info = env_test.step(action)
+        # Track directional accuracy: did PREVIOUS action's direction match this step's return?
+        step_pnl = info.get("step_pnl", 0)
+        if prev_action in (1, 2):
+            directional_total += 1
+            if (prev_action == 1 and step_pnl > 0) or (
+                prev_action == 2 and step_pnl < 0
+            ):
+                directional_correct += 1
+        prev_action = action
         step_returns.append(info["step_pnl"])
         max_dd = max(max_dd, info["drawdown"])
         total_trades = info["trade_count"]
@@ -1404,6 +1431,28 @@ def evaluate(
         print(f"avg_profit_per_trade: {avg_profit:.6f}")
         print(f"profit_factor: {profit_factor:.4f}")
         print(f"avg_hold_steps: {avg_hold:.0f}")
+
+        # Kelly optimal fee_mult (Theorem 3)
+        c = FEE_BPS / 10000
+        p_w = len(wins) / len(trade_pnls)
+        p_l = len(losses) / len(trade_pnls)
+        if (p_w + p_l) > 0 and c > 0:
+            f_kelly = (p_w - p_l) * (1 - c) / ((p_w + p_l) * c)
+            print(f"f_opt_kelly: {f_kelly:.4f}")
+
+    # Regime gate diagnostics
+    alpha_min_val = 0.5 + 1.0 / (2.0 * fee_mult) if fee_mult > 0 else 1.0
+    print(f"alpha_min: {alpha_min_val:.4f}")
+    if directional_total > 0:
+        print(f"empirical_accuracy: {directional_correct / directional_total:.4f}")
+    if (
+        r_min > 0
+        and hasattr(env_test, "raw_hawkes")
+        and env_test.raw_hawkes is not None
+    ):
+        filtered = np.sum(env_test.raw_hawkes[: env_test.num_steps] < r_min)
+        print(f"regime_filter_rate: {filtered / env_test.num_steps:.4f}")
+        print(f"hawkes_branching_mean: {np.mean(env_test.raw_hawkes):.4f}")
 
     return sortino
 

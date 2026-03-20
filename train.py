@@ -23,9 +23,9 @@ SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
-WINDOW_SIZE = 50
+WINDOW_SIZE = 75  # Proved minimum for TCN (Theorem 5)
 TRADE_BATCH = 100
-MIN_HOLD = 500  # ~8 min between trades (closer to v5 selectivity)
+MIN_HOLD = 200  # Moderate — regime gate handles quality filtering
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
 
@@ -33,10 +33,11 @@ DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
     "lr": 1e-3,
-    "hdim": 256,
+    "hdim": 128,
     "nlayers": 2,
     "batch_size": 256,
-    "fee_mult": 10.0,  # moderate barrier width
+    "fee_mult": 8.0,
+    "r_min": 0.4,  # Hawkes regime gate threshold
 }
 
 
@@ -233,7 +234,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     y_t = torch.tensor(y, dtype=torch.long, device=DEVICE)
     w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
-    model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
+    model = HybridClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=5e-4)
     cw = class_weights.to(DEVICE)
 
@@ -248,6 +249,10 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     total_steps = 0
     num_updates = 0
     n_epochs = 25  # Fixed epoch count for deterministic training
+
+    # Alpha_min early stopping (Theorem 3)
+    alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
+    epochs_below = 0
 
     for epoch in range(n_epochs):
         # Shuffle
@@ -272,12 +277,35 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
             num_updates += 1
             total_steps += len(batch_x)
 
+        # End of epoch: quick accuracy check on training data
+        with torch.no_grad():
+            logits = model(X_t)
+            preds = logits.argmax(dim=1)
+            directional_mask = y_t != 0  # long or short labels only
+            if directional_mask.sum() > 0:
+                acc = (
+                    (preds[directional_mask] == y_t[directional_mask])
+                    .float()
+                    .mean()
+                    .item()
+                )
+                if acc < alpha_min:
+                    epochs_below += 1
+                else:
+                    epochs_below = 0
+                if epochs_below >= 5:
+                    print(
+                        f"    Early stop: accuracy {acc:.3f} < alpha_min {alpha_min:.3f} for 5 epochs"
+                    )
+                    break
+
     return model, total_steps, num_updates
 
 
 # ── Evaluation ─────────────────────────────────────────────────
-def eval_policy(policy_fn, symbols, split="test"):
+def eval_policy(policy_fn, symbols, split="test", params=None):
     """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor)."""
+    p_ref = params or {}
     passing = []
     trades_all = 0
     worst_dd = 0.0
@@ -296,7 +324,13 @@ def eval_policy(policy_fn, symbols, split="test"):
             buf = io.StringIO()
             old = sys.stdout
             sys.stdout = buf
-            sh = evaluate(env_test, policy_fn, min_trades=10)
+            sh = evaluate(
+                env_test,
+                policy_fn,
+                min_trades=10,
+                r_min=p_ref.get("r_min", 0.0),
+                fee_mult=p_ref.get("fee_mult", 1.0),
+            )
             sys.stdout = old
             out = buf.getvalue()
 
@@ -396,19 +430,65 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         total_steps_all += steps
         total_updates_all += updates
 
-    ensemble_fn = make_ensemble_fn(models, DEVICE)
-    sh, ps, tr, dd, wr, pf = eval_policy(ensemble_fn, symbols, split=split)
+    # Ensemble validity check (Theorem 10): only ensemble if alpha > 0.5
+    # Check mean training accuracy across seeds
+    mean_accuracy = 0.0
+    best_seed_idx = 0
+    best_acc = 0.0
+    old_stdout2 = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    for si, model in enumerate(models):
+        model.eval()
+        # Quick accuracy check on first available training env
+        first_env = train_envs[active[0]]
+        fee_threshold = (2 * FEE_BPS / 10000) * p["fee_mult"]
+        obs, labels, _ = make_labeled_dataset(
+            first_env, MAX_HOLD_STEPS, fee_threshold, fee_threshold, max_samples=2000
+        )
+        if len(obs) > 0:
+            with torch.no_grad():
+                X_check = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
+                y_check = torch.tensor(labels, dtype=torch.long, device=DEVICE)
+                logits = model(X_check)
+                preds = logits.argmax(dim=1)
+                directional_mask = y_check != 0
+                if directional_mask.sum() > 0:
+                    acc = (
+                        (preds[directional_mask] == y_check[directional_mask])
+                        .float()
+                        .mean()
+                        .item()
+                    )
+                    mean_accuracy += acc
+                    if acc > best_acc:
+                        best_acc = acc
+                        best_seed_idx = si
+    sys.stdout.close()
+    sys.stdout = old_stdout2
+    mean_accuracy /= max(len(models), 1)
+
+    if mean_accuracy < 0.5 and len(models) > 1:
+        if verbose:
+            print(
+                f"  WARNING: alpha={mean_accuracy:.3f} < 0.5, using single best model"
+            )
+        ensemble_fn = make_ensemble_fn([models[best_seed_idx]], DEVICE)
+    else:
+        ensemble_fn = make_ensemble_fn(models, DEVICE)
+
+    sh, ps, tr, dd, wr, pf = eval_policy(ensemble_fn, symbols, split=split, params=p)
     return sh, ps, tr, dd, total_steps_all, total_updates_all, wr, pf
 
 
 # ── Optuna objective ───────────────────────────────────────────
 def objective(trial):
     p = {
-        "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
-        "hdim": trial.suggest_categorical("hdim", [128, 256]),
+        "lr": trial.suggest_float("lr", 5e-4, 5e-3, log=True),
+        "hdim": trial.suggest_categorical("hdim", [64, 128, 256]),
         "nlayers": trial.suggest_categorical("nlayers", [2, 3]),
         "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
-        "fee_mult": trial.suggest_float("fee_mult", 5.0, 15.0),
+        "fee_mult": trial.suggest_float("fee_mult", 1.5, 12.0),
+        "r_min": trial.suggest_float("r_min", 0.3, 0.7),
     }
 
     print(f"\n{'='*50}")
@@ -477,6 +557,7 @@ def main():
             "nlayers": b["nlayers"],
             "batch_size": b["batch_size"],
             "fee_mult": b["fee_mult"],
+            "r_min": b["r_min"],
         }
         print(f"\nHint: update BEST_PARAMS in train.py with: {bp}")
     else:
