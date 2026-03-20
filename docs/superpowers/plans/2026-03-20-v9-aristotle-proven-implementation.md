@@ -653,7 +653,7 @@ Add diagnostics at the end of evaluate(), after the trade-level metrics:
 
 ```python
 # Regime gate diagnostics (spec lines 170-176)
-fee_mult = getattr(env_test, '_fee_mult', 1.0)
+# fee_mult is passed as parameter to evaluate(), not stored on env
 alpha_min_val = 0.5 + 1.0 / (2.0 * fee_mult) if fee_mult > 0 else 1.0
 print(f"alpha_min: {alpha_min_val:.4f}")
 
@@ -683,17 +683,47 @@ Note: `directional_correct` and `directional_total` must be tracked in the step 
 ```python
 directional_correct = 0
 directional_total = 0
+prev_action = 0
 ```
 
-In the step loop, after `action = policy_fn(obs)` and before the gate:
+In the step loop, AFTER `obs, _, done, truncated, info = env_test.step(action)`:
 
 ```python
-# Track directional accuracy (for diagnostics)
-if action in (1, 2):  # model predicts long or short
+# Track directional accuracy: did PREVIOUS action's direction match this step's return?
+step_pnl = info.get("step_pnl", 0)
+if prev_action in (1, 2):
     directional_total += 1
-    actual_return = info.get("step_pnl", 0)
-    if (action == 1 and actual_return > 0) or (action == 2 and actual_return < 0):
+    if (prev_action == 1 and step_pnl > 0) or (prev_action == 2 and step_pnl < 0):
         directional_correct += 1
+prev_action = action
+```
+
+This avoids the causality violation: we evaluate the PREVIOUS action against the CURRENT step's realized return. The first step has no previous action so it's skipped.
+
+Also, the Kelly diagnostic and alpha_min must reference `fee_mult` explicitly. Add `fee_mult` as a parameter to `evaluate()`:
+
+```python
+def evaluate(
+    env_test: TradingEnv, policy_fn, min_trades: int = 50,
+    max_drawdown: float = 0.20, r_min: float = 0.0, fee_mult: float = 1.0,
+) -> float:
+```
+
+And the Kelly diagnostic MUST be inside the existing `if trade_pnls:` block (where `wins` and `losses` are defined):
+
+```python
+if trade_pnls:
+    wins = [p for p in trade_pnls if p > 0]
+    losses = [p for p in trade_pnls if p <= 0]
+    # ... existing metrics ...
+
+    # Kelly optimal fee_mult (proved formula, Theorem 3)
+    c = FEE_BPS / 10000
+    p_w = len(wins) / len(trade_pnls)
+    p_l = len(losses) / len(trade_pnls)
+    if (p_w + p_l) > 0 and c > 0:
+        f_kelly = (p_w - p_l) * (1 - c) / ((p_w + p_l) * c)
+        print(f"f_opt_kelly: {f_kelly:.4f}")
 ```
 
 - [ ] **Step 4: Run all tests**
@@ -761,7 +791,30 @@ def objective(trial):
     }
 ```
 
-- [ ] **Step 6: Add ensemble validity check**
+- [ ] **Step 6: Add alpha_min early stopping and ensemble validity check**
+
+In `train_one_model()`, after each epoch, check validation accuracy against alpha_min:
+
+```python
+alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
+epochs_below = 0
+for epoch in range(n_epochs):
+    # ... training loop ...
+    # End of epoch: quick accuracy check on training data
+    with torch.no_grad():
+        logits = model(X_t)
+        preds = logits.argmax(dim=1)
+        directional_mask = y_t != 0  # long or short labels only
+        if directional_mask.sum() > 0:
+            acc = (preds[directional_mask] == y_t[directional_mask]).float().mean().item()
+            if acc < alpha_min:
+                epochs_below += 1
+            else:
+                epochs_below = 0
+            if epochs_below >= 5:
+                print(f"    Early stop: accuracy {acc:.3f} < alpha_min {alpha_min:.3f} for 5 epochs")
+                break
+```
 
 After training all seeds, check accuracy:
 
