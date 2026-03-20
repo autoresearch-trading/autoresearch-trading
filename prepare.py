@@ -47,6 +47,7 @@ DEFAULT_SYMBOLS = [
     "XRP",
 ]
 FEE_BPS = 5  # Taker fee in basis points
+USE_V9 = True  # When True, use compute_features_v9 + normalize_features_v9
 
 DATA_ROOT = Path(__file__).parent / "data"
 CACHE_DIR = Path(__file__).parent / ".cache"
@@ -999,12 +1000,16 @@ def cache_features(
     start: str,
     end: str,
     trade_batch: int,
+    raw_hawkes: np.ndarray | None = None,
 ) -> None:
     """Save features to .npz cache file."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     key = _cache_key(symbol, start, end, trade_batch)
     path = cache_dir / f"{symbol}_{key}.npz"
-    np.savez_compressed(path, features=features, timestamps=timestamps, prices=prices)
+    save_dict = dict(features=features, timestamps=timestamps, prices=prices)
+    if raw_hawkes is not None:
+        save_dict["raw_hawkes"] = raw_hawkes
+    np.savez_compressed(path, **save_dict)
     print(f"Cached {symbol} features to {path}")
 
 
@@ -1014,14 +1019,19 @@ def load_cached(
     start: str,
     end: str,
     trade_batch: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Load features from .npz cache if exists."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None] | None:
+    """Load features from .npz cache if exists.
+
+    Returns (features, timestamps, prices, raw_hawkes) or None.
+    raw_hawkes is None for v8 caches that don't contain it.
+    """
     key = _cache_key(symbol, start, end, trade_batch)
     path = cache_dir / f"{symbol}_{key}.npz"
     if path.exists():
         data = np.load(path)
         print(f"Loaded {symbol} features from cache ({path})")
-        return data["features"], data["timestamps"], data["prices"]
+        raw_hawkes = data["raw_hawkes"] if "raw_hawkes" in data else None
+        return data["features"], data["timestamps"], data["prices"], raw_hawkes
     return None
 
 
@@ -1037,7 +1047,8 @@ def prepare_data(
 ) -> dict:
     """Prepare data for all symbols and splits.
 
-    Returns dict of {symbol: {train: (features, timestamps, prices), val: ..., test: ...}}
+    Returns dict of {symbol: {train: (features, timestamps, prices, raw_hawkes), ...}}
+    raw_hawkes is None when using v8 features (USE_V9=False).
     """
     if symbols is None:
         symbols = DEFAULT_SYMBOLS
@@ -1058,7 +1069,13 @@ def prepare_data(
             if not force_recompute:
                 cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
                 if cached is not None:
-                    result[symbol][split_name] = cached
+                    features, timestamps, prices, raw_hawkes = cached
+                    result[symbol][split_name] = (
+                        features,
+                        timestamps,
+                        prices,
+                        raw_hawkes,
+                    )
                     continue
 
             print(f"Computing features for {symbol} {split_name} ({start} to {end})...")
@@ -1071,21 +1088,36 @@ def prepare_data(
                 f"  Loaded {len(trades_df)} trades, {len(orderbook_df)} orderbook snapshots, {len(funding_df)} funding rates"
             )
 
-            features, timestamps, prices = compute_features(
-                trades_df, orderbook_df, funding_df, trade_batch
-            )
-
-            if len(features) > 0:
-                features = normalize_features(features)
+            if USE_V9:
+                features, timestamps, prices, raw_hawkes = compute_features_v9(
+                    trades_df, orderbook_df, funding_df, trade_batch
+                )
+                if len(features) > 0:
+                    features = normalize_features_v9(features)
+            else:
+                features, timestamps, prices = compute_features(
+                    trades_df, orderbook_df, funding_df, trade_batch
+                )
+                raw_hawkes = None
+                if len(features) > 0:
+                    features = normalize_features(features)
 
             print(f"  Features shape: {features.shape}")
 
             # Cache
             cache_features(
-                symbol, features, timestamps, prices, CACHE_DIR, start, end, trade_batch
+                symbol,
+                features,
+                timestamps,
+                prices,
+                CACHE_DIR,
+                start,
+                end,
+                trade_batch,
+                raw_hawkes=raw_hawkes,
             )
 
-            result[symbol][split_name] = (features, timestamps, prices)
+            result[symbol][split_name] = (features, timestamps, prices, raw_hawkes)
 
     return result
 
@@ -1399,7 +1431,7 @@ def make_env(
     # Try cache first
     cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
     if cached is not None:
-        features, timestamps, prices = cached
+        features, timestamps, prices, raw_hawkes = cached
     else:
         # Need to compute - run prepare_data for this split
         print(f"Cache miss for {symbol} {split}, computing features...")
@@ -1407,25 +1439,52 @@ def make_env(
         orderbook_df = load_orderbook(symbol, start, end)
         funding_df = load_funding(symbol, start, end)
 
-        features, timestamps, prices = compute_features(
-            trades_df, orderbook_df, funding_df, trade_batch
-        )
-
-        if len(features) > 0:
-            features = normalize_features(features)
-            cache_features(
-                symbol, features, timestamps, prices, CACHE_DIR, start, end, trade_batch
+        if USE_V9:
+            features, timestamps, prices, raw_hawkes = compute_features_v9(
+                trades_df, orderbook_df, funding_df, trade_batch
             )
+            if len(features) > 0:
+                features = normalize_features_v9(features)
+                cache_features(
+                    symbol,
+                    features,
+                    timestamps,
+                    prices,
+                    CACHE_DIR,
+                    start,
+                    end,
+                    trade_batch,
+                    raw_hawkes=raw_hawkes,
+                )
+        else:
+            features, timestamps, prices = compute_features(
+                trades_df, orderbook_df, funding_df, trade_batch
+            )
+            raw_hawkes = None
+            if len(features) > 0:
+                features = normalize_features(features)
+                cache_features(
+                    symbol,
+                    features,
+                    timestamps,
+                    prices,
+                    CACHE_DIR,
+                    start,
+                    end,
+                    trade_batch,
+                )
 
-    return TradingEnv(
+    env = TradingEnv(
         features, prices, window_size=window_size, fee_bps=FEE_BPS, min_hold=min_hold
     )
+    env.raw_hawkes = raw_hawkes  # for regime gate in evaluate()
+    return env
 
 
 if __name__ == "__main__":
     data = prepare_data(DEFAULT_SYMBOLS)
     for sym, splits in data.items():
-        for split_name, (features, timestamps, prices) in splits.items():
+        for split_name, (features, timestamps, prices, raw_hawkes) in splits.items():
             print(
                 f"{sym} {split_name}: features={features.shape}, steps={len(timestamps)}"
             )

@@ -68,6 +68,53 @@ class DirectionClassifier(nn.Module):
         return self.head(self.trunk(x))
 
 
+class HybridClassifier(nn.Module):
+    """Flat MLP + 1D TCN hybrid. Proved: weak dominance over either alone (Theorem 5)."""
+
+    def __init__(self, obs_shape, n_classes, hidden_dim, num_layers):
+        super().__init__()
+        n_time, n_feat = obs_shape
+
+        # Flat branch: flatten + temporal stats
+        flat_dim = n_time * n_feat + 2 * n_feat
+
+        # TCN branch: Conv1d → pool
+        self.tcn = nn.Sequential(
+            nn.Conv1d(n_feat, 16, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(16, 8, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),
+        )
+        # Kaiming init for TCN
+        for m in self.tcn.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                nn.init.constant_(m.bias, 0.0)
+
+        combined_dim = flat_dim + 8  # flat + tcn pool output
+
+        layers = [_ortho_init(nn.Linear(combined_dim, hidden_dim)), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
+        self.trunk = nn.Sequential(*layers)
+        self.head = _ortho_init(nn.Linear(hidden_dim, n_classes), gain=0.01)
+
+    def forward(self, x):
+        # x: (batch, time, feat)
+        t_mean = x.mean(dim=1)
+        t_std = x.std(dim=1)
+        flat = x.flatten(start_dim=1)
+        flat_branch = torch.cat([flat, t_mean, t_std], dim=1)
+
+        # TCN expects (batch, channels, time)
+        tcn_in = x.permute(0, 2, 1)
+        tcn_out = self.tcn(tcn_in).squeeze(-1)  # (batch, 8)
+
+        combined = torch.cat([flat_branch, tcn_out], dim=1)
+        return self.head(self.trunk(combined))
+
+
 # ── Data labeling ──────────────────────────────────────────────
 def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=10000):
     """Extract (obs, label) pairs using Triple Barrier labeling.
