@@ -101,33 +101,33 @@ class TestV9HawkesBranching:
         assert np.all(raw_hawkes >= 0.0)
         assert np.all(raw_hawkes <= 0.99)
 
-    def test_hawkes_zero_for_constant_counts(self):
-        """Constant trade counts per batch → Var/Mean = 0 → branching = 0."""
-        # This tests the domain guard: Var(N) <= E[N] → 0.0
-        counts = np.ones(50) * 100  # constant
-        var_mean_ratio = np.var(counts) / np.mean(counts) if np.mean(counts) > 0 else 0
-        # Var = 0, so ratio = 0, which is <= 1, so branching = 0
-        assert var_mean_ratio == 0.0
+    def test_hawkes_zero_for_constant_rates(self):
+        """Constant arrival rates → Var/Mean ≤ 1 → branching = 0 (Theorem 11)."""
+        rates = np.ones(50) * 50.0  # constant rate
+        mean_r = rates.mean()
+        var_r = rates.var()
+        ratio = var_r / mean_r if mean_r > 0 else 0
+        # Var = 0, ratio = 0 ≤ 1, so branching = 0
+        assert ratio == 0.0
 
-    def test_hawkes_synthetic_overdispersed(self, make_trades, make_orderbook, make_funding):
-        """Synthetic data with clustered buys should produce non-zero branching."""
-        # Create trades where buys cluster heavily in some batches
-        # This creates variance in buy-counts > mean, triggering overdispersion
+    def test_hawkes_synthetic_bursty_arrivals(self, make_trades, make_orderbook, make_funding):
+        """Bursty arrival times (varying batch duration) → non-zero branching.
+        Theorem 11: Var(B/D)/E[B/D] > 1 when durations vary (self-excitation)."""
+        # Create trades with bursty timestamps: some batches fast, some slow
         trades = make_trades(n=5000, seed=99)
-        # Force heavy buy clustering in first half
-        sides = trades["side"].values.copy()
-        for i in range(0, 2500):
-            if i % 100 < 80:  # 80% buys in first batches
-                sides[i] = "open_long"
+        ts = trades["ts_ms"].values.copy()
+        # Make first half arrive 10x faster than second half
+        for i in range(2500):
+            ts[i] = 1_000_000 + i * 100  # 100ms spacing (fast)
         for i in range(2500, 5000):
-            if i % 100 < 20:  # 20% buys in later batches
-                sides[i] = "open_long"
-        trades["side"] = sides
+            ts[i] = ts[2499] + (i - 2499) * 1000  # 1000ms spacing (slow)
+        trades["ts_ms"] = ts
+        trades["recv_ms"] = ts + 10
         features, _, _, raw_hawkes = compute_features_v9(
             trades, make_orderbook(n=1250), make_funding(n=50), trade_batch=100
         )
-        # With clustered buys, some hawkes values should be > 0
-        assert np.any(raw_hawkes > 0), "Expected non-zero branching from clustered buys"
+        # With bursty arrivals, arrival rates vary → overdispersion → branching > 0
+        assert np.any(raw_hawkes > 0), "Expected non-zero branching from bursty arrivals"
 
 class TestV9ReservationPriceDev:
     def test_reservation_finite(self, make_trades, make_orderbook, make_funding):
@@ -255,19 +255,35 @@ def compute_features_v9(
     vpin = pd.Series(abs_tfi).rolling(window=50, min_periods=1).mean().fillna(0).values
 
     # === Feature 3: hawkes_branching ===
-    # Use buy-trade counts per batch (NOT total trades, which is always trade_batch).
-    # Buy counts vary per batch and capture clustering/self-excitation.
-    buy_counts = is_buy_batched.sum(axis=1).astype(float)
+    # Theorem 11 proved: for fixed-size batches, use arrival RATE (B/duration),
+    # not event counts. Var(rate)/E[rate] incorporates the rate-dependence that
+    # the fixed-time-window formula misses. The naive count-based estimator is
+    # wrong because total trades per batch = trade_batch (constant).
+    #
+    # Proved: n̂ = 1 - 1/√(Var(R)/E[R]) is monotone, in (0,1) when overdispersed,
+    # and = 0 at Poisson baseline.
+    batch_first_ts = ts_batched[:, 0]
+    batch_last_ts = ts_batched[:, -1]
+    batch_duration_s = (batch_last_ts - batch_first_ts) / 1000.0
+    # Arrival rate per batch: R_k = B / D_k
+    arrival_rates = np.where(
+        batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+    )
+
     hawkes_branching = np.zeros(num_batches)
     hawkes_window = 50
     for i in range(hawkes_window, num_batches):
-        window_counts = buy_counts[i - hawkes_window : i]
-        mean_n = window_counts.mean()
-        var_n = window_counts.var()
-        if mean_n > 0 and var_n > mean_n:  # overdispersed
-            ratio = var_n / mean_n
-            hawkes_branching[i] = 1.0 - 1.0 / np.sqrt(ratio)
-        # else: stays 0.0 (not overdispersed or empty)
+        window_rates = arrival_rates[i - hawkes_window : i]
+        window_rates = window_rates[window_rates > 0]  # skip zero-duration batches
+        if len(window_rates) < 10:
+            continue
+        mean_r = window_rates.mean()
+        var_r = window_rates.var()
+        if mean_r > 0:
+            ratio = var_r / mean_r
+            if ratio > 1.0:  # overdispersed rates → self-excitation
+                hawkes_branching[i] = 1.0 - 1.0 / np.sqrt(ratio)
+        # else: stays 0.0 (Poisson or sub-dispersed)
     hawkes_branching = np.clip(hawkes_branching, 0.0, 0.99)
     raw_hawkes_branching = hawkes_branching.copy()
 

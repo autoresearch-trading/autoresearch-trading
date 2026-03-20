@@ -57,7 +57,7 @@ Replace all 39 v6 features with 5 formally verified features:
 | 0 | `lambda_ofi` | kyle_lambda × signed_flow | Theorem 1 (sufficient statistic) |
 | 1 | `directional_conviction` | TFI × |OFI| | Theorem 1 (sufficient statistic) |
 | 2 | `vpin` | rolling 50-batch mean of |TFI| | Theorem 7 (bounds, quasi-convexity) |
-| 3 | `hawkes_branching` | 1 - 1/√(Var(N)/E[N]) over rolling 50-batch window | Theorem 8 (consistent estimator) |
+| 3 | `hawkes_branching` | 1 - 1/√(Var(R)/E[R]) where R=B/D is arrival rate per batch | Theorem 8 + 11 (rate-based estimator for fixed-size batches) |
 | 4 | `reservation_price_dev` | weighted_imbalance_5lvl × realvol² | Theorem 7 (Avellaneda-Stoikov) |
 
 **Intermediate features needed** (computed but not used as model inputs):
@@ -73,9 +73,11 @@ Replace all 39 v6 features with 5 formally verified features:
 - Feature 1 (`directional_conviction`): `TFI × |signed_notional|` — trade-based flow magnitude
 - These are both trade-derived, not orderbook-derived OFI (feature 16 in v6)
 
-**Hawkes branching domain guards**:
-- When `Var(N) <= E[N]` (not overdispersed): clamp `hawkes_branching` to 0.0
-- When `E[N] = 0` (empty batch): set to 0.0
+**Hawkes branching (Theorem 11 correction)**:
+- Uses arrival RATE R=B/D (batch_size/duration), NOT event counts (which are constant at trade_batch)
+- Theorem 11 proved: Var(R)/E[R] for fixed-size batches requires rate-based formula, not count-based
+- The naive count formula is WRONG for fixed-size batches (disproved by Aristotle)
+- Domain guards: when Var(R)/E[R] ≤ 1 (not overdispersed): 0.0. When rate = 0: skip.
 - Clip final values to [0.0, 0.99] for numerical safety
 
 **Normalization**: All 5 features use rolling z-score (window=1000, min_periods=100). Exception: `reservation_price_dev` (feature 4) uses IQR-based robust scaling since realvol² is heavy-tailed. Clip to [-5, 5].
