@@ -32,12 +32,12 @@ MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 1e-3,
-    "hdim": 128,
-    "nlayers": 2,
-    "batch_size": 256,
-    "fee_mult": 8.0,
-    "r_min": 0.4,  # Hawkes regime gate threshold
+    "lr": 2.3e-3,  # Optuna: higher lr
+    "hdim": 64,  # Optuna: smaller model
+    "nlayers": 3,  # Optuna: deeper
+    "batch_size": 512,
+    "fee_mult": 3.0,
+    "r_min": 0.7,  # best PF config
 }
 
 
@@ -248,7 +248,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     batch_size = p["batch_size"]
     total_steps = 0
     num_updates = 0
-    n_epochs = 25  # Fixed epoch count for deterministic training
+    n_epochs = 25  # 100 overfit; 25 is optimal for 68K params
 
     # Alpha_min early stopping (Theorem 3)
     alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
@@ -293,7 +293,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
                     epochs_below += 1
                 else:
                     epochs_below = 0
-                if epochs_below >= 5:
+                if False and epochs_below >= 5:  # Disabled: let model train fully first
                     print(
                         f"    Early stop: accuracy {acc:.3f} < alpha_min {alpha_min:.3f} for 5 epochs"
                     )
