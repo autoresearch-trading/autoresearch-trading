@@ -23,22 +23,22 @@ SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
-WINDOW_SIZE = 50  # v5 original
+WINDOW_SIZE = 50  # v5 proven
 TRADE_BATCH = 100
-MIN_HOLD = 800  # v5 config — best Sortino
+MIN_HOLD = 800  # v5 proven — best Sortino
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300
 
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 1e-3,  # v5 original
-    "hdim": 256,  # v5 original
-    "nlayers": 2,  # v5 original
-    "batch_size": 256,  # v5 original
-    "fee_mult": 1.5,  # v5 original
-    "r_min": 0.0,  # no regime gate (no raw_hawkes in v5 cache)
-    "vpin_max_z": 0.0,  # no VPIN gate
+    "lr": 1e-3,
+    "hdim": 256,
+    "nlayers": 2,
+    "batch_size": 256,
+    "fee_mult": 1.5,
+    "r_min": 0.7,  # regime gate (raw_hawkes available in v10)
+    "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
 }
 
 

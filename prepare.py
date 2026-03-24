@@ -47,7 +47,7 @@ DEFAULT_SYMBOLS = [
     "XRP",
 ]
 FEE_BPS = 5  # Taker fee in basis points
-USE_V9 = False  # v5.5: use v5 features (31) with v5.5 config improvements
+USE_V9 = True  # v10: 9 features (5 Aristotle + 4 top permutation importance)
 
 DATA_ROOT = Path(__file__).parent / "data"
 CACHE_DIR = Path(__file__).parent / ".cache"
@@ -708,7 +708,7 @@ V9_FEATURE_NAMES = [
 ]
 
 V9_NUM_FEATURES = 5
-V9_ROBUST_FEATURE_INDICES = {4}  # reservation_price_dev (heavy-tailed)
+V9_ROBUST_FEATURE_INDICES = {4, 5}  # reservation_price_dev, vol_of_vol (heavy-tailed)
 
 
 def compute_features_v9(
@@ -717,10 +717,10 @@ def compute_features_v9(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 5 Aristotle-proven features from raw data.
+    """Compute 9 features: 5 Aristotle-proven + 4 top permutation importance.
 
     Returns: (features, timestamps, prices, raw_hawkes_branching)
-    where features has shape (num_batches, 5).
+    where features has shape (num_batches, 9).
 
     Feature layout:
       0: lambda_ofi              - kyle_lambda * signed_notional (sufficient statistic)
@@ -728,6 +728,10 @@ def compute_features_v9(
       2: vpin                    - rolling mean of |TFI| (toxicity proxy)
       3: hawkes_branching        - 1 - 1/sqrt(Var(N)/E[N]) (self-excitation)
       4: reservation_price_dev   - orderbook_imbalance * realvol^2 (inventory pressure)
+      5: vol_of_vol              - rolling std of realvol (perm importance #1)
+      6: utc_hour_linear         - hour_utc / 24 (perm importance #2)
+      7: microprice_dev          - microprice - midprice (perm importance #3)
+      8: delta_tfi               - first difference of TFI (perm importance #4)
     """
     if trades_df.empty:
         return np.array([]), np.array([]), np.array([]), np.array([])
@@ -857,6 +861,24 @@ def compute_features_v9(
     # === Feature 4: reservation_price_dev ===
     reservation_price_dev = weighted_imbalance * (realvol**2)
 
+    # === Feature 5: vol_of_vol (permutation importance #1, drop=0.301) ===
+    vol_of_vol = (
+        pd.Series(realvol).rolling(window=50, min_periods=10).std().fillna(0).values
+    )
+
+    # === Feature 6: utc_hour_linear (permutation importance #2, drop=0.279) ===
+    batch_timestamps_final = ts_batched[:, -1]
+    utc_hour_linear = ((batch_timestamps_final / 1000 / 3600) % 24) / 24.0
+
+    # === Feature 7: microprice_dev (permutation importance #3, drop=0.218) ===
+    microprice_dev = _compute_microprice_dev(
+        orderbook_df, batch_timestamps_final, num_batches
+    )
+
+    # === Feature 8: delta_TFI (permutation importance #4, drop=0.210) ===
+    delta_tfi = np.zeros(num_batches)
+    delta_tfi[1:] = tfi[1:] - tfi[:-1]
+
     # --- Stack features ---
     features = np.column_stack(
         [
@@ -865,13 +887,54 @@ def compute_features_v9(
             vpin,
             hawkes_branching,
             reservation_price_dev,
+            vol_of_vol,
+            utc_hour_linear,
+            microprice_dev,
+            delta_tfi,
         ]
     )
 
-    batch_timestamps = ts_batched[:, -1]
     batch_prices = vwap
 
-    return features, batch_timestamps, batch_prices, raw_hawkes_branching
+    return features, batch_timestamps_final, batch_prices, raw_hawkes_branching
+
+
+def _compute_microprice_dev(
+    orderbook_df: pd.DataFrame, batch_timestamps: np.ndarray, num_batches: int
+) -> np.ndarray:
+    """Compute microprice - midprice deviation aligned to batch timestamps."""
+    microprice_dev = np.zeros(num_batches)
+    if orderbook_df.empty:
+        return microprice_dev
+
+    ob_ts = orderbook_df["ts_ms"].values
+    ob_idx = 0
+
+    for i in range(num_batches):
+        while ob_idx < len(ob_ts) - 1 and ob_ts[ob_idx + 1] <= batch_timestamps[i]:
+            ob_idx += 1
+
+        if ob_idx >= len(ob_ts) or ob_ts[ob_idx] > batch_timestamps[i]:
+            continue
+
+        row = orderbook_df.iloc[ob_idx]
+        bids = row.get("bids", [])
+        asks = row.get("asks", [])
+
+        if len(bids) > 0 and len(asks) > 0:
+            best_bid = bids[0]["price"]
+            best_ask = asks[0]["price"]
+            mid = (best_bid + best_ask) / 2
+            best_bid_qty = bids[0]["qty"]
+            best_ask_qty = asks[0]["qty"]
+            total_qty = best_bid_qty + best_ask_qty
+            if total_qty > 0:
+                microprice = (
+                    best_bid * best_ask_qty + best_ask * best_bid_qty
+                ) / total_qty
+                microprice_dev[i] = microprice - mid
+
+    return microprice_dev
 
 
 def _compute_orderbook_imbalance(
@@ -982,7 +1045,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v5"  # v5: 31 features (cached, no rebuild needed)
+_FEATURE_VERSION = "v10"  # v10: 9 features (5 Aristotle + 4 permutation importance)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
