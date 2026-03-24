@@ -235,7 +235,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     y_t = torch.tensor(y, dtype=torch.long, device=DEVICE)
     w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
-    model = HybridClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
+    model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=5e-4)
     cw = class_weights.to(DEVICE)
 
