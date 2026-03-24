@@ -25,7 +25,7 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50  # v5 original
 TRADE_BATCH = 100
-MIN_HOLD = 800  # v5 original — high selectivity
+MIN_HOLD = 200  # lower min_hold to recover passing
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300
 
@@ -37,7 +37,7 @@ BEST_PARAMS = {
     "nlayers": 2,  # v5 original
     "batch_size": 256,  # v5 original
     "fee_mult": 1.5,  # v5 original
-    "r_min": 0.0,  # no regime gate (v5 didn't have one)
+    "r_min": 0.0,  # no regime gate (no raw_hawkes in v5 cache)
     "vpin_max_z": 0.0,  # no VPIN gate
 }
 
