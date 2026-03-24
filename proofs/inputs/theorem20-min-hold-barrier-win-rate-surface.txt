@@ -1,0 +1,50 @@
+# Theorem 20: MinHoldBarrierWinRateSurface
+
+Let X_t = mu * t + sigma * W_t be a one-dimensional Brownian motion with drift mu in R and volatility sigma > 0, started at X_0 = 0. Fix a symmetric triple-barrier rule with barrier width B > 0, maximum holding time M > 0, and minimum holding time H with 0 < H <= M.
+
+Define the first exit time from the open interval (-B, B) by
+
+  tau_B = inf { t >= 0 : |X_t| = B }.
+
+The strategy ignores barriers before time H, then exits at the first time after H that a barrier is hit, or at time M if no barrier is hit. The take-profit event is
+
+  TP = { tau_B <= M and X_{tau_B} = B }.
+
+Let p(H; mu, sigma, B) denote the conditional win probability
+
+  p(H; mu, sigma, B) = P(TP | tau_B >= H).
+
+Prove the following claims.
+
+1. Frequency bound. If every open trade must be held for at least H time units, then the long-run trade frequency f satisfies
+
+     f <= 1 / H.
+
+2. Define the two-barrier hitting-probability function q on [-B, B] by
+
+     q(x) = (1 - exp(-2 * mu * (x + B) / sigma^2))
+            / (1 - exp(-4 * mu * B / sigma^2))
+
+   when mu != 0, and
+
+     q(x) = (x + B) / (2 * B)
+
+   when mu = 0.
+
+   Prove that
+
+     p(H; mu, sigma, B) = E[q(X_H) | tau_B >= H].
+
+   This is the strong Markov representation of the win probability after a minimum hold H.
+
+3. By Brownian scaling, prove that there exists a deterministic function F such that
+
+     p(H; mu, sigma, B) = F(mu * B / sigma^2, sigma^2 * H / B^2).
+
+   In particular, the win-rate change from H = 200 to H = 800 is the computable quantity
+
+     p(800; mu, sigma, B) - p(200; mu, sigma, B),
+
+   determined entirely by the same two dimensionless parameters. In the zero-drift case mu = 0, prove that this difference is exactly 0 by symmetry.
+
+4. Let S(H) be the Sortino ratio of the resulting triple-barrier strategy for a given tuple (mu, sigma, B, c), where H ranges over the finite set {1, 2, ..., M}. Prove that at least one maximizer H_star exists. If in addition S(H) is strictly concave as a function of H on {1, 2, ..., M}, prove that the maximizing H_star is unique.

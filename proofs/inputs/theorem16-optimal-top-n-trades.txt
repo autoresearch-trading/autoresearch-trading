@@ -1,0 +1,53 @@
+# Theorem 16: OptimalTopNTrades
+
+Let c > 0 be the per-side transaction fee, so each completed trade pays the fixed round-trip fee 2c. Let m > 0 be steps_per_day.
+
+Let e_n, for n = 1, 2, 3, ..., be a strictly decreasing sequence of gross expected trade edges, and define the net edge of trade n by
+
+  a_n = e_n - 2c.
+
+For n >= 1, define the cumulative expected net return of the first n candidate trades by
+
+  R_n = sum_{i=1}^n a_i.
+
+Assume the cumulative downside standard deviation of the first n trades satisfies
+
+  downside_std(n) = d * sqrt(n)
+
+for some constant d > 0. Define the Sortino score of the first n trades by
+
+  S(n) = R_n / (downside_std(n) * sqrt(m / n)).
+
+Prove the following claims.
+
+1. For every n >= 1,
+
+     S(n) = (sum_{i=1}^n (e_i - 2c)) / (downside_std(n) * sqrt(m / n))
+          = R_n / (d * sqrt(m)).
+
+   In particular, under the assumption downside_std(n) = d * sqrt(n), maximizing S(n) over n is equivalent to maximizing R_n over n.
+
+2. Assume in addition that e_n -> 0 as n -> infinity. Then there exists a unique natural number n_star such that
+
+     e_{n_star} > 2c
+     and
+     e_{n_star + 1} <= 2c.
+
+   This n_star is the unique maximizer of S(n) over all n >= 1.
+
+3. For every n > n_star, one has
+
+     S(n) < S(n - 1).
+
+   Equivalently, once the marginal edge of a newly added trade falls below the round-trip fee threshold 2c, adding that trade strictly reduces Sortino.
+
+4. Numerical claim. Take
+
+     c = 0.0005,
+     e_n = 0.003 * exp(-0.05 * (n - 1)).
+
+   Then 2c = 0.001, and the unique maximizer is
+
+     n_star = 22,
+
+   because e_22 > 0.001 and e_23 <= 0.001.
