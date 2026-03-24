@@ -1296,6 +1296,7 @@ def evaluate(
     min_trades: int = 50,
     max_drawdown: float = 0.20,
     r_min: float = 0.0,
+    vpin_max_z: float = 0.0,
     fee_mult: float = 1.0,
 ) -> float:
     """Run policy on FULL test env, return Sortino ratio.
@@ -1327,13 +1328,19 @@ def evaluate(
     # Run full test set — step directly, ignoring episode truncation
     while env_test._idx < env_test.num_steps:
         action = policy_fn(obs)
-        # Regime gate: force flat when Hawkes branching below threshold
+        # Regime gate 1: force flat when Hawkes branching below threshold
         if (
             r_min > 0
             and hasattr(env_test, "raw_hawkes")
             and env_test.raw_hawkes is not None
         ):
             if env_test.raw_hawkes[env_test._idx] < r_min:
+                action = 0
+        # Regime gate 2: force flat when VPIN too high (toxic flow, Theorem 13)
+        # Uses z-scored VPIN from normalized features (index 2)
+        if vpin_max_z > 0 and env_test._idx < len(env_test.features):
+            vpin_z = env_test.features[env_test._idx, 2]  # normalized VPIN
+            if vpin_z > vpin_max_z:
                 action = 0
         obs, _, done, truncated, info = env_test.step(action)
         # Track directional accuracy: did PREVIOUS action's direction match this step's return?

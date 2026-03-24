@@ -27,17 +27,18 @@ WINDOW_SIZE = 75  # Proved minimum for TCN (Theorem 5)
 TRADE_BATCH = 100
 MIN_HOLD = 200  # Moderate — regime gate handles quality filtering
 FEE_BPS = 5
-MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
+MAX_HOLD_STEPS = 300  # default
 
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 2.3e-3,  # Optuna: higher lr
+    "lr": 2.3e-3,
     "hdim": 64,  # Optuna: smaller model
     "nlayers": 3,  # Optuna: deeper
     "batch_size": 512,
     "fee_mult": 3.0,
     "r_min": 0.7,  # best PF config
+    "vpin_max_z": 1.5,  # VPIN dual gate (Theorem 13): filter toxic flow
 }
 
 
@@ -329,6 +330,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
                 policy_fn,
                 min_trades=10,
                 r_min=p_ref.get("r_min", 0.0),
+                vpin_max_z=p_ref.get("vpin_max_z", 0.0),
                 fee_mult=p_ref.get("fee_mult", 1.0),
             )
             sys.stdout = old
