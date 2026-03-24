@@ -38,7 +38,7 @@ BEST_PARAMS = {
     "batch_size": 512,
     "fee_mult": 3.0,
     "r_min": 0.7,  # best PF config
-    "vpin_max_z": 1.5,  # VPIN dual gate (Theorem 13): filter toxic flow
+    "vpin_max_z": 0.0,  # VPIN gate disabled (T17 paradox, T22 redundancy)
 }
 
 
