@@ -23,22 +23,22 @@ SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
-WINDOW_SIZE = 75  # Proved minimum for TCN (Theorem 5)
+WINDOW_SIZE = 50  # v5 original
 TRADE_BATCH = 100
-MIN_HOLD = 200  # Moderate — regime gate handles quality filtering
+MIN_HOLD = 800  # v5 original — high selectivity
 FEE_BPS = 5
-MAX_HOLD_STEPS = 300  # default
+MAX_HOLD_STEPS = 300
 
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 2.3e-3,
-    "hdim": 64,  # Optuna: smaller model
-    "nlayers": 3,  # Optuna: deeper
-    "batch_size": 512,
-    "fee_mult": 3.0,
-    "r_min": 0.7,  # v5.5 best (T17 validated)
-    "vpin_max_z": 0.0,  # VPIN gate disabled (T17 paradox, T22 redundancy)
+    "lr": 1e-3,  # v5 original
+    "hdim": 256,  # v5 original
+    "nlayers": 2,  # v5 original
+    "batch_size": 256,  # v5 original
+    "fee_mult": 1.5,  # v5 original
+    "r_min": 0.0,  # no regime gate (v5 didn't have one)
+    "vpin_max_z": 0.0,  # no VPIN gate
 }
 
 
