@@ -37,7 +37,7 @@ BEST_PARAMS = {
     "nlayers": 2,
     "batch_size": 256,
     "fee_mult": 1.5,
-    "r_min": 0.7,  # regime gate (raw_hawkes available in v10)
+    "r_min": 0.0,  # no regime gate — test raw v10 signal first
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
 }
 
