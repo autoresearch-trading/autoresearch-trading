@@ -37,7 +37,7 @@ BEST_PARAMS = {
     "nlayers": 3,  # Optuna: deeper
     "batch_size": 512,
     "fee_mult": 3.0,
-    "r_min": 0.5,  # Phase 5: relax regime gate (T17 threshold)
+    "r_min": 0.7,  # v5.5 best (T17 validated)
     "vpin_max_z": 0.0,  # VPIN gate disabled (T17 paradox, T22 redundancy)
 }
 
