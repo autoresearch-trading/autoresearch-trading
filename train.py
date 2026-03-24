@@ -14,23 +14,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from prepare import BEST_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
-
-# Best 12 symbols (pass 6+/8 across all v5.5 experiments)
-BEST_SYMBOLS = [
-    "ASTER",
-    "LTC",
-    "ETH",
-    "LDO",
-    "LINK",
-    "XRP",
-    "DOGE",
-    "BTC",
-    "2Z",
-    "KBONK",
-    "KPEPE",
-    "BNB",
-]
+from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # ── Configuration ──────────────────────────────────────────────
 SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "CRV"]
@@ -41,7 +25,7 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50  # v5 original
 TRADE_BATCH = 100
-MIN_HOLD = 800  # v5 original — high selectivity
+MIN_HOLD = 800  # v5 config — best Sortino
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300
 
@@ -584,17 +568,17 @@ def main():
 
     print(
         f"\n=== FINAL: {FINAL_SEEDS} seeds x "
-        f"{FINAL_BUDGET // FINAL_SEEDS}s on all {len(BEST_SYMBOLS)} symbols ==="
+        f"{FINAL_BUDGET // FINAL_SEEDS}s on all {len(DEFAULT_SYMBOLS)} symbols ==="
     )
     print(f"params: {bp}\n")
 
     sh, ps, tr, dd, total_steps, total_updates, wr, pf = full_run(
-        BEST_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
+        DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
     )
 
     print("---")
     print("=== PORTFOLIO SUMMARY ===")
-    print(f"symbols_passing: {ps}/{len(BEST_SYMBOLS)}")
+    print(f"symbols_passing: {ps}/{len(DEFAULT_SYMBOLS)}")
     print(f"sortino: {sh:.6f}")
     print(f"num_trades: {tr}")
     print(f"max_drawdown: {dd:.4f}")
