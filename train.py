@@ -36,8 +36,8 @@ BEST_PARAMS = {
     "hdim": 64,  # Optuna: smaller model
     "nlayers": 3,  # Optuna: deeper
     "batch_size": 512,
-    "fee_mult": 2.0,  # Phase 3b: tighter barriers to reduce trades (T16)
-    "r_min": 0.7,  # best PF config
+    "fee_mult": 3.0,
+    "r_min": 0.5,  # Phase 5: relax regime gate (T17 threshold)
     "vpin_max_z": 0.0,  # VPIN gate disabled (T17 paradox, T22 redundancy)
 }
 
