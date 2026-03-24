@@ -47,7 +47,7 @@ DEFAULT_SYMBOLS = [
     "XRP",
 ]
 FEE_BPS = 5  # Taker fee in basis points
-USE_V9 = True  # When True, use compute_features_v9 + normalize_features_v9
+USE_V9 = False  # v5.5: use v5 features (31) with v5.5 config improvements
 
 DATA_ROOT = Path(__file__).parent / "data"
 CACHE_DIR = Path(__file__).parent / ".cache"
@@ -982,7 +982,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v9"  # v9: 5 Aristotle-proven features
+_FEATURE_VERSION = "v5"  # v5: 31 features (cached, no rebuild needed)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
