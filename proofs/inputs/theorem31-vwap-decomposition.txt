@@ -1,0 +1,52 @@
+# Theorem 31: Buy/Sell VWAP Decomposition and Pressure Asymmetry
+
+Based on Bieganowski & Slepaczuk (2026).
+
+## Definitions
+
+Consider a batch of T trades. Each trade i has price p_i, quantity q_i, and side s_i in {buy, sell}.
+
+Define:
+- V_buy = sum_{i: s_i=buy} q_i * p_i  (total buy notional)
+- Q_buy = sum_{i: s_i=buy} q_i  (total buy quantity)
+- V_sell = sum_{i: s_i=sell} q_i * p_i
+- Q_sell = sum_{i: s_i=sell} q_i
+
+- VWAP_buy = V_buy / Q_buy  (buy-side VWAP)
+- VWAP_sell = V_sell / Q_sell  (sell-side VWAP)
+- VWAP = (V_buy + V_sell) / (Q_buy + Q_sell)  (overall VWAP)
+- mid = (best_bid + best_ask) / 2  (midprice)
+
+Define deviations:
+- d_buy = VWAP_buy - mid  (buy pressure: positive means buyers paid above mid)
+- d_sell = VWAP_sell - mid  (sell pressure: negative means sellers sold below mid)
+
+## Claims
+
+1. **VWAP decomposition.** The overall VWAP is a convex combination of buy and sell VWAPs:
+
+     VWAP = (Q_buy * VWAP_buy + Q_sell * VWAP_sell) / (Q_buy + Q_sell)
+
+   Let f = Q_buy / (Q_buy + Q_sell) be the buy fraction. Then:
+
+     VWAP - mid = f * d_buy + (1 - f) * d_sell
+
+   Prove this identity.
+
+2. **Information content.** The pair (d_buy, d_sell) carries strictly more information than the scalar VWAP - mid, because:
+
+     Var(d_buy, d_sell) = Var(d_buy) + Var(d_sell) + 2*Cov(d_buy, d_sell)
+
+   while
+
+     Var(VWAP - mid) = f^2 * Var(d_buy) + (1-f)^2 * Var(d_sell) + 2*f*(1-f)*Cov(d_buy, d_sell)
+
+   Prove that Var(d_buy) + Var(d_sell) >= f^2*Var(d_buy) + (1-f)^2*Var(d_sell) for f in (0,1), with equality iff f = 0 or f = 1 (only one side trades). Therefore the decomposed features have higher total variance.
+
+3. **Asymmetric pressure detection.** Define the pressure asymmetry:
+
+     A = d_buy + d_sell
+
+   If A > 0, buyers are paying more above mid than sellers are selling below mid (net buying pressure dominates even accounting for natural spread). Prove that A = 0 if and only if d_buy = -d_sell (perfectly symmetric pressure).
+
+4. **Relationship to TFI.** The Trade Flow Imbalance TFI = (Q_buy - Q_sell) / (Q_buy + Q_sell) = 2f - 1. Prove that knowing (d_buy, d_sell, f) determines (VWAP - mid, TFI) but not vice versa. The decomposed features are strictly more informative.

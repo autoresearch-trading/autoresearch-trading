@@ -1,0 +1,62 @@
+# Theorem 32: Roll Measure and Amihud Illiquidity — Spread Estimators from Trade Data
+
+Based on Roll (1984) and Amihud (2002).
+
+## Part A: Roll Measure
+
+### Definitions
+
+Let p_t be the transaction price at time t. Define the return r_t = p_t - p_{t-1}.
+
+The Roll (1984) model assumes the observed price p_t = m_t + c * q_t, where:
+- m_t is the efficient price (random walk: m_t = m_{t-1} + u_t, u_t ~ iid(0, sigma_u^2))
+- q_t in {-1, +1} is the trade direction indicator (iid, P(q_t = 1) = P(q_t = -1) = 1/2)
+- c > 0 is the half-spread (effective half bid-ask spread)
+
+### Claims
+
+1. Under the Roll model, the return r_t = u_t + c*(q_t - q_{t-1}). Prove this.
+
+2. The autocovariance of returns at lag 1 is:
+
+     Cov(r_t, r_{t-1}) = -c^2
+
+   Prove this using independence of u_t and q_t, and the fact that Cov(q_t - q_{t-1}, q_{t-1} - q_{t-2}) = -Var(q_t) = -1 when q_t are iid with variance 1.
+
+3. The Roll spread estimator is:
+
+     c_hat = sqrt(max(-Cov_hat(r_t, r_{t-1}), 0))
+
+   Prove that if Cov(r_t, r_{t-1}) < 0 (negative serial correlation, as expected from bid-ask bounce), then c_hat is a consistent estimator of c.
+
+4. If Cov(r_t, r_{t-1}) >= 0 (positive serial correlation, indicating momentum dominates spread), the Roll measure is set to 0. Prove that under the Roll model with c > 0, the probability of observing positive sample autocovariance decreases with sample size T (law of large numbers: sample autocovariance converges to -c^2 < 0).
+
+## Part B: Amihud Illiquidity
+
+### Definitions
+
+The Amihud (2002) illiquidity measure for period t is:
+
+  ILLIQ_t = |r_t| / V_t
+
+where r_t is the return and V_t is the dollar volume (or notional) traded in period t.
+
+### Claims
+
+5. ILLIQ_t is the absolute price impact per unit of trading volume. Prove that under Kyle's (1985) model where delta_p = lambda * q + epsilon (lambda > 0, q = signed order flow):
+
+     E[|r_t| / V_t] is proportional to lambda (Kyle's price impact coefficient)
+
+   Specifically, if r_t = lambda * V_t * sign(q_t) + epsilon_t and V_t is independent of sign(q_t), then:
+
+     E[ILLIQ_t] = lambda + E[|epsilon_t|] / E[V_t]
+
+6. ILLIQ is non-negative by construction (|r| >= 0, V > 0). Prove that ILLIQ = 0 if and only if r_t = 0 (no price change despite trading).
+
+7. **Cross-metric relationship.** Under the Roll model, the effective spread is 2c, and ILLIQ = |u_t + c*(q_t - q_{t-1})| / V_t. Prove that E[ILLIQ] is increasing in c (higher spread implies higher illiquidity), so Roll and Amihud capture related but distinct aspects of liquidity.
+
+8. Numerical verification. With c = 0.0005 (5 bps half-spread, matching our fee), |r| ~ 0.001 (10 bps typical), V = $10000 (typical batch notional):
+
+     ILLIQ = 0.001 / 10000 = 1e-7
+
+   Verify this is consistent with ILLIQ ~ lambda ~ Kyle's lambda for typical crypto markets.

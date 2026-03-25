@@ -1,0 +1,54 @@
+# Theorem 30: Multi-Level Order Flow Imbalance (MLOFI)
+
+Based on Cont, Kukanov & Stoikov (2014) and Xu, Howison & Gould (2019).
+
+## Definitions
+
+Consider a limit order book with L price levels on each side (bid and ask).
+
+At time t, level l has:
+- bid volume: b_l(t), ask volume: a_l(t)  (l = 1, ..., L)
+
+Define the Order Flow Imbalance at level l:
+
+  OFI_l(t) = (b_l(t) - b_l(t-1)) - (a_l(t) - a_l(t-1))
+
+This is the net change in bid depth minus net change in ask depth at level l.
+
+Define the single-level (best quote) OFI:
+
+  OFI_1(t) = OFI at level 1 only
+
+Define the Multi-Level OFI as a weighted sum:
+
+  MLOFI(t) = sum_{l=1}^L w_l * OFI_l(t)
+
+where w_l > 0 are weights (e.g., w_l = 1 for equal weighting, or w_l = 1/l for decay weighting).
+
+The price change model (Cont et al. 2014):
+
+  delta_P(t) = beta * OFI_1(t) + epsilon(t)   (single-level)
+  delta_P(t) = sum_{l=1}^L beta_l * OFI_l(t) + epsilon'(t)   (multi-level)
+
+## Claims
+
+1. **Linear price impact identity.** Under the assumption that delta_P is determined by net order flow plus noise:
+
+     R^2(single) = beta^2 * Var(OFI_1) / Var(delta_P)
+     R^2(multi) = (sum_{l=1}^L beta_l^2 * Var(OFI_l) + 2 * sum_{l<k} beta_l * beta_k * Cov(OFI_l, OFI_k)) / Var(delta_P)
+
+   Prove that R^2(multi) >= R^2(single) always (adding regressors cannot decrease R^2 in-sample).
+
+2. **PCA dominance.** Let Sigma be the L x L covariance matrix of (OFI_1, ..., OFI_L). Let v_1 be the first eigenvector of Sigma with eigenvalue lambda_1. Define PC1 = v_1' * OFI.
+
+   Prove that PC1 captures at least lambda_1 / trace(Sigma) fraction of total OFI variance. If lambda_1 / trace(Sigma) > 0.89 (as reported empirically by Kolm et al. 2023), then a single linear combination captures >89% of the multi-level signal.
+
+3. **Exponential decay of level importance.** If beta_l = beta_1 * exp(-alpha * (l-1)) for some alpha > 0 (deeper levels have geometrically decaying impact), prove that the contribution of levels beyond L_cutoff satisfies:
+
+     sum_{l=L_cutoff+1}^{infinity} beta_l^2 <= beta_1^2 * exp(-2*alpha*L_cutoff) / (1 - exp(-2*alpha))
+
+   Numerical: with alpha = 0.5 and L_cutoff = 5 (our current depth), the truncation error is <= 0.67% of total. With L_cutoff = 3, it is <= 4.98%.
+
+4. **Equal-weight MLOFI vs optimal weights.** Prove that the R^2 loss from using equal weights w_l = 1/L instead of OLS-optimal weights beta_l is bounded by:
+
+     R^2(optimal) - R^2(equal) <= (L-1) * max_l |beta_l - mean(beta)| * Var(OFI_l) / Var(delta_P)
