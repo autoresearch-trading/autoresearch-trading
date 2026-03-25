@@ -1471,12 +1471,14 @@ def evaluate(
 
     # Sortino ratio (only penalizes downside vol)
     # Test period: use actual date range for annualization
-    test_days = 20  # VAL_END (Feb 17) to TEST_END (Mar 9)
+    test_days = (
+        datetime.strptime(TEST_END, "%Y-%m-%d") - datetime.strptime(VAL_END, "%Y-%m-%d")
+    ).days
     steps_per_day = max(len(returns) / test_days, 1)
 
     mean_ret = returns.mean()
-    downside = returns[returns < 0]
-    downside_std = np.sqrt(np.mean(downside**2)) if len(downside) > 0 else 1e-10
+    downside_returns = np.minimum(returns, 0)
+    downside_std = np.sqrt(np.mean(downside_returns**2)) if len(returns) > 0 else 1e-10
 
     if downside_std < 1e-10:
         sortino = 0.0
