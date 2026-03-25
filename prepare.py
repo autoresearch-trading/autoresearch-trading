@@ -709,18 +709,19 @@ V9_FEATURE_NAMES = [
     "utc_hour_linear",  # 6
     "microprice_dev",  # 7
     "delta_tfi",  # 8
-    "multi_level_ofi",  # 9
-    "buy_vwap_dev",  # 10
-    "sell_vwap_dev",  # 11
-    "spread_bps",  # 12
-    "amihud_illiq",  # 13
-    "roll_measure",  # 14
-    "trade_arrival_rate",  # 15
-    "r_20",  # 16
+    "multi_level_ofi",  # 9  (v11, ablation: HELPS)
+    "buy_vwap_dev",  # 10 (v11, ablation: HELPS)
+    "trade_arrival_rate",  # 11 (v11, ablation: HELPS)
+    "r_20",  # 12 (v11, ablation: HELPS)
 ]
+# Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
 
-V9_NUM_FEATURES = 17
-V9_ROBUST_FEATURE_INDICES = {4, 5, 12, 13, 15}  # heavy-tailed features
+V9_NUM_FEATURES = 13
+V9_ROBUST_FEATURE_INDICES = {
+    4,
+    5,
+    11,
+}  # reservation_price_dev, vol_of_vol, trade_arrival_rate
 
 
 def compute_features_v9(
@@ -729,12 +730,12 @@ def compute_features_v9(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 17 v11 features from trade/orderbook data.
+    """Compute 13 v11a features from trade/orderbook data.
 
     Returns: (features, timestamps, prices, raw_hawkes_branching)
-    where features has shape (num_batches, 17).
+    where features has shape (num_batches, 13).
 
-    Feature layout:
+    Feature layout (9 v10 + 4 ablation-validated new):
       0: lambda_ofi              - kyle_lambda * signed_notional
       1: directional_conviction  - TFI * |signed_notional|
       2: vpin                    - rolling mean of |TFI|
@@ -746,12 +747,10 @@ def compute_features_v9(
       8: delta_tfi               - first difference of TFI
       9: multi_level_ofi         - weighted depth changes across 5 levels (T30)
      10: buy_vwap_dev            - buy VWAP - VWAP (T31)
-     11: sell_vwap_dev           - sell VWAP - VWAP (T31)
-     12: spread_bps              - bid-ask spread in basis points (T32)
-     13: amihud_illiq            - |return| / notional volume (T32)
-     14: roll_measure            - sqrt(max(-autocov, 0)) (T32)
-     15: trade_arrival_rate      - trades / second per batch (T34)
-     16: r_20                    - 20-batch cumulative return (T35)
+     11: trade_arrival_rate      - trades / second per batch (T34)
+     12: r_20                    - 20-batch cumulative return (T35)
+
+    Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
     """
     if trades_df.empty:
         return np.array([]), np.array([]), np.array([]), np.array([])
@@ -938,6 +937,8 @@ def compute_features_v9(
     r_20 = pd.Series(returns).rolling(window=20, min_periods=1).sum().fillna(0).values
 
     # --- Stack features ---
+    # Ablation-validated: 4 of 8 new features kept, 4 dropped (HURTS)
+    # Dropped: sell_vwap_dev, spread_bps_arr, amihud, roll_measure
     features = np.column_stack(
         [
             lambda_ofi,  # 0
@@ -949,14 +950,10 @@ def compute_features_v9(
             utc_hour_linear,  # 6
             microprice_dev,  # 7
             delta_tfi,  # 8
-            mlofi,  # 9  (NEW - T30)
-            buy_vwap_dev,  # 10 (NEW - T31)
-            sell_vwap_dev,  # 11 (NEW - T31)
-            spread_bps_arr,  # 12 (NEW - T32)
-            amihud,  # 13 (NEW - T32)
-            roll_measure,  # 14 (NEW - T32)
-            trade_arrival_rate,  # 15 (NEW - T34)
-            r_20,  # 16 (NEW - T35)
+            mlofi,  # 9  (HELPS -0.020)
+            buy_vwap_dev,  # 10 (HELPS -0.029)
+            trade_arrival_rate,  # 11 (HELPS -0.016)
+            r_20,  # 12 (HELPS -0.017)
         ]
     )
 
@@ -1109,7 +1106,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v11"  # v11: 17 features (9 v10 + 8 new)
+_FEATURE_VERSION = "v11a"  # v11a: 13 features (9 v10 + 4 ablation-validated)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:

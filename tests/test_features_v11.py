@@ -43,42 +43,31 @@ def test_mlofi_from_balanced_book(make_orderbook):
     assert mlofi.shape == (10,)
 
 
-def test_buy_sell_vwap_decomposition(make_trades, make_orderbook, make_funding):
-    """T31: buy_vwap_dev + sell_vwap_dev are computed."""
+def test_buy_vwap_dev_computed(make_trades, make_orderbook, make_funding):
+    """T31: buy_vwap_dev is computed."""
     trades = make_trades(n=500, sides=["open_long", "open_short"])
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
     features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
-    assert features.shape[1] == 17  # v11 feature count
-    # buy_vwap_dev = feature 10, sell_vwap_dev = feature 11
+    assert features.shape[1] == 13  # v11a feature count
+    # buy_vwap_dev = feature 10
     assert features[:, 10].shape[0] > 0
-    assert features[:, 11].shape[0] > 0
 
 
-def test_roll_measure_nonnegative(make_trades, make_orderbook, make_funding):
-    """T32: Roll measure should be non-negative."""
+def test_trade_arrival_rate_positive(make_trades, make_orderbook, make_funding):
+    """T34: Trade arrival rate should be non-negative."""
     trades = make_trades(n=500)
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
     features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
-    roll = features[:, 14]  # roll_measure
-    assert np.all(roll >= 0)  # Roll is sqrt of max(0, -autocov)
+    arrival_rate = features[:, 11]  # trade_arrival_rate
+    assert np.all(arrival_rate >= 0)
 
 
-def test_amihud_nonnegative(make_trades, make_orderbook, make_funding):
-    """T32: Amihud illiquidity is non-negative."""
+def test_feature_count_v11a(make_trades, make_orderbook, make_funding):
+    """v11a should output exactly 13 features (9 v10 + 4 ablation-validated)."""
     trades = make_trades(n=500)
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
     features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
-    amihud = features[:, 13]  # amihud_illiq
-    assert np.all(amihud >= 0)
-
-
-def test_feature_count_v11(make_trades, make_orderbook, make_funding):
-    """v11 should output exactly 17 features."""
-    trades = make_trades(n=500)
-    ob = make_orderbook(n=125)
-    funding = make_funding(n=10)
-    features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
-    assert features.shape[1] == 17
+    assert features.shape[1] == 13
