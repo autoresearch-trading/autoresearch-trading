@@ -1,0 +1,68 @@
+# Theorem 26: Sortino Ratio Correct Formula and Bug Characterization
+
+## Definitions
+
+Let R = (R_1, R_2, ..., R_N) be a finite sequence of returns with N >= 1.
+
+Define the target return T = 0 (standard for trading strategies).
+
+**Correct Target Downside Deviation (TDD)** (Rollinger & Hoffman, CME Group):
+
+  TDD_correct = sqrt( (1/N) * sum_{i=1}^N min(R_i, 0)^2 )
+
+That is: replace all positive returns with zero, square all entries, average over ALL N observations, take the square root.
+
+**Buggy implementation** (filter to negatives only, then average):
+
+Let N_neg = |{i : R_i < 0}| be the count of negative returns.
+
+  TDD_buggy = sqrt( (1/N_neg) * sum_{i=1}^N min(R_i, 0)^2 )
+
+Note: the sum in the numerator is identical; only the denominator differs (N vs N_neg).
+
+Define:
+  p = N_neg / N  (fraction of negative returns, 0 < p < 1 when there exist both positive and negative returns)
+
+**Sortino ratio** (with target T=0):
+
+  S_correct = mu / TDD_correct * sqrt(m)
+  S_buggy   = mu / TDD_buggy * sqrt(m)
+
+where mu = mean(R) and m > 0 is the annualization factor (steps_per_day).
+
+## Claims
+
+1. The relationship between TDD_buggy and TDD_correct is:
+
+     TDD_buggy = TDD_correct / sqrt(p).
+
+   Prove this by expanding both definitions and factoring out the denominator ratio.
+
+2. Therefore:
+
+     S_buggy = S_correct * sqrt(p).
+
+   The buggy Sortino is always a factor of sqrt(p) times the correct Sortino.
+
+3. Since 0 < p < 1 (when there exist both positive and negative returns), sqrt(p) < 1, so:
+
+     S_buggy < S_correct.
+
+   The buggy implementation always UNDERSTATES the Sortino ratio.
+
+4. The error is worst when p is small (few negative returns = large understatement). The error vanishes as p → 1 (all returns negative, but then mu < 0 and Sortino is negative anyway).
+
+5. Numerical verification. With p = 0.45 (approximately 45% of step returns are negative, matching our empirical observation):
+
+     sqrt(0.45) = sqrt(9/20) = 3/sqrt(20) = 3/(2*sqrt(5))
+
+   Verify that sqrt(0.45) < 0.6709 and sqrt(0.45) > 0.6708, so the buggy Sortino reports approximately 67.08% of the true value.
+
+   Equivalently, the correction factor is 1/sqrt(0.45) > 1.490 and < 1.491, so the true Sortino is approximately 1.49x the reported value.
+
+6. For our reported Sortino values:
+   - Reported S_buggy = 0.161 implies S_correct ≈ 0.161 / sqrt(0.45) ≈ 0.240
+   - Reported S_buggy = 0.177 implies S_correct ≈ 0.177 / sqrt(0.45) ≈ 0.264
+   - Reported S_buggy = 0.230 implies S_correct ≈ 0.230 / sqrt(0.45) ≈ 0.343
+
+   Verify each numerical bound.
