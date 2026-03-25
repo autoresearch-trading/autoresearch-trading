@@ -4,33 +4,26 @@
 - Run command: `uv run python train.py`
 - Entry point: `train.py`
 - Files to modify per experiment: `train.py` (config), `prepare.py` (features/metrics)
-- Output contract: PORTFOLIO SUMMARY block with `sortino:`, `symbols_passing:`, `num_trades:`, `max_drawdown:`, `win_rate:`, `profit_factor:` lines
+- Output contract: PORTFOLIO SUMMARY block with `sortino:`, `sharpe:`, `calmar:`, `cvar_95:`, `symbols_passing:`, `num_trades:`, `max_drawdown:`, `win_rate:`, `profit_factor:` lines
 - Parser: `bash .claude/skills/autoresearch/resources/parse_summary.sh <logfile>`
 - Symbols: 25
 - Approximate run duration: ~30 min (DirectionClassifier), ~80 min (HybridClassifier)
-- Primary metric: Sortino ratio (BUGGY — see T26, fix pending for v11)
+- Primary metric: Sortino ratio (FIXED in v11 — T26, divides by N not N_neg)
 - Default scoring: `score = mean_sortino * 0.6 + (passing / total_symbols) * 0.4`
-- Cache note: v5, v9, v10 caches all exist. v11 cache needs building (~30-45 min).
-- Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END needs updating to 2026-03-25.
+- Cache note: v5, v9, v10, v11 caches all exist.
+- Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END=2026-03-25 (36 test days).
 
-## Current Best
-- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, labeling=triple_barrier, max_hold=300, features=v5 (31), window=50, seeds=5, epochs=25, model=DirectionClassifier, gates=none}
-- Score: sortino=+0.177 (BUGGY, true ≈ 0.264), passing=16/25, PF=1.39, WR=62.7%, trades=900
-- Commit: de882f7 (Run 7)
+## Current Best (v10, buggy Sortino, 20 test days)
+- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, labeling=triple_barrier, max_hold=300, features=v10 (9), window=50, seeds=5, epochs=25, model=DirectionClassifier, gates=none}
+- Score: sortino=+0.230 (BUGGY, true ≈ 0.154), passing=18/25, trades=923
+- Commit: wd5e4
 
-## v10 Best (9 features)
-- Config: same as above but features=v10 (9), no gates
-- Score: sortino=+0.161 (BUGGY, true ≈ 0.240), passing=16/25, PF=1.34, WR=59.7%, trades=900
-- Commit: 6a68f9f (Run 11)
-- Note: 9 features capture 91% of v5's 31-feature Sortino
-
-## v11 Plan (NEXT SESSION — implement)
-17 features = 9 existing + 8 new, all backed by 35 Aristotle proofs:
-- ADD: multi_level_ofi, buy_vwap_dev, sell_vwap_dev, spread_bps, amihud_illiq, roll_measure, trade_arrival_rate, r_20
-- FIX: Sortino formula (T26: divides by N not N_neg, ~1.49x correction)
-- ADD METRICS: Sharpe, Calmar, CVaR 95%
-- EXTEND: TEST_END 2026-03-09 → 2026-03-25 (20 → 36 test days)
-- CACHE: bump _FEATURE_VERSION to "v11", rebuild ~30-45 min
+## v11 Baseline (17 features, corrected Sortino, 36 test days)
+- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v11 (17), window=50, seeds=5, epochs=25}
+- Score: sortino=0.032, sharpe=0.023, calmar=2.049, cvar_95=0.002, passing=5/25, WR=54.7%, PF=1.02, trades=1600
+- Commit: 23ac443
+- Passing symbols: BNB, BTC, ENA, LTC, SOL
+- Note: Significant regression — new features untouched by Optuna, 36 test days harder than 20, Sortino fix removes inflation. Needs hyperparameter tuning.
 
 ## Key Findings (This Session)
 1. **Feature set is the bottleneck** — v5 (31 feat) >> v9 (5 feat) for Sortino; v10 (9 feat) captures 91%
@@ -53,10 +46,10 @@
 - T30-T35: Feature validation (multi-level OFI, VWAP decomposition, Roll/Amihud, microprice, arrival rate, momentum)
 
 ## Open Questions
-1. Will v11 (17 features) beat v5 (31 features)? T23 says k*≈10-20 is optimal.
-2. With 36 test days, do we reach per-symbol significance? (~65 trades vs 99 needed)
-3. Does the Sortino fix change which symbols pass?
-4. Can Calmar ratio provide better risk assessment than Sortino alone?
+1. v11 baseline regressed (0.032 vs 0.230 buggy) — is it the Sortino fix, 36 test days, or new features hurting?
+2. Ablation needed: run v10 (9 features) with corrected Sortino + 36 days to isolate the regression cause
+3. Optuna search on v11 — fee_mult and feature selection are likely the levers
+4. With 64 trades/symbol (min_hold=800), each symbol has ~64 trades vs 99 needed (T29)
 5. Walk-forward validation — should we implement instead of fixed splits?
 
 ## Completed Experiments
