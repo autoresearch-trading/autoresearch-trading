@@ -305,13 +305,16 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
 
 # ── Evaluation ─────────────────────────────────────────────────
 def eval_policy(policy_fn, symbols, split="test", params=None):
-    """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor)."""
+    """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor, sharpe, calmar, cvar)."""
     p_ref = params or {}
     passing = []
     trades_all = 0
     worst_dd = 0.0
     all_win_rates = []
     all_profit_factors = []
+    all_sharpes = []
+    all_calmars = []
+    all_cvars = []
 
     for sym in symbols:
         try:
@@ -338,6 +341,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
 
             t, d = 0, 0.0
             wr, pf = 0.0, 0.0
+            sharpe_val, calmar_val, cvar_val = 0.0, 0.0, 0.0
             for ln in out.strip().split("\n"):
                 if ln.startswith("num_trades:"):
                     t = int(ln.split()[1])
@@ -347,6 +351,12 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
                     wr = float(ln.split()[1])
                 elif ln.startswith("profit_factor:"):
                     pf = float(ln.split()[1])
+                elif ln.startswith("sharpe:"):
+                    sharpe_val = float(ln.split()[1])
+                elif ln.startswith("calmar:"):
+                    calmar_val = float(ln.split()[1])
+                elif ln.startswith("cvar_95:"):
+                    cvar_val = float(ln.split()[1])
 
             passed = (t >= 10 and d <= 0.20) if t > 0 else False
             tag = "PASS" if passed else "FAIL"
@@ -354,6 +364,9 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
             print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
             if passed:
                 passing.append(sh)
+                all_sharpes.append(sharpe_val)
+                all_calmars.append(calmar_val)
+                all_cvars.append(cvar_val)
             if passed and wr > 0:
                 all_win_rates.append(wr)
                 all_profit_factors.append(pf)
@@ -364,6 +377,9 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
 
     mean_wr = float(np.mean(all_win_rates)) if all_win_rates else 0.0
     mean_pf = float(np.mean(all_profit_factors)) if all_profit_factors else 0.0
+    mean_sharpe = float(np.mean(all_sharpes)) if all_sharpes else 0.0
+    mean_calmar = float(np.mean(all_calmars)) if all_calmars else 0.0
+    mean_cvar = float(np.mean(all_cvars)) if all_cvars else 0.0
 
     return (
         float(np.mean(passing)) if passing else 0.0,
@@ -372,6 +388,9 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
         worst_dd,
         mean_wr,
         mean_pf,
+        mean_sharpe,
+        mean_calmar,
+        mean_cvar,
     )
 
 
@@ -478,8 +497,22 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
     else:
         ensemble_fn = make_ensemble_fn(models, DEVICE)
 
-    sh, ps, tr, dd, wr, pf = eval_policy(ensemble_fn, symbols, split=split, params=p)
-    return sh, ps, tr, dd, total_steps_all, total_updates_all, wr, pf
+    sh, ps, tr, dd, wr, pf, sharpe, calmar, cvar = eval_policy(
+        ensemble_fn, symbols, split=split, params=p
+    )
+    return (
+        sh,
+        ps,
+        tr,
+        dd,
+        total_steps_all,
+        total_updates_all,
+        wr,
+        pf,
+        sharpe,
+        calmar,
+        cvar,
+    )
 
 
 # ── Optuna objective ───────────────────────────────────────────
@@ -500,7 +533,7 @@ def objective(trial):
 
     try:
         t0 = time.time()
-        sh, ps, tr, dd, _, _, _, _ = full_run(
+        sh, ps, tr, dd, _, _, _, _, _, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
@@ -572,7 +605,7 @@ def main():
     )
     print(f"params: {bp}\n")
 
-    sh, ps, tr, dd, total_steps, total_updates, wr, pf = full_run(
+    sh, ps, tr, dd, total_steps, total_updates, wr, pf, sharpe, calmar, cvar = full_run(
         DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
     )
 
@@ -580,6 +613,9 @@ def main():
     print("=== PORTFOLIO SUMMARY ===")
     print(f"symbols_passing: {ps}/{len(DEFAULT_SYMBOLS)}")
     print(f"sortino: {sh:.6f}")
+    print(f"sharpe: {sharpe:.6f}")
+    print(f"calmar: {calmar:.6f}")
+    print(f"cvar_95: {cvar:.6f}")
     print(f"num_trades: {tr}")
     print(f"max_drawdown: {dd:.4f}")
     if wr > 0:
