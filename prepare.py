@@ -1485,7 +1485,23 @@ def evaluate(
     else:
         sortino = mean_ret / downside_std * np.sqrt(steps_per_day)
 
+    # Sharpe ratio (T27)
+    std_ret = returns.std() if len(returns) > 1 else 1e-10
+    sharpe = mean_ret / std_ret * np.sqrt(steps_per_day) if std_ret > 1e-10 else 0.0
+
+    # Calmar ratio (T27: annualized return / max drawdown)
+    annual_return = mean_ret * steps_per_day * 365
+    calmar = annual_return / max_dd if max_dd > 1e-10 else 0.0
+
+    # CVaR 95% (T28: mean of worst 5% of returns)
+    sorted_returns = np.sort(returns)
+    k = max(1, int(0.05 * len(returns)))
+    cvar_95 = -np.mean(sorted_returns[:k])
+
     print(f"sortino: {sortino:.6f}")
+    print(f"sharpe: {sharpe:.6f}")
+    print(f"calmar: {calmar:.6f}")
+    print(f"cvar_95: {cvar_95:.6f}")
     print(f"num_trades: {total_trades}")
     print(f"max_drawdown: {max_dd:.4f}")
 
