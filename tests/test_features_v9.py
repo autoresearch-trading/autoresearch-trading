@@ -1,14 +1,12 @@
-"""Tests for v9 Aristotle-proven features (5 features)."""
+"""Tests for v9/v11 features."""
 
 import numpy as np
 
-from prepare import compute_features_v9
-
-V9_NUM_FEATURES = 5
+from prepare import V9_NUM_FEATURES, compute_features_v9
 
 
 class TestV9FeatureShape:
-    def test_output_shape_5_features(self, make_trades, make_orderbook, make_funding):
+    def test_output_shape(self, make_trades, make_orderbook, make_funding):
         features, ts, px, rh = compute_features_v9(
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
@@ -24,7 +22,9 @@ class TestV9FeatureShape:
     def test_feature_names(self):
         from prepare import V9_FEATURE_NAMES
 
-        assert V9_FEATURE_NAMES == [
+        assert len(V9_FEATURE_NAMES) == V9_NUM_FEATURES
+        # First 5 are the original Aristotle-proven features
+        assert V9_FEATURE_NAMES[:5] == [
             "lambda_ofi",
             "directional_conviction",
             "vpin",

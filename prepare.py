@@ -700,15 +700,27 @@ ROBUST_FEATURE_INDICES = {
 # ============================================================
 
 V9_FEATURE_NAMES = [
-    "lambda_ofi",
-    "directional_conviction",
-    "vpin",
-    "hawkes_branching",
-    "reservation_price_dev",
+    "lambda_ofi",  # 0
+    "directional_conviction",  # 1
+    "vpin",  # 2
+    "hawkes_branching",  # 3
+    "reservation_price_dev",  # 4
+    "vol_of_vol",  # 5
+    "utc_hour_linear",  # 6
+    "microprice_dev",  # 7
+    "delta_tfi",  # 8
+    "multi_level_ofi",  # 9
+    "buy_vwap_dev",  # 10
+    "sell_vwap_dev",  # 11
+    "spread_bps",  # 12
+    "amihud_illiq",  # 13
+    "roll_measure",  # 14
+    "trade_arrival_rate",  # 15
+    "r_20",  # 16
 ]
 
-V9_NUM_FEATURES = 5
-V9_ROBUST_FEATURE_INDICES = {4, 5}  # reservation_price_dev, vol_of_vol (heavy-tailed)
+V9_NUM_FEATURES = 17
+V9_ROBUST_FEATURE_INDICES = {4, 5, 12, 13, 15}  # heavy-tailed features
 
 
 def compute_features_v9(
@@ -717,21 +729,29 @@ def compute_features_v9(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 9 features: 5 Aristotle-proven + 4 top permutation importance.
+    """Compute 17 v11 features from trade/orderbook data.
 
     Returns: (features, timestamps, prices, raw_hawkes_branching)
-    where features has shape (num_batches, 9).
+    where features has shape (num_batches, 17).
 
     Feature layout:
-      0: lambda_ofi              - kyle_lambda * signed_notional (sufficient statistic)
-      1: directional_conviction  - TFI * |signed_notional| (sufficient statistic)
-      2: vpin                    - rolling mean of |TFI| (toxicity proxy)
-      3: hawkes_branching        - 1 - 1/sqrt(Var(N)/E[N]) (self-excitation)
-      4: reservation_price_dev   - orderbook_imbalance * realvol^2 (inventory pressure)
-      5: vol_of_vol              - rolling std of realvol (perm importance #1)
-      6: utc_hour_linear         - hour_utc / 24 (perm importance #2)
-      7: microprice_dev          - microprice - midprice (perm importance #3)
-      8: delta_tfi               - first difference of TFI (perm importance #4)
+      0: lambda_ofi              - kyle_lambda * signed_notional
+      1: directional_conviction  - TFI * |signed_notional|
+      2: vpin                    - rolling mean of |TFI|
+      3: hawkes_branching        - 1 - 1/sqrt(Var(R)/E[R])
+      4: reservation_price_dev   - orderbook_imbalance * realvol^2
+      5: vol_of_vol              - rolling std of realvol
+      6: utc_hour_linear         - hour_utc / 24
+      7: microprice_dev          - microprice - midprice
+      8: delta_tfi               - first difference of TFI
+      9: multi_level_ofi         - weighted depth changes across 5 levels (T30)
+     10: buy_vwap_dev            - buy VWAP - VWAP (T31)
+     11: sell_vwap_dev           - sell VWAP - VWAP (T31)
+     12: spread_bps              - bid-ask spread in basis points (T32)
+     13: amihud_illiq            - |return| / notional volume (T32)
+     14: roll_measure            - sqrt(max(-autocov, 0)) (T32)
+     15: trade_arrival_rate      - trades / second per batch (T34)
+     16: r_20                    - 20-batch cumulative return (T35)
     """
     if trades_df.empty:
         return np.array([]), np.array([]), np.array([]), np.array([])
@@ -810,11 +830,6 @@ def compute_features_v9(
         pd.Series(returns).rolling(window=10, min_periods=2).std().fillna(0).values
     )
 
-    # --- Intermediate: weighted_imbalance_5lvl (from orderbook) ---
-    weighted_imbalance = _compute_orderbook_imbalance(
-        orderbook_df, ts_batched[:, -1], num_batches
-    )
-
     # === Feature 0: lambda_ofi ===
     lambda_ofi = kyle_lambda * signed_notional
 
@@ -826,17 +841,9 @@ def compute_features_v9(
     vpin = pd.Series(abs_tfi).rolling(window=50, min_periods=1).mean().fillna(0).values
 
     # === Feature 3: hawkes_branching ===
-    # Theorem 11 proved: for fixed-size batches, use arrival RATE (B/duration),
-    # not event counts. Var(rate)/E[rate] incorporates the rate-dependence that
-    # the fixed-time-window formula misses. The naive count-based estimator is
-    # wrong because total trades per batch = trade_batch (constant).
-    #
-    # Proved: n_hat = 1 - 1/sqrt(Var(R)/E[R]) is monotone, in (0,1) when overdispersed,
-    # and = 0 at Poisson baseline.
     batch_first_ts = ts_batched[:, 0]
     batch_last_ts = ts_batched[:, -1]
     batch_duration_s = (batch_last_ts - batch_first_ts) / 1000.0
-    # Arrival rate per batch: R_k = B / D_k
     arrival_rates = np.where(
         batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
     )
@@ -845,52 +852,111 @@ def compute_features_v9(
     hawkes_window = 50
     for i in range(hawkes_window, num_batches):
         window_rates = arrival_rates[i - hawkes_window : i]
-        window_rates = window_rates[window_rates > 0]  # skip zero-duration batches
+        window_rates = window_rates[window_rates > 0]
         if len(window_rates) < 10:
             continue
         mean_r = window_rates.mean()
         var_r = window_rates.var()
         if mean_r > 0:
             ratio = var_r / mean_r
-            if ratio > 1.0:  # overdispersed rates -> self-excitation
+            if ratio > 1.0:
                 hawkes_branching[i] = 1.0 - 1.0 / np.sqrt(ratio)
-        # else: stays 0.0 (Poisson or sub-dispersed)
     hawkes_branching = np.clip(hawkes_branching, 0.0, 0.99)
     raw_hawkes_branching = hawkes_branching.copy()
+
+    # --- Orderbook features (unified helper) ---
+    batch_timestamps_final = ts_batched[:, -1]
+    microprice_dev, spread_bps_arr, mlofi, weighted_imbalance = (
+        _compute_orderbook_features(orderbook_df, batch_timestamps_final, num_batches)
+    )
 
     # === Feature 4: reservation_price_dev ===
     reservation_price_dev = weighted_imbalance * (realvol**2)
 
-    # === Feature 5: vol_of_vol (permutation importance #1, drop=0.301) ===
+    # === Feature 5: vol_of_vol ===
     vol_of_vol = (
         pd.Series(realvol).rolling(window=50, min_periods=10).std().fillna(0).values
     )
 
-    # === Feature 6: utc_hour_linear (permutation importance #2, drop=0.279) ===
-    batch_timestamps_final = ts_batched[:, -1]
+    # === Feature 6: utc_hour_linear ===
     utc_hour_linear = ((batch_timestamps_final / 1000 / 3600) % 24) / 24.0
 
-    # === Feature 7: microprice_dev (permutation importance #3, drop=0.218) ===
-    microprice_dev = _compute_microprice_dev(
-        orderbook_df, batch_timestamps_final, num_batches
-    )
+    # === Feature 7: microprice_dev (from unified OB helper) ===
+    # (already computed above)
 
-    # === Feature 8: delta_TFI (permutation importance #4, drop=0.210) ===
+    # === Feature 8: delta_TFI ===
     delta_tfi = np.zeros(num_batches)
     delta_tfi[1:] = tfi[1:] - tfi[:-1]
+
+    # === Feature 9: multi_level_ofi (T30) ===
+    # (already computed by _compute_orderbook_features)
+
+    # === Feature 10: buy_vwap_dev (T31) ===
+    buy_notional = (notionals_batched * is_buy_batched).sum(axis=1)
+    buy_qty = (
+        trades_df["qty"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+        * is_buy_batched
+    ).sum(axis=1)
+    sell_notional = (notionals_batched * ~is_buy_batched).sum(axis=1)
+    sell_qty = (
+        trades_df["qty"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+        * ~is_buy_batched
+    ).sum(axis=1)
+    buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+    sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+    buy_vwap_dev = buy_vwap - vwap
+    # === Feature 11: sell_vwap_dev (T31) ===
+    sell_vwap_dev = sell_vwap - vwap
+
+    # === Feature 12: spread_bps (T32, from unified OB helper) ===
+    # (already computed above)
+
+    # === Feature 13: amihud_illiq (T32) ===
+    amihud = np.where(
+        total_batch_notional > 0, np.abs(returns) / total_batch_notional, 0.0
+    )
+
+    # === Feature 14: roll_measure (T32) ===
+    roll_measure = np.zeros(num_batches)
+    roll_window = 20
+    for i in range(roll_window, num_batches):
+        r_win = returns[i - roll_window : i]
+        if len(r_win) > 1:
+            autocov = np.cov(r_win[1:], r_win[:-1])[0, 1]
+            roll_measure[i] = np.sqrt(max(-autocov, 0))
+
+    # === Feature 15: trade_arrival_rate (T34) ===
+    trade_arrival_rate = np.where(
+        batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+    )
+
+    # === Feature 16: r_20 (T35) ===
+    r_20 = pd.Series(returns).rolling(window=20, min_periods=1).sum().fillna(0).values
 
     # --- Stack features ---
     features = np.column_stack(
         [
-            lambda_ofi,
-            directional_conviction,
-            vpin,
-            hawkes_branching,
-            reservation_price_dev,
-            vol_of_vol,
-            utc_hour_linear,
-            microprice_dev,
-            delta_tfi,
+            lambda_ofi,  # 0
+            directional_conviction,  # 1
+            vpin,  # 2
+            hawkes_branching,  # 3
+            reservation_price_dev,  # 4
+            vol_of_vol,  # 5
+            utc_hour_linear,  # 6
+            microprice_dev,  # 7
+            delta_tfi,  # 8
+            mlofi,  # 9  (NEW - T30)
+            buy_vwap_dev,  # 10 (NEW - T31)
+            sell_vwap_dev,  # 11 (NEW - T31)
+            spread_bps_arr,  # 12 (NEW - T32)
+            amihud,  # 13 (NEW - T32)
+            roll_measure,  # 14 (NEW - T32)
+            trade_arrival_rate,  # 15 (NEW - T34)
+            r_20,  # 16 (NEW - T35)
         ]
     )
 
@@ -899,90 +965,88 @@ def compute_features_v9(
     return features, batch_timestamps_final, batch_prices, raw_hawkes_branching
 
 
-def _compute_microprice_dev(
+def _compute_orderbook_features(
     orderbook_df: pd.DataFrame, batch_timestamps: np.ndarray, num_batches: int
-) -> np.ndarray:
-    """Compute microprice - midprice deviation aligned to batch timestamps."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute orderbook-derived features aligned to batch timestamps.
+
+    Returns: (microprice_dev, spread_bps, multi_level_ofi, weighted_imbalance)
+    """
     microprice_dev = np.zeros(num_batches)
+    spread_bps = np.zeros(num_batches)
+    mlofi = np.zeros(num_batches)
+    weighted_imbalance = np.zeros(num_batches)
+
     if orderbook_df.empty:
-        return microprice_dev
+        return microprice_dev, spread_bps, mlofi, weighted_imbalance
 
     ob_ts = orderbook_df["ts_ms"].values
     ob_idx = 0
+    prev_bid_depths = None
+    prev_ask_depths = None
+    weights = [1.0, 0.5, 1 / 3, 0.25, 0.2]
 
     for i in range(num_batches):
         while ob_idx < len(ob_ts) - 1 and ob_ts[ob_idx + 1] <= batch_timestamps[i]:
             ob_idx += 1
-
         if ob_idx >= len(ob_ts) or ob_ts[ob_idx] > batch_timestamps[i]:
             continue
 
         row = orderbook_df.iloc[ob_idx]
         bids = row.get("bids", [])
         asks = row.get("asks", [])
-
-        if len(bids) > 0 and len(asks) > 0:
-            best_bid = bids[0]["price"]
-            best_ask = asks[0]["price"]
-            mid = (best_bid + best_ask) / 2
-            best_bid_qty = bids[0]["qty"]
-            best_ask_qty = asks[0]["qty"]
-            total_qty = best_bid_qty + best_ask_qty
-            if total_qty > 0:
-                microprice = (
-                    best_bid * best_ask_qty + best_ask * best_bid_qty
-                ) / total_qty
-                microprice_dev[i] = microprice - mid
-
-    return microprice_dev
-
-
-def _compute_orderbook_imbalance(
-    orderbook_df: pd.DataFrame, batch_timestamps: np.ndarray, num_batches: int
-) -> np.ndarray:
-    """Compute weighted 5-level orderbook imbalance aligned to batch timestamps."""
-    imbalance = np.zeros(num_batches)
-    if orderbook_df.empty:
-        return imbalance
-
-    ob_ts = orderbook_df["ts_ms"].values
-    ob_idx = 0
-
-    for i in range(num_batches):
-        # Find latest orderbook snapshot before this batch
-        while ob_idx < len(ob_ts) - 1 and ob_ts[ob_idx + 1] <= batch_timestamps[i]:
-            ob_idx += 1
-
-        if ob_idx >= len(ob_ts) or ob_ts[ob_idx] > batch_timestamps[i]:
+        if len(bids) == 0 or len(asks) == 0:
             continue
 
-        row = orderbook_df.iloc[ob_idx]
-        bids = row.get("bids", [])
-        asks = row.get("asks", [])
+        best_bid = bids[0]["price"]
+        best_ask = asks[0]["price"]
+        mid = (best_bid + best_ask) / 2
 
-        # Exponential weights matching v6 weighted_imbalance_5lvl (prepare.py ~line 454)
-        weights = [1.0, 0.5, 1 / 3, 0.25, 0.2]
-        bid_depth = (
-            sum(
-                w * b["qty"] * b["price"]
-                for w, b in zip(weights[: min(5, len(bids))], bids[:5])
-            )
-            if len(bids) > 0
-            else 0
+        # Spread in bps (T32)
+        if mid > 0:
+            spread_bps[i] = (best_ask - best_bid) / mid * 10000
+
+        # Microprice deviation (T33)
+        best_bid_qty = bids[0]["qty"]
+        best_ask_qty = asks[0]["qty"]
+        total_qty = best_bid_qty + best_ask_qty
+        if total_qty > 0:
+            microprice = (best_bid * best_ask_qty + best_ask * best_bid_qty) / total_qty
+            microprice_dev[i] = microprice - mid
+
+        # Multi-level OFI (T30): change in depth at each level
+        n_levels = min(5, len(bids), len(asks))
+        curr_bid_depths = np.array(
+            [bids[lvl]["qty"] * bids[lvl]["price"] for lvl in range(n_levels)]
         )
-        ask_depth = (
-            sum(
-                w * a["qty"] * a["price"]
-                for w, a in zip(weights[: min(5, len(asks))], asks[:5])
-            )
-            if len(asks) > 0
-            else 0
+        curr_ask_depths = np.array(
+            [asks[lvl]["qty"] * asks[lvl]["price"] for lvl in range(n_levels)]
+        )
+
+        if prev_bid_depths is not None and len(prev_bid_depths) == n_levels:
+            delta_bid = curr_bid_depths - prev_bid_depths
+            delta_ask = curr_ask_depths - prev_ask_depths
+            ofi_per_level = delta_bid - delta_ask
+            level_weights = np.array(weights[:n_levels])
+            mlofi[i] = np.sum(level_weights * ofi_per_level)
+
+        prev_bid_depths = curr_bid_depths.copy()
+        prev_ask_depths = curr_ask_depths.copy()
+
+        # Weighted imbalance (for reservation_price_dev)
+        bid_depth = sum(
+            w * b["qty"] * b["price"]
+            for w, b in zip(weights[: min(5, len(bids))], bids[:5])
+        )
+        ask_depth = sum(
+            w * a["qty"] * a["price"]
+            for w, a in zip(weights[: min(5, len(asks))], asks[:5])
         )
         total = bid_depth + ask_depth
         if total > 0:
-            imbalance[i] = (bid_depth - ask_depth) / total
+            weighted_imbalance[i] = (bid_depth - ask_depth) / total
 
-    return imbalance
+    return microprice_dev, spread_bps, mlofi, weighted_imbalance
 
 
 def normalize_features_v9(features: np.ndarray, window: int = 1000) -> np.ndarray:
@@ -1045,7 +1109,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v10"  # v10: 9 features (5 Aristotle + 4 permutation importance)
+_FEATURE_VERSION = "v11"  # v11: 17 features (9 v10 + 8 new)
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
