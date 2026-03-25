@@ -515,15 +515,64 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
     )
 
 
-# ── Optuna objective ───────────────────────────────────────────
+# ── Warm-start configs from prior experiments ─────────────────
+WARM_START_CONFIGS = [
+    # v10 best (wd5e4 run, 18/25 passing)
+    {
+        "lr": 1e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 256,
+        "fee_mult": 1.5,
+        "r_min": 0.0,
+    },
+    # v5 baseline
+    {
+        "lr": 1e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 256,
+        "fee_mult": 1.5,
+        "r_min": 0.7,
+    },
+    # tape-v3 best (min_hold=300 era)
+    {
+        "lr": 1e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 256,
+        "fee_mult": 10.0,
+        "r_min": 0.0,
+    },
+    # wider fee_mult exploration
+    {
+        "lr": 5e-4,
+        "hdim": 128,
+        "nlayers": 3,
+        "batch_size": 512,
+        "fee_mult": 3.0,
+        "r_min": 0.0,
+    },
+    {
+        "lr": 2e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 128,
+        "fee_mult": 5.0,
+        "r_min": 0.5,
+    },
+]
+
+
+# ── Optuna objective (multi-fidelity + pruning) ──────────────
 def objective(trial):
     p = {
         "lr": trial.suggest_float("lr", 5e-4, 5e-3, log=True),
         "hdim": trial.suggest_categorical("hdim", [64, 128, 256]),
         "nlayers": trial.suggest_categorical("nlayers", [2, 3]),
         "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
-        "fee_mult": trial.suggest_float("fee_mult", 1.5, 12.0),
-        "r_min": trial.suggest_float("r_min", 0.3, 0.7),
+        "fee_mult": trial.suggest_float("fee_mult", 1.0, 15.0),
+        "r_min": trial.suggest_float("r_min", 0.0, 0.7),
     }
 
     print(f"\n{'='*50}")
@@ -532,16 +581,38 @@ def objective(trial):
         print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
 
     try:
+        # Stage 1: Quick screen on 5 symbols (cheap)
         t0 = time.time()
-        sh, ps, tr, dd, _, _, _, _, _, _, _ = full_run(
+        sh_quick, ps_quick, tr, dd, _, _, _, _, _, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
         print(
-            f"  => sortino={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
-            f"trades={tr} dd={dd:.4f} ({elapsed:.0f}s)"
+            f"  => stage1 (5sym): sortino={sh_quick:.4f} pass={ps_quick}/{len(SEARCH_SYMBOLS)} "
+            f"dd={dd:.4f} ({elapsed:.0f}s)"
         )
-        return sh
+
+        # Report intermediate result for Hyperband pruning
+        trial.report(sh_quick, step=0)
+        if trial.should_prune():
+            print("  => PRUNED at stage 1")
+            raise optuna.TrialPruned()
+
+        # Stage 2: Full eval on all 25 symbols (expensive, only for promising trials)
+        t1 = time.time()
+        sh_full, ps_full, tr, dd, _, _, _, _, _, _, _ = full_run(
+            DEFAULT_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
+        )
+        elapsed2 = time.time() - t1
+        print(
+            f"  => stage2 (25sym): sortino={sh_full:.4f} pass={ps_full}/{len(DEFAULT_SYMBOLS)} "
+            f"dd={dd:.4f} ({elapsed2:.0f}s)"
+        )
+        trial.report(sh_full, step=1)
+
+        return sh_full
+    except optuna.TrialPruned:
+        raise
     except Exception as e:
         print(f"  => FAILED: {e}")
         return -999.0
@@ -564,23 +635,46 @@ def main():
     if args.search:
         print(
             f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
-            f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
+            f"({SEARCH_SEEDS} seeds) ===\n"
+            f"  Stage 1: screen on {SEARCH_SYMBOLS}\n"
+            f"  Stage 2: promote to all {len(DEFAULT_SYMBOLS)} symbols\n"
         )
-        study_name = f"sup_{_code_hash()}"
-        print(f"Optuna study: {study_name}")
+        study_name = "v11_search"
+        storage = "sqlite:///optuna_v11.db"
+        print(f"Optuna study: {study_name} ({storage})")
         study = optuna.create_study(
             direction="maximize",
-            sampler=optuna.samplers.TPESampler(seed=42),
-            storage="sqlite:///optuna_study.db",
+            sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=5),
+            pruner=optuna.pruners.HyperbandPruner(
+                min_resource=0,  # stage 0 = 5-symbol screen
+                max_resource=1,  # stage 1 = 25-symbol full eval
+                reduction_factor=3,
+            ),
+            storage=storage,
             study_name=study_name,
             load_if_exists=True,
         )
+
+        # Warm-start: enqueue known good configs from prior experiments
+        existing_trials = len(study.trials)
+        if existing_trials == 0:
+            print(f"Warm-starting with {len(WARM_START_CONFIGS)} prior configs...")
+            for cfg in WARM_START_CONFIGS:
+                study.enqueue_trial(cfg)
+        else:
+            print(f"Resuming study with {existing_trials} existing trials")
+
         study.optimize(objective, n_trials=SEARCH_TRIALS)
 
         print(f"\n{'='*50}")
-        print("TOP 5 TRIALS:")
+        completed = [
+            t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+        pruned = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+        print(f"Trials: {len(completed)} completed, {len(pruned)} pruned")
+        print("\nTOP 5 TRIALS:")
         ranked = sorted(
-            study.trials, key=lambda t: t.value if t.value else -999, reverse=True
+            completed, key=lambda t: t.value if t.value else -999, reverse=True
         )
         for t in ranked[:5]:
             print(f"  #{t.number}: sortino={t.value:.4f}  {t.params}")
