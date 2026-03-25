@@ -1,0 +1,56 @@
+# Theorem 35: Short-Horizon Return Momentum and Mean Reversion
+
+Based on Ait-Sahalia, Fan, Xue & Zhu (2025), Management Science.
+
+## Definitions
+
+Let r_t be the log return at step t (one 100-trade batch). Define multi-step returns:
+
+  r_t^(k) = sum_{i=0}^{k-1} r_{t-i}  (cumulative return over past k steps)
+
+Our feature r_20 = r_t^(20) (20-batch cumulative return).
+
+## The Predictability Question
+
+Ait-Sahalia et al. (2025) establish that short-horizon stock returns are "predictable in a large, systematic, and pervasive" way. The key finding: return history is predictive, with the effective horizon being approximately 2 average price changes.
+
+## Claims
+
+1. **Autocorrelation decomposition.** For a return series r_t = alpha + beta * r_{t-1} + epsilon_t (AR(1)):
+
+     - If beta > 0: short-term momentum (past returns predict same-sign future returns)
+     - If beta < 0: mean reversion (past returns predict opposite-sign future returns)
+     - If beta = 0: returns are unpredictable from their own history
+
+   The R^2 of this regression is beta^2 * Var(r_{t-1}) / Var(r_t) = beta^2 for stationary series.
+
+   Prove this.
+
+2. **Multi-step aggregation.** For an AR(1) process, the autocorrelation of the k-step return r_t^(k) with the next single-step return r_{t+1} is:
+
+     Corr(r_t^(k), r_{t+1}) = beta * (1 - beta^k) / ((1 - beta) * sqrt(k + 2*beta*(k - (1-beta^k)/(1-beta))/(1-beta)))
+
+   For small beta, this simplifies to approximately beta * sqrt(k) for small k. Prove that using a k-step lookback amplifies weak momentum by sqrt(k) (in correlation terms).
+
+3. **Optimal lookback.** The predictive R^2 from using r_t^(k) to predict r_{t+1} is:
+
+     R^2(k) = [Cov(r_t^(k), r_{t+1})]^2 / (Var(r_t^(k)) * Var(r_{t+1}))
+
+   Prove that there exists a finite k* that maximizes R^2(k) when:
+   - beta > 0 (momentum regime): k* is finite because longer lookback accumulates noise
+   - beta < 0 (mean reversion): k* = 1 (single-step lookback is optimal)
+
+4. **Complementarity with OFI.** Returns r_t and order flow OFI_t are related via Cont et al. (2014): r_t = gamma * OFI_t + epsilon_t. Including both r_20 and OFI as features captures:
+   - r_20: momentum/reversion from past price moves
+   - OFI: current supply-demand imbalance
+
+   Prove that R^2(r_20, OFI) >= max(R^2(r_20), R^2(OFI)):
+
+   Adding r_20 to an OFI-only model can only improve R^2 (since adding regressors cannot decrease in-sample R^2). The improvement is strictly positive when r_20 contains information not captured by current OFI (e.g., momentum from past OFI that has since dissipated).
+
+5. **Numerical claim.** With beta = 0.02 (weak positive autocorrelation, typical for crypto at batch-level):
+   - R^2(k=1) = 0.0004 (0.04%)
+   - R^2(k=20) ≈ 0.02^2 * 20 = 0.008 (0.8%) — 20x improvement from aggregation
+   - The improvement from k=1 to k=20 is approximately a factor of k = 20 in R^2
+
+   Verify that these values are consistent with the formula from claim 2.
