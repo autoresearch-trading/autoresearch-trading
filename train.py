@@ -38,7 +38,7 @@ BEST_PARAMS = {
     "hdim": 64,
     "nlayers": 3,
     "batch_size": 256,
-    "fee_mult": 7.0,
+    "fee_mult": 11.0,  # T39 cost-adjusted: ties fm=5 on score, better PF (1.74 vs 1.12)
     "r_min": 0.24,
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
 }
