@@ -31,11 +31,13 @@ rm -rf "$LOCAL_TEMP_DIR"
 mkdir -p "$LOCAL_TEMP_DIR/extracted"
 echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
 
-# 2. Stream tar directly from Fly.io (no remote temp file needed)
-# This avoids "No space left on device" on Fly.io's limited /tmp
-echo "📦 Streaming data from Fly.io instance..."
+# 2. Stream ONLY recent data from Fly.io (last 3 days, not entire history)
+# This avoids transferring ~40GB of unchanged historical data every run.
+# The aws s3 sync in step 4 handles dedup, but tar transfer is the bottleneck.
+SYNC_DAYS=3
+echo "📦 Streaming last ${SYNC_DAYS} days of data from Fly.io instance..."
 for attempt in $(seq 1 $MAX_RETRIES); do
-  if flyctl ssh console -q -a "$APP_NAME" -C "tar --ignore-failed-read -cf - -C ${REMOTE_DATA_PATH} ." | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
+  if flyctl ssh console -q -a "$APP_NAME" -C "find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -" | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
     echo "✅ Data streamed and extracted locally."
     break
   fi
