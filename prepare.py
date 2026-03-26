@@ -729,11 +729,12 @@ def compute_features_v9(
     orderbook_df: pd.DataFrame,
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute 13 v11a features from trade/orderbook data.
 
-    Returns: (features, timestamps, prices, raw_hawkes_branching)
-    where features has shape (num_batches, 13).
+    Returns: (features, timestamps, prices, raw_hawkes_branching, spread_bps)
+    where features has shape (num_batches, 13) and spread_bps is per-step
+    bid-ask spread in basis points (used for slippage modeling, not as a feature).
 
     Feature layout (9 v10 + 4 ablation-validated new):
       0: lambda_ofi              - kyle_lambda * signed_notional
@@ -753,7 +754,7 @@ def compute_features_v9(
     Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
     """
     if trades_df.empty:
-        return np.array([]), np.array([]), np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
 
     # --- Reuse batching logic from compute_features ---
     trades_df = trades_df.copy()
@@ -764,7 +765,7 @@ def compute_features_v9(
     num_trades = len(trades_df)
     num_batches = num_trades // trade_batch
     if num_batches == 0:
-        return np.array([]), np.array([]), np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
 
     prices_arr = (
         trades_df["price"]
@@ -959,7 +960,13 @@ def compute_features_v9(
 
     batch_prices = vwap
 
-    return features, batch_timestamps_final, batch_prices, raw_hawkes_branching
+    return (
+        features,
+        batch_timestamps_final,
+        batch_prices,
+        raw_hawkes_branching,
+        spread_bps_arr,
+    )
 
 
 def _compute_orderbook_features(
@@ -1106,7 +1113,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v11a"  # v11a: 13 features (9 v10 + 4 ablation-validated)
+_FEATURE_VERSION = "v11b"  # v11b: 13 features + spread_bps for slippage modeling
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
@@ -1125,6 +1132,7 @@ def cache_features(
     end: str,
     trade_batch: int,
     raw_hawkes: np.ndarray | None = None,
+    spread_bps: np.ndarray | None = None,
 ) -> None:
     """Save features to .npz cache file."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1133,6 +1141,8 @@ def cache_features(
     save_dict = dict(features=features, timestamps=timestamps, prices=prices)
     if raw_hawkes is not None:
         save_dict["raw_hawkes"] = raw_hawkes
+    if spread_bps is not None:
+        save_dict["spread_bps"] = spread_bps
     np.savez_compressed(path, **save_dict)
     print(f"Cached {symbol} features to {path}")
 
@@ -1143,11 +1153,14 @@ def load_cached(
     start: str,
     end: str,
     trade_batch: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None] | None:
+) -> (
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]
+    | None
+):
     """Load features from .npz cache if exists.
 
-    Returns (features, timestamps, prices, raw_hawkes) or None.
-    raw_hawkes is None for v8 caches that don't contain it.
+    Returns (features, timestamps, prices, raw_hawkes, spread_bps) or None.
+    raw_hawkes/spread_bps are None for older caches that don't contain them.
     """
     key = _cache_key(symbol, start, end, trade_batch)
     path = cache_dir / f"{symbol}_{key}.npz"
@@ -1155,7 +1168,14 @@ def load_cached(
         data = np.load(path)
         print(f"Loaded {symbol} features from cache ({path})")
         raw_hawkes = data["raw_hawkes"] if "raw_hawkes" in data else None
-        return data["features"], data["timestamps"], data["prices"], raw_hawkes
+        spread_bps = data["spread_bps"] if "spread_bps" in data else None
+        return (
+            data["features"],
+            data["timestamps"],
+            data["prices"],
+            raw_hawkes,
+            spread_bps,
+        )
     return None
 
 
@@ -1193,12 +1213,13 @@ def prepare_data(
             if not force_recompute:
                 cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
                 if cached is not None:
-                    features, timestamps, prices, raw_hawkes = cached
+                    features, timestamps, prices, raw_hawkes, spread_bps = cached
                     result[symbol][split_name] = (
                         features,
                         timestamps,
                         prices,
                         raw_hawkes,
+                        spread_bps,
                     )
                     continue
 
@@ -1212,9 +1233,12 @@ def prepare_data(
                 f"  Loaded {len(trades_df)} trades, {len(orderbook_df)} orderbook snapshots, {len(funding_df)} funding rates"
             )
 
+            spread_bps = None
             if USE_V9:
-                features, timestamps, prices, raw_hawkes = compute_features_v9(
-                    trades_df, orderbook_df, funding_df, trade_batch
+                features, timestamps, prices, raw_hawkes, spread_bps = (
+                    compute_features_v9(
+                        trades_df, orderbook_df, funding_df, trade_batch
+                    )
                 )
                 if len(features) > 0:
                     features = normalize_features_v9(features)
@@ -1239,9 +1263,16 @@ def prepare_data(
                 end,
                 trade_batch,
                 raw_hawkes=raw_hawkes,
+                spread_bps=spread_bps,
             )
 
-            result[symbol][split_name] = (features, timestamps, prices, raw_hawkes)
+            result[symbol][split_name] = (
+                features,
+                timestamps,
+                prices,
+                raw_hawkes,
+                spread_bps,
+            )
 
     return result
 
@@ -1277,6 +1308,8 @@ class TradingEnv(gymnasium.Env):
         self.fee_bps = fee_bps
         self.min_hold = min_hold
         self.num_steps = len(features)
+        self.spread_bps = None  # set externally for slippage modeling
+        self.raw_hawkes = None  # set externally for regime gate
 
         self.observation_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -1352,14 +1385,23 @@ class TradingEnv(gymnasium.Env):
         else:
             step_pnl = 0.0
 
-        # Position change and transaction costs
+        # Position change and transaction costs (fee + slippage)
         if action != prev_position:
-            # Apply fee for closing old position
+            # Slippage: half-spread from orderbook data + impact buffer
+            slippage_bps = 0.0
+            if self.spread_bps is not None and self._idx < len(self.spread_bps):
+                half_spread = self.spread_bps[self._idx] / 2.0
+                impact_buffer = 3.0  # MEV + market impact (bps)
+                slippage_bps = half_spread + impact_buffer
+            else:
+                slippage_bps = 5.0  # fallback: 5 bps total slippage
+
+            # Apply fee + slippage for closing old position
             if prev_position != 0:
-                step_pnl -= self.fee_bps / 10000
-            # Apply fee for opening new position
+                step_pnl -= (self.fee_bps + slippage_bps) / 10000
+            # Apply fee + slippage for opening new position
             if action != 0:
-                step_pnl -= self.fee_bps / 10000
+                step_pnl -= (self.fee_bps + slippage_bps) / 10000
             self._trade_count += 1
             self._hold_duration = 0
             self._steps_since_trade = 0
@@ -1628,8 +1670,9 @@ def make_env(
 
     # Try cache first
     cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
+    spread_bps_arr = None
     if cached is not None:
-        features, timestamps, prices, raw_hawkes = cached
+        features, timestamps, prices, raw_hawkes, spread_bps_arr = cached
     else:
         # Need to compute - run prepare_data for this split
         print(f"Cache miss for {symbol} {split}, computing features...")
@@ -1638,8 +1681,8 @@ def make_env(
         funding_df = load_funding(symbol, start, end)
 
         if USE_V9:
-            features, timestamps, prices, raw_hawkes = compute_features_v9(
-                trades_df, orderbook_df, funding_df, trade_batch
+            features, timestamps, prices, raw_hawkes, spread_bps_arr = (
+                compute_features_v9(trades_df, orderbook_df, funding_df, trade_batch)
             )
             if len(features) > 0:
                 features = normalize_features_v9(features)
@@ -1653,6 +1696,7 @@ def make_env(
                     end,
                     trade_batch,
                     raw_hawkes=raw_hawkes,
+                    spread_bps=spread_bps_arr,
                 )
         else:
             features, timestamps, prices = compute_features(
@@ -1676,6 +1720,7 @@ def make_env(
         features, prices, window_size=window_size, fee_bps=FEE_BPS, min_hold=min_hold
     )
     env.raw_hawkes = raw_hawkes  # for regime gate in evaluate()
+    env.spread_bps = spread_bps_arr  # for slippage modeling
     return env
 
 

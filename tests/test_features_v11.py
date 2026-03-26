@@ -48,7 +48,7 @@ def test_buy_vwap_dev_computed(make_trades, make_orderbook, make_funding):
     trades = make_trades(n=500, sides=["open_long", "open_short"])
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
-    features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
+    features, *_ = compute_features_v9(trades, ob, funding, trade_batch=100)
     assert features.shape[1] == 13  # v11a feature count
     # buy_vwap_dev = feature 10
     assert features[:, 10].shape[0] > 0
@@ -59,7 +59,7 @@ def test_trade_arrival_rate_positive(make_trades, make_orderbook, make_funding):
     trades = make_trades(n=500)
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
-    features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
+    features, *_ = compute_features_v9(trades, ob, funding, trade_batch=100)
     arrival_rate = features[:, 11]  # trade_arrival_rate
     assert np.all(arrival_rate >= 0)
 
@@ -69,5 +69,5 @@ def test_feature_count_v11a(make_trades, make_orderbook, make_funding):
     trades = make_trades(n=500)
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
-    features, _, _, _ = compute_features_v9(trades, ob, funding, trade_batch=100)
+    features, *_ = compute_features_v9(trades, ob, funding, trade_batch=100)
     assert features.shape[1] == 13

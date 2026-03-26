@@ -7,7 +7,7 @@ from prepare import V9_NUM_FEATURES, compute_features_v9
 
 class TestV9FeatureShape:
     def test_output_shape(self, make_trades, make_orderbook, make_funding):
-        features, ts, px, rh = compute_features_v9(
+        features, ts, px, rh, _ = compute_features_v9(
             make_trades(n=200), make_orderbook(n=50), make_funding(n=5), trade_batch=100
         )
         assert features.shape == (2, V9_NUM_FEATURES)
@@ -37,7 +37,7 @@ class TestV9LambdaOfi:
     def test_lambda_ofi_is_kyle_lambda_times_signed_flow(
         self, make_trades, make_orderbook, make_funding
     ):
-        features, _, _, _ = compute_features_v9(
+        features, *_ = compute_features_v9(
             make_trades(n=500),
             make_orderbook(n=125),
             make_funding(n=10),
@@ -51,7 +51,7 @@ class TestV9DirectionalConviction:
     def test_conviction_is_tfi_times_abs_ofi(
         self, make_trades, make_orderbook, make_funding
     ):
-        features, _, _, _ = compute_features_v9(
+        features, *_ = compute_features_v9(
             make_trades(n=500),
             make_orderbook(n=125),
             make_funding(n=10),
@@ -63,7 +63,7 @@ class TestV9DirectionalConviction:
 
 class TestV9Vpin:
     def test_vpin_non_negative(self, make_trades, make_orderbook, make_funding):
-        features, _, _, _ = compute_features_v9(
+        features, *_ = compute_features_v9(
             make_trades(n=500),
             make_orderbook(n=125),
             make_funding(n=10),
@@ -72,7 +72,7 @@ class TestV9Vpin:
         assert np.all(features[:, 2] >= 0)
 
     def test_vpin_at_most_one(self, make_trades, make_orderbook, make_funding):
-        features, _, _, _ = compute_features_v9(
+        features, *_ = compute_features_v9(
             make_trades(n=500),
             make_orderbook(n=125),
             make_funding(n=10),
@@ -83,7 +83,7 @@ class TestV9Vpin:
 
 class TestV9HawkesBranching:
     def test_hawkes_in_valid_range(self, make_trades, make_orderbook, make_funding):
-        _, _, _, raw_hawkes = compute_features_v9(
+        _, _, _, raw_hawkes, _ = compute_features_v9(
             make_trades(n=500),
             make_orderbook(n=125),
             make_funding(n=10),
@@ -118,13 +118,13 @@ class TestV9HawkesBranching:
             ts[i] = ts[2499] + (i - 2499) * 1000  # 1000ms spacing (slow)
         trades["ts_ms"] = ts
         trades["recv_ms"] = ts + 10
-        _, _, _, raw_hawkes = compute_features_v9(
+        _, _, _, raw_hawkes, _ = compute_features_v9(
             trades, make_orderbook(n=1250), make_funding(n=50), trade_batch=100
         )
         # 5000 trades / 100 = 50 batches, hawkes_window=50 → loop runs for i=50..49 (empty)
         # Need > 50 batches, so use smaller trade_batch
         # Actually: with trade_batch=50, we get 100 batches, and hawkes loop runs for i=50..99
-        _, _, _, raw_hawkes2 = compute_features_v9(
+        _, _, _, raw_hawkes2, _ = compute_features_v9(
             trades, make_orderbook(n=1250), make_funding(n=50), trade_batch=50
         )
         # With bursty arrivals, arrival rates vary → overdispersion → branching > 0
@@ -135,7 +135,7 @@ class TestV9HawkesBranching:
 
 class TestV9ReservationPriceDev:
     def test_reservation_finite(self, make_trades, make_orderbook, make_funding):
-        features, _, _, _ = compute_features_v9(
+        features, *_ = compute_features_v9(
             make_trades(n=500),
             make_orderbook(n=125),
             make_funding(n=10),
