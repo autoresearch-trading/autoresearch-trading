@@ -185,19 +185,34 @@ def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=
 
 
 # ── Training ───────────────────────────────────────────────────
+def _cost_adjusted_threshold(env, fee_mult):
+    """Compute cost-adjusted barrier threshold per symbol (T39).
+
+    Barrier = fee_mult × 2 × (fee + slippage) / 10000
+    where slippage = median(half_spread) + impact_buffer.
+    """
+    impact_buffer_bps = 3.0  # MEV + market impact
+    if env.spread_bps is not None and len(env.spread_bps) > 0:
+        median_half_spread = np.median(env.spread_bps[env.spread_bps > 0]) / 2.0
+        slippage_bps = median_half_spread + impact_buffer_bps
+    else:
+        slippage_bps = 5.0  # fallback
+    total_cost_bps = FEE_BPS + slippage_bps
+    return (2 * total_cost_bps / 10000) * fee_mult
+
+
 def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, seed):
     """Train a classifier on forward return labels."""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    fee_threshold = (2 * FEE_BPS / 10000) * p["fee_mult"]
-
-    # Collect labeled data from all symbols
+    # Collect labeled data from all symbols (per-symbol cost-adjusted barriers, T39)
     all_obs = []
     all_labels = []
     all_indices = []
     for sym in active_symbols:
         env = train_envs[sym]
+        fee_threshold = _cost_adjusted_threshold(env, p["fee_mult"])
         obs, labels, indices = make_labeled_dataset(
             env, MAX_HOLD_STEPS, fee_threshold, fee_threshold
         )
@@ -462,7 +477,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         model.eval()
         # Quick accuracy check on first available training env
         first_env = train_envs[active[0]]
-        fee_threshold = (2 * FEE_BPS / 10000) * p["fee_mult"]
+        fee_threshold = _cost_adjusted_threshold(first_env, p["fee_mult"])
         obs, labels, _ = make_labeled_dataset(
             first_env, MAX_HOLD_STEPS, fee_threshold, fee_threshold, max_samples=2000
         )
