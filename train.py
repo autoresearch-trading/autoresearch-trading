@@ -36,7 +36,7 @@ BEST_PARAMS = {
     "hdim": 64,
     "nlayers": 3,
     "batch_size": 256,
-    "fee_mult": 8.0,
+    "fee_mult": 10.0,
     "r_min": 0.24,
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
 }
