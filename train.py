@@ -27,7 +27,7 @@ FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
 WINDOW_SIZE = 50  # v5 proven
 TRADE_BATCH = 100
-MIN_HOLD = 800  # v5 proven — best Sortino
+MIN_HOLD = 400  # min_hold sweep
 FEE_BPS = 5
 MAX_HOLD_STEPS = 300
 
