@@ -17,7 +17,9 @@ from torch.distributions import Categorical
 from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # ── Configuration ──────────────────────────────────────────────
-SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "CRV"]
+SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "AAVE"]
+# T40: exclude symbols with spread > 25 bps (untradeable after costs)
+EXCLUDED_SYMBOLS = {"CRV", "XPL"}  # CRV=52bps, XPL=28bps spread
 SEARCH_BUDGET = 90
 SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
@@ -686,19 +688,23 @@ def main():
         print("=== FAST MODE: using BEST_PARAMS ===\n")
         bp = BEST_PARAMS
 
+    # T40: filter out symbols with spreads too wide to trade profitably
+    tradeable_symbols = [s for s in DEFAULT_SYMBOLS if s not in EXCLUDED_SYMBOLS]
+
     print(
         f"\n=== FINAL: {FINAL_SEEDS} seeds x "
-        f"{FINAL_BUDGET // FINAL_SEEDS}s on all {len(DEFAULT_SYMBOLS)} symbols ==="
+        f"{FINAL_BUDGET // FINAL_SEEDS}s on {len(tradeable_symbols)} symbols "
+        f"(excluded {len(EXCLUDED_SYMBOLS)}: {EXCLUDED_SYMBOLS}) ==="
     )
     print(f"params: {bp}\n")
 
     sh, ps, tr, dd, total_steps, total_updates, wr, pf, sharpe, calmar, cvar = full_run(
-        DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
+        tradeable_symbols, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
     )
 
     print("---")
     print("=== PORTFOLIO SUMMARY ===")
-    print(f"symbols_passing: {ps}/{len(DEFAULT_SYMBOLS)}")
+    print(f"symbols_passing: {ps}/{len(tradeable_symbols)}")
     print(f"sortino: {sh:.6f}")
     print(f"sharpe: {sharpe:.6f}")
     print(f"calmar: {calmar:.6f}")
