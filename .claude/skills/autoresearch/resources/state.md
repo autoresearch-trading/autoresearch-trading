@@ -13,11 +13,11 @@
 - Cache note: v5, v9, v10, v11, v11a caches all exist.
 - Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END=2026-03-25 (36 test days).
 
-## Current Best (v11a Optuna, corrected Sortino, 36 test days)
-- Config: {lr=4.4e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=12.9, r_min=0.24, min_hold=800, features=v11a (13), window=50, seeds=5, epochs=25}
-- Score: sortino=0.144, sharpe=0.100, calmar=9.584, cvar_95=0.002, passing=9/25, WR=50.9%, PF=1.39, trades=2062
-- Commit: aeb5581
-- Passing symbols: 2Z, AAVE, ASTER, BNB, BTC, CRV, KBONK, LDO, LTC
+## Current Best (v11a fee_mult sweep, corrected Sortino, 36 test days)
+- Config: {lr=4.4e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=11.0, r_min=0.24, min_hold=800, features=v11a (13), window=50, seeds=5, epochs=25}
+- Score: sortino=0.093, sharpe=0.064, calmar=5.652, passing=13/25, WR=46.1%, PF=1.24, trades=2161
+- Composite score: 0.264 (best across all fee_mult values)
+- Note: fee_mult=11 beats 12.9 on composite score (0.264 vs 0.214) — more symbols pass DD guardrail
 
 ## Prior Best (v10, buggy Sortino, 20 test days)
 - Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v10 (9)}

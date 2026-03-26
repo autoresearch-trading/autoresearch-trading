@@ -1,0 +1,11 @@
+[
+  {
+    "run": 1,
+    "phase": "Phase 1: fee_mult sweep",
+    "name": "control_fm12.9",
+    "config": {"lr": 4.4e-3, "hdim": 64, "nlayers": 3, "batch_size": 256, "fee_mult": 12.9, "r_min": 0.24},
+    "results": {"sortino": 0.116106, "passing": 9, "trades": 2051, "dd": 0.5485, "wr": 0.5046, "pf": 1.3132, "sharpe": 0.0799, "calmar": 7.982},
+    "score": 0.2137,
+    "timestamp": "2026-03-25T22:30:00Z"
+  }
+]
