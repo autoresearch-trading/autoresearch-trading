@@ -266,7 +266,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     batch_size = p["batch_size"]
     total_steps = 0
     num_updates = 0
-    n_epochs = 35  # epoch sweep: testing 35 (25 was better than 15)
+    n_epochs = 25  # epoch sweep confirmed: 25 optimal (15 underfit, 35 overfit-to-flat)
 
     # Alpha_min early stopping (Theorem 3)
     alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
