@@ -10,20 +10,24 @@
 - Approximate run duration: ~30 min (DirectionClassifier), ~80 min (HybridClassifier)
 - Primary metric: Sortino ratio (FIXED in v11 — T26, divides by N not N_neg)
 - Default scoring: `score = mean_sortino * 0.6 + (passing / total_symbols) * 0.4`
-- Cache note: v5, v9, v10, v11 caches all exist.
+- Cache note: v5, v9, v10, v11, v11a caches all exist.
 - Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END=2026-03-25 (36 test days).
 
-## Current Best (v10, buggy Sortino, 20 test days)
-- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, labeling=triple_barrier, max_hold=300, features=v10 (9), window=50, seeds=5, epochs=25, model=DirectionClassifier, gates=none}
-- Score: sortino=+0.230 (BUGGY, true ≈ 0.154), passing=18/25, trades=923
-- Commit: wd5e4
+## Current Best (v11a Optuna, corrected Sortino, 36 test days)
+- Config: {lr=4.4e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=12.9, r_min=0.24, min_hold=800, features=v11a (13), window=50, seeds=5, epochs=25}
+- Score: sortino=0.144, sharpe=0.100, calmar=9.584, cvar_95=0.002, passing=9/25, WR=50.9%, PF=1.39, trades=2062
+- Commit: aeb5581
+- Passing symbols: 2Z, AAVE, ASTER, BNB, BTC, CRV, KBONK, LDO, LTC
 
-## v11 Baseline (17 features, corrected Sortino, 36 test days)
-- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v11 (17), window=50, seeds=5, epochs=25}
-- Score: sortino=0.032, sharpe=0.023, calmar=2.049, cvar_95=0.002, passing=5/25, WR=54.7%, PF=1.02, trades=1600
-- Commit: 23ac443
-- Passing symbols: BNB, BTC, ENA, LTC, SOL
-- Note: Significant regression — new features untouched by Optuna, 36 test days harder than 20, Sortino fix removes inflation. Needs hyperparameter tuning.
+## Prior Best (v10, buggy Sortino, 20 test days)
+- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v10 (9)}
+- Score: sortino=+0.230 (BUGGY, true ≈ 0.154), passing=18/25, trades=923
+- Note: Not comparable — different Sortino formula, different test period
+
+## v11a Progression
+- v11 baseline (17 feat, fee_mult=1.5): Sortino=0.032, 5/25
+- v11a ablated (13 feat, fee_mult=1.5): Sortino=0.091, 6/25 (dropped 4 hurting features)
+- v11a Optuna (13 feat, fee_mult=12.9): Sortino=0.144, 9/25 (tuned params)
 
 ## Key Findings (This Session)
 1. **Feature set is the bottleneck** — v5 (31 feat) >> v9 (5 feat) for Sortino; v10 (9 feat) captures 91%
@@ -46,11 +50,12 @@
 - T30-T35: Feature validation (multi-level OFI, VWAP decomposition, Roll/Amihud, microprice, arrival rate, momentum)
 
 ## Open Questions
-1. v11 baseline regressed (0.032 vs 0.230 buggy) — is it the Sortino fix, 36 test days, or new features hurting?
-2. Ablation needed: run v10 (9 features) with corrected Sortino + 36 days to isolate the regression cause
-3. Optuna search on v11 — fee_mult and feature selection are likely the levers
-4. With 64 trades/symbol (min_hold=800), each symbol has ~64 trades vs 99 needed (T29)
-5. Walk-forward validation — should we implement instead of fixed splits?
+1. ANSWERED: New features hurt (ablation proved). 4 dropped, 4 kept → v11a (13 feat)
+2. ANSWERED: Optuna found fee_mult=12.9, hdim=64, nlayers=3 → 0.144 Sortino, 9/25
+3. fee_mult sweet spot: top 5 Optuna trials all >9.0. Refine around 10-13?
+4. min_hold=800 with fee_mult=12.9 — should min_hold decrease with wider barriers?
+5. Epochs: 25 was tuned for 256-dim network. Smaller 64-dim may need different epoch count.
+6. Walk-forward validation — still not implemented, fixed split only
 
 ## Completed Experiments
 - v5 baseline → v6 tape → v9 Aristotle → v5.5 proof-backed sweep → v10 top features

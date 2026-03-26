@@ -32,12 +32,12 @@ MAX_HOLD_STEPS = 300
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 1e-3,
-    "hdim": 256,
-    "nlayers": 2,
+    "lr": 4.4e-3,
+    "hdim": 64,
+    "nlayers": 3,
     "batch_size": 256,
-    "fee_mult": 1.5,
-    "r_min": 0.0,  # no regime gate — test raw v10 signal first
+    "fee_mult": 12.9,
+    "r_min": 0.24,
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
 }
 
