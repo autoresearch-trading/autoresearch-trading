@@ -581,38 +581,16 @@ def objective(trial):
         print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
 
     try:
-        # Stage 1: Quick screen on 5 symbols (cheap)
         t0 = time.time()
-        sh_quick, ps_quick, tr, dd, _, _, _, _, _, _, _ = full_run(
+        sh, ps, tr, dd, _, _, _, _, _, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
         print(
-            f"  => stage1 (5sym): sortino={sh_quick:.4f} pass={ps_quick}/{len(SEARCH_SYMBOLS)} "
-            f"dd={dd:.4f} ({elapsed:.0f}s)"
+            f"  => sortino={sh:.4f} pass={ps}/{len(SEARCH_SYMBOLS)} "
+            f"trades={tr} dd={dd:.4f} ({elapsed:.0f}s)"
         )
-
-        # Report intermediate result for Hyperband pruning
-        trial.report(sh_quick, step=0)
-        if trial.should_prune():
-            print("  => PRUNED at stage 1")
-            raise optuna.TrialPruned()
-
-        # Stage 2: Full eval on all 25 symbols (expensive, only for promising trials)
-        t1 = time.time()
-        sh_full, ps_full, tr, dd, _, _, _, _, _, _, _ = full_run(
-            DEFAULT_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
-        )
-        elapsed2 = time.time() - t1
-        print(
-            f"  => stage2 (25sym): sortino={sh_full:.4f} pass={ps_full}/{len(DEFAULT_SYMBOLS)} "
-            f"dd={dd:.4f} ({elapsed2:.0f}s)"
-        )
-        trial.report(sh_full, step=1)
-
-        return sh_full
-    except optuna.TrialPruned:
-        raise
+        return sh
     except Exception as e:
         print(f"  => FAILED: {e}")
         return -999.0
