@@ -10,14 +10,15 @@
 - Approximate run duration: ~30 min (DirectionClassifier), ~80 min (HybridClassifier)
 - Primary metric: Sortino ratio (FIXED in v11 — T26, divides by N not N_neg)
 - Default scoring: `score = mean_sortino * 0.6 + (passing / total_symbols) * 0.4`
-- Cache note: v5, v9, v10, v11, v11a caches all exist.
+- Cache note: v5, v9, v10, v11, v11a, v11b caches all exist.
 - Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END=2026-03-25 (36 test days).
 
-## Current Best (v11a fee_mult sweep, corrected Sortino, 36 test days)
-- Config: {lr=4.4e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=11.0, r_min=0.24, min_hold=800, features=v11a (13), window=50, seeds=5, epochs=25}
-- Score: sortino=0.093, sharpe=0.064, calmar=5.652, passing=13/25, WR=46.1%, PF=1.24, trades=2161
-- Composite score: 0.264 (best across all fee_mult values)
-- Note: fee_mult=11 beats 12.9 on composite score (0.264 vs 0.214) — more symbols pass DD guardrail
+## Current Best (v11b, honest slippage, 36 test days)
+- Config: {lr=4.4e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=11.0, r_min=0.0, min_hold=1200, MAX_HOLD=300, features=v11a (13), window=50, seeds=5, epochs=25}
+- Slippage: half_spread (from OB data) + 3 bps impact per side. T40 filter: CRV/XPL excluded.
+- Score: sortino=0.303, sharpe=0.212, calmar=20.3, passing=8/23, WR=54.1%, PF=1.70, trades=1224
+- Top symbols: BNB (0.647, PF=3.40), SUI (0.408), LINK (0.320), AAVE (0.302)
+- T41 maker upper bound: Sortino=0.257 (limit orders would save ~13 bps RT on BTC)
 
 ## Prior Best (v10, buggy Sortino, 20 test days)
 - Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v10 (9)}
@@ -49,18 +50,31 @@
 - T23-T29: Metrics validation (optimal features k*, drawdown bounds, marginal symbols, Sortino bug, Sharpe-Calmar, VaR/CVaR, statistical significance)
 - T30-T35: Feature validation (multi-level OFI, VWAP decomposition, Roll/Amihud, microprice, arrival rate, momentum)
 
+## Swept Variables (cost-adjusted regime)
+- fee_mult: 3,5,7,8,9,10,11,12.9,15 → winner 11.0
+- epochs: 15,25,35 → winner 25
+- min_hold: 400,600,800,1200 → winner 1200
+- MAX_HOLD: 300,600,1200 → winner 300 (momentum filter)
+- r_min: 0.0,0.24,0.5 → winner 0.0 (no gate, redundant with cost-adjusted barriers)
+- features: 17→13 (ablation dropped 4 hurting)
+- symbols: 25→23 (T40 excluded CRV/XPL for wide spreads)
+
+## Not Yet Swept
+- lr: 4.4e-3 from Optuna, not re-swept in cost-adjusted regime
+- weight_decay: 5e-4 hardcoded, never swept
+- batch_size: 256 from Optuna, not re-swept
+- window_size: 50, never swept in v11
+
 ## Open Questions
-1. ANSWERED: New features hurt (ablation proved). 4 dropped, 4 kept → v11a (13 feat)
-2. ANSWERED: Optuna found fee_mult=12.9, hdim=64, nlayers=3 → 0.144 Sortino, 9/25
-3. fee_mult sweet spot: top 5 Optuna trials all >9.0. Refine around 10-13?
-4. min_hold=800 with fee_mult=12.9 — should min_hold decrease with wider barriers?
-5. Epochs: 25 was tuned for 256-dim network. Smaller 64-dim may need different epoch count.
-6. Walk-forward validation — still not implemented, fixed split only
+1. Does lr need re-tuning now that barriers/costs are different?
+2. Is weight_decay=5e-4 optimal for the smaller 64-dim network?
+3. Walk-forward validation — still not implemented
+4. Can we build limit order execution? T41 shows Sortino=0.257 with maker costs
 
 ## Completed Experiments
-- v5 baseline → v6 tape → v9 Aristotle → v5.5 proof-backed sweep → v10 top features
-- Permutation importance on 31 v5 features
-- Per-symbol reliability analysis across 8 runs
-- Metrics validation research (academic + Aristotle proofs)
-- Feature validation research (12 academic topics + Aristotle proofs)
+- v5→v6→v9→v5.5→v10→v11→v11a (feature iterations)
+- v11a ablation (17→13 features)
+- Slippage model (T39 cost-adjusted barriers, T40 symbol filter)
+- fee_mult sweep (cost-adjusted), epoch sweep, min_hold sweep, MAX_HOLD sweep, r_min sweep
+- T41 maker execution simulation
 - See results.tsv and docs/experiments/ for full history

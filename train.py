@@ -34,7 +34,7 @@ MAX_HOLD_STEPS = 300  # short horizon = momentum filter (300 beats 600 and 1200)
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 4.4e-3,
+    "lr": 1e-3,  # lr sweep
     "hdim": 64,
     "nlayers": 3,
     "batch_size": 256,
