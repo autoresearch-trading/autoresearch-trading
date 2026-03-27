@@ -41,7 +41,7 @@ BEST_PARAMS = {
     "fee_mult": 11.0,  # T39 cost-adjusted: ties fm=5 on score, better PF (1.74 vs 1.12)
     "r_min": 0.0,  # no regime gate — cost-adjusted barriers make it redundant
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
-    "wd": 1e-3,  # weight_decay sweep
+    "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
 }
 
 
