@@ -344,6 +344,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
                 window_size=WINDOW_SIZE,
                 trade_batch=TRADE_BATCH,
                 min_hold=MIN_HOLD,
+                # include_funding=True,  # T42: proven negligible (0.16% of fee barrier)
             )
             buf = io.StringIO()
             old = sys.stdout
@@ -444,6 +445,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
                 window_size=WINDOW_SIZE,
                 trade_batch=TRADE_BATCH,
                 min_hold=MIN_HOLD,
+                # include_funding=True,  # T42: proven negligible (0.16% of fee barrier)
             )
             train_envs[sym] = env
             env_weights[sym] = env.num_steps

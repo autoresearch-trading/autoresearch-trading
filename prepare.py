@@ -1310,6 +1310,7 @@ class TradingEnv(gymnasium.Env):
         self.num_steps = len(features)
         self.spread_bps = None  # set externally for slippage modeling
         self.raw_hawkes = None  # set externally for regime gate
+        self.funding_rates = None  # set externally for funding cost modeling
 
         self.observation_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -1384,6 +1385,15 @@ class TradingEnv(gymnasium.Env):
             step_pnl = -price_return
         else:
             step_pnl = 0.0
+
+        # Funding cost: charged every step when holding a position
+        if prev_position != 0 and self.funding_rates is not None:
+            if self._idx < len(self.funding_rates):
+                fr = self.funding_rates[self._idx]
+                if prev_position == 1:  # long pays positive funding
+                    step_pnl -= fr
+                elif prev_position == 2:  # short receives positive funding
+                    step_pnl += fr
 
         # Position change and transaction costs (fee + slippage)
         if action != prev_position:
@@ -1659,6 +1669,7 @@ def make_env(
     window_size: int = 50,
     trade_batch: int = 100,
     min_hold: int = 1,
+    include_funding: bool = False,
 ) -> TradingEnv:
     """Create a TradingEnv for the given symbol and data split."""
     splits = {
@@ -1721,6 +1732,22 @@ def make_env(
     )
     env.raw_hawkes = raw_hawkes  # for regime gate in evaluate()
     env.spread_bps = spread_bps_arr  # for slippage modeling
+
+    # Compute funding rates per step on the fly (slow — loads many Parquet files)
+    if include_funding:
+        funding_df = load_funding(symbol, start, end)
+    else:
+        funding_df = pd.DataFrame()
+    if not funding_df.empty and len(timestamps) > 0:
+        fund_dedup = funding_df.drop_duplicates(subset="ts_ms", keep="first")
+        fund_ts = fund_dedup["ts_ms"].values
+        fund_rate = fund_dedup["rate"].values
+        indices = np.searchsorted(fund_ts, timestamps, side="right") - 1
+        funding_rates = np.zeros(len(timestamps))
+        valid = indices >= 0
+        funding_rates[valid] = fund_rate[indices[valid]]
+        env.funding_rates = funding_rates
+
     return env
 
 
