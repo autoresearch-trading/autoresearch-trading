@@ -41,6 +41,7 @@ BEST_PARAMS = {
     "fee_mult": 11.0,  # T39 cost-adjusted: ties fm=5 on score, better PF (1.74 vs 1.12)
     "r_min": 0.0,  # no regime gate — cost-adjusted barriers make it redundant
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
+    "wd": 0.0,  # weight_decay sweep
 }
 
 
@@ -253,7 +254,9 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
     model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=5e-4)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=p["lr"], weight_decay=p.get("wd", 5e-4)
+    )
     cw = class_weights.to(DEVICE)
 
     def focal_loss(logits, targets, sample_w, gamma=1.0):
