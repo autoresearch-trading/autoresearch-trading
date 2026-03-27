@@ -14,11 +14,10 @@
 - Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END=2026-03-25 (36 test days).
 
 ## Current Best (v11b, honest slippage, 36 test days)
-- Config: {lr=4.4e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=11.0, r_min=0.0, min_hold=1200, MAX_HOLD=300, features=v11a (13), window=50, seeds=5, epochs=25}
+- Config: {lr=1e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=11.0, r_min=0.0, min_hold=1200, MAX_HOLD=300, features=v11a (13), window=50, seeds=5, epochs=25}
 - Slippage: half_spread (from OB data) + 3 bps impact per side. T40 filter: CRV/XPL excluded.
-- Score: sortino=0.303, sharpe=0.212, calmar=20.3, passing=8/23, WR=54.1%, PF=1.70, trades=1224
-- Top symbols: BNB (0.647, PF=3.40), SUI (0.408), LINK (0.320), AAVE (0.302)
-- T41 maker upper bound: Sortino=0.257 (limit orders would save ~13 bps RT on BTC)
+- Score: sortino=0.333, passing=9/23, PF=1.67, WR=53.2%, trades=1332
+- T41 maker upper bound: Sortino=0.257 with maker costs (would be higher with lr=1e-3)
 
 ## Prior Best (v10, buggy Sortino, 20 test days)
 - Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v10 (9)}
