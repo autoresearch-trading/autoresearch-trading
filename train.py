@@ -39,7 +39,7 @@ BEST_PARAMS = {
     "nlayers": 3,
     "batch_size": 256,
     "fee_mult": 11.0,  # T39 cost-adjusted: ties fm=5 on score, better PF (1.74 vs 1.12)
-    "r_min": 0.5,  # r_min sweep: test strong gate
+    "r_min": 0.0,  # no regime gate — cost-adjusted barriers make it redundant
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
 }
 
