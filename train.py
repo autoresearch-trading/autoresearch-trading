@@ -29,9 +29,7 @@ WINDOW_SIZE = 50  # v5 proven
 TRADE_BATCH = 100
 MIN_HOLD = 1200  # min_hold sweep winner (Sortino=0.184, best honest result)
 FEE_BPS = 5
-MAX_HOLD_STEPS = (
-    600  # test middle ground between 300 (momentum filter) and 1200 (aligned)
-)
+MAX_HOLD_STEPS = 300  # short horizon = momentum filter (300 beats 600 and 1200)
 
 DEVICE = torch.device("cpu")
 
