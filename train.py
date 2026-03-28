@@ -45,7 +45,7 @@ BEST_PARAMS = {
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
-    "curriculum_epochs": 10,  # curriculum sweep: train on directional labels first
+    "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
 }
 
 
