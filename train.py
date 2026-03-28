@@ -46,7 +46,7 @@ BEST_PARAMS = {
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
-    "use_uace": True,  # UACE loss experiment
+    "use_uace": False,  # UACE loss: focal > UACE (0.353 vs 0.141)
 }
 
 
