@@ -37,7 +37,7 @@ echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
 SYNC_DAYS=3
 echo "📦 Streaming last ${SYNC_DAYS} days of data from Fly.io instance..."
 for attempt in $(seq 1 $MAX_RETRIES); do
-  if flyctl ssh console -q -a "$APP_NAME" -C "find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -" | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
+  if flyctl ssh console -q -a "$APP_NAME" -C "sh -c 'find ${REMOTE_DATA_PATH} -type f -name \"*.parquet\" -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -'" | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
     echo "✅ Data streamed and extracted locally."
     break
   fi
@@ -76,7 +76,7 @@ echo "✅ Purge command executed."
 
 # 6. Cleanup remote /tmp (in case previous runs left partial archives)
 echo "🧹 Cleaning up remote /tmp..."
-flyctl ssh console -q -a "$APP_NAME" -C "rm -f /tmp/data-backup-*.tar.gz" || true
+flyctl ssh console -q -a "$APP_NAME" -C "sh -c 'rm -f /tmp/data-backup-*.tar.gz'" || true
 
 # 7. Cleanup local files
 rm -rf "$LOCAL_TEMP_DIR"
