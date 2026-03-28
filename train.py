@@ -44,6 +44,7 @@ BEST_PARAMS = {
     "r_min": 0.0,  # no regime gate — cost-adjusted barriers make it redundant
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
+    "logit_bias": 0.5,  # logit bias sweep run 1 (noise robustness, arxiv 2306.05497)
 }
 
 
@@ -261,7 +262,15 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     )
     cw = class_weights.to(DEVICE)
 
+    logit_bias = p.get("logit_bias", 0.0)
+
     def focal_loss(logits, targets, sample_w, gamma=1.0):
+        # Logit bias: add epsilon to correct-class logit (noise robustness)
+        if logit_bias > 0:
+            logits = logits.clone()
+            bias = torch.zeros_like(logits)
+            bias.scatter_(1, targets.unsqueeze(1), logit_bias)
+            logits = logits + bias
         ce = nn.functional.cross_entropy(logits, targets, weight=cw, reduction="none")
         pt = torch.exp(-ce)
         return (sample_w * (1 - pt) ** gamma * ce).mean()
