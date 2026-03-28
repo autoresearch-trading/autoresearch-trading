@@ -25,7 +25,7 @@ SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
-WINDOW_SIZE = 10  # T47: signal at lag 0 only, smaller window = less noise
+WINDOW_SIZE = 20  # T47 sweep: middle ground
 TRADE_BATCH = 100
 MIN_HOLD = 1200  # min_hold sweep winner (Sortino=0.184, best honest result)
 FEE_BPS = 5
