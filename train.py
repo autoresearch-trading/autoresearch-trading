@@ -37,7 +37,7 @@ DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
     "lr": 1e-3,  # lr sweep winner (Sortino=0.333, 9/23, score=0.356)
-    "hdim": 256,  # hdim sweep run 2
+    "hdim": 64,  # hdim sweep: 64 > 128 > 256 (smaller net generalizes better)
     "nlayers": 3,
     "batch_size": 256,  # batch_size sweep: 256 > 128, 512
     "fee_mult": 11.0,  # T39 cost-adjusted: ties fm=5 on score, better PF (1.74 vs 1.12)
