@@ -1,0 +1,29 @@
+[
+  {
+    "run": 1,
+    "phase": "Phase 1: window_size sweep",
+    "name": "window50-control",
+    "config": {"window_size": 50},
+    "results": {"sortino": 0.352952, "passing": 9, "trades": 1269, "dd": 0.5458, "wr": 0.5504, "pf": 1.7123},
+    "score": 0.368,
+    "timestamp": "2026-03-28T00:10:00Z"
+  },
+  {
+    "run": 2,
+    "phase": "Phase 1: window_size sweep",
+    "name": "window10",
+    "config": {"window_size": 10},
+    "results": {"sortino": 0.299428, "passing": 6, "trades": 1253, "dd": 0.4540, "wr": 0.5543, "pf": 1.6451},
+    "score": 0.284,
+    "timestamp": "2026-03-28T00:40:00Z"
+  },
+  {
+    "run": 3,
+    "phase": "Phase 1: window_size sweep",
+    "name": "window20",
+    "config": {"window_size": 20},
+    "results": {"sortino": 0.254932, "passing": 3, "trades": 1272, "dd": 0.5719, "wr": 0.5581, "pf": 1.4702},
+    "score": 0.205,
+    "timestamp": "2026-03-28T01:10:00Z"
+  }
+]
