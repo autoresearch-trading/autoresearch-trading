@@ -44,7 +44,7 @@ BEST_PARAMS = {
     "r_min": 0.0,  # no regime gate — cost-adjusted barriers make it redundant
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
-    "logit_bias": 0.5,  # logit bias sweep run 1 (noise robustness, arxiv 2306.05497)
+    "logit_bias": 1.0,  # logit bias sweep run 2
 }
 
 
