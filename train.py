@@ -46,6 +46,7 @@ BEST_PARAMS = {
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
+    "use_uace": True,  # UACE loss experiment
 }
 
 
@@ -264,6 +265,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     cw = class_weights.to(DEVICE)
 
     logit_bias = p.get("logit_bias", 0.0)
+    use_uace = p.get("use_uace", False)
 
     def focal_loss(logits, targets, sample_w, gamma=1.0):
         # Logit bias: add epsilon to correct-class logit (noise robustness)
@@ -273,8 +275,16 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
             bias.scatter_(1, targets.unsqueeze(1), logit_bias)
             logits = logits + bias
         ce = nn.functional.cross_entropy(logits, targets, weight=cw, reduction="none")
-        pt = torch.exp(-ce)
-        return (sample_w * (1 - pt) ** gamma * ce).mean()
+        if use_uace:
+            # UACE: down-weight uncertain samples using prediction entropy
+            probs = torch.softmax(logits.detach(), dim=1)
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)
+            max_entropy = np.log(3)  # log(C) for C=3 classes
+            confidence = 1.0 - entropy / max_entropy  # 1=confident, 0=uncertain
+            return (sample_w * confidence * ce).mean()
+        else:
+            pt = torch.exp(-ce)
+            return (sample_w * (1 - pt) ** gamma * ce).mean()
 
     criterion = focal_loss
 
