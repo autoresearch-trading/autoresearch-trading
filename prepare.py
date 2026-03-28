@@ -1670,14 +1670,23 @@ def make_env(
     trade_batch: int = 100,
     min_hold: int = 1,
     include_funding: bool = False,
+    date_range: tuple[str, str] | None = None,
 ) -> TradingEnv:
-    """Create a TradingEnv for the given symbol and data split."""
-    splits = {
-        "train": (TRAIN_START, TRAIN_END),
-        "val": (TRAIN_END, VAL_END),
-        "test": (VAL_END, TEST_END),
-    }
-    start, end = splits[split]
+    """Create a TradingEnv for the given symbol and data split.
+
+    Args:
+        date_range: Optional (start, end) date strings to override the split lookup.
+                    Used by walk-forward validation to specify custom date windows.
+    """
+    if date_range is not None:
+        start, end = date_range
+    else:
+        splits = {
+            "train": (TRAIN_START, TRAIN_END),
+            "val": (TRAIN_END, VAL_END),
+            "test": (VAL_END, TEST_END),
+        }
+        start, end = splits[split]
 
     # Try cache first
     cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
