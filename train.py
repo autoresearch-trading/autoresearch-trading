@@ -45,6 +45,7 @@ BEST_PARAMS = {
     "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
+    "curriculum_epochs": 10,  # curriculum sweep: train on directional labels first
 }
 
 
@@ -286,12 +287,26 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
     epochs_below = 0
 
+    # Curriculum learning: directional labels only for warm-up epochs
+    curriculum_epochs = p.get("curriculum_epochs", 0)
+    if curriculum_epochs > 0:
+        directional_mask = y_t != 0  # labels 1 (long) and 2 (short) only
+        X_dir = X_t[directional_mask]
+        y_dir = y_t[directional_mask]
+        w_dir = w_t[directional_mask]
+
     for epoch in range(n_epochs):
-        # Shuffle
-        perm = torch.randperm(len(X_t), device=DEVICE)
-        X_shuf = X_t[perm]
-        y_shuf = y_t[perm]
-        w_shuf = w_t[perm]
+        # Curriculum: use only directional samples for warm-up epochs
+        if curriculum_epochs > 0 and epoch < curriculum_epochs:
+            perm = torch.randperm(len(X_dir), device=DEVICE)
+            X_shuf = X_dir[perm]
+            y_shuf = y_dir[perm]
+            w_shuf = w_dir[perm]
+        else:
+            perm = torch.randperm(len(X_t), device=DEVICE)
+            X_shuf = X_t[perm]
+            y_shuf = y_t[perm]
+            w_shuf = w_t[perm]
 
         for start in range(0, len(X_t), batch_size):
             batch_x = X_shuf[start : start + batch_size]
