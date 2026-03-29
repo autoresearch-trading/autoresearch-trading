@@ -36,7 +36,7 @@ MAX_HOLD_STEPS = 300  # short horizon = momentum filter (300 beats 600 and 1200)
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 3e-3,  # UACE lr sweep run 2
+    "lr": 1e-4,  # UACE lr sweep run 3 (lower end)
     "hdim": 64,  # hdim sweep: 64 > 128 > 256 (smaller net generalizes better)
     "nlayers": 3,  # nlayers sweep: 3 best score (2 higher Sortino but fewer passing)
     "batch_size": 256,  # batch_size sweep: 256 > 128, 512
