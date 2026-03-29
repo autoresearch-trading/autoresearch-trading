@@ -36,7 +36,7 @@ MAX_HOLD_STEPS = 300  # short horizon = momentum filter (300 beats 600 and 1200)
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 1e-4,  # UACE lr sweep run 3 (lower end)
+    "lr": 1e-3,  # restored baseline
     "hdim": 64,  # hdim sweep: 64 > 128 > 256 (smaller net generalizes better)
     "nlayers": 3,  # nlayers sweep: 3 best score (2 higher Sortino but fewer passing)
     "batch_size": 256,  # batch_size sweep: 256 > 128, 512
@@ -46,7 +46,7 @@ BEST_PARAMS = {
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
-    "use_uace": True,  # UACE proper lr sweep
+    "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
 
