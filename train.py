@@ -47,6 +47,8 @@ BEST_PARAMS = {
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
     "swa_start": 0,  # SWA: disabled (0.285 vs 0.353 baseline — weight averaging hurts)
+    "tp_mult": 15.0,  # asymmetric barriers run 1: wider TP
+    "sl_mult": 11.0,  # keep SL at baseline
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
@@ -219,11 +221,14 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     all_obs = []
     all_labels = []
     all_indices = []
+    tp_mult = p.get("tp_mult", p["fee_mult"])  # default: symmetric
+    sl_mult = p.get("sl_mult", p["fee_mult"])
     for sym in active_symbols:
         env = train_envs[sym]
-        fee_threshold = _cost_adjusted_threshold(env, p["fee_mult"])
+        tp_threshold = _cost_adjusted_threshold(env, tp_mult)
+        sl_threshold = _cost_adjusted_threshold(env, sl_mult)
         obs, labels, indices = make_labeled_dataset(
-            env, MAX_HOLD_STEPS, fee_threshold, fee_threshold
+            env, MAX_HOLD_STEPS, tp_threshold, sl_threshold
         )
         if len(obs) > 0:
             all_obs.append(obs)
