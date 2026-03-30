@@ -46,6 +46,7 @@ BEST_PARAMS = {
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
+    "swa_start": 20,  # SWA experiment: average weights over epochs 20-24
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
@@ -292,6 +293,9 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     total_steps = 0
     num_updates = 0
     n_epochs = 25  # epoch sweep confirmed: 25 optimal (15 underfit, 35 overfit-to-flat)
+    swa_start = p.get("swa_start", 0)  # epoch to start SWA (0 = disabled)
+    if swa_start > 0:
+        swa_model = torch.optim.swa_utils.AveragedModel(model)
 
     # Alpha_min early stopping (Theorem 3)
     alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
@@ -355,6 +359,22 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
                         f"    Early stop: accuracy {acc:.3f} < alpha_min {alpha_min:.3f} for 5 epochs"
                     )
                     break
+
+        # SWA: average weights over late epochs
+        if swa_start > 0 and epoch >= swa_start:
+            swa_model.update_parameters(model)
+
+    # Return SWA-averaged model if enabled
+    if swa_start > 0:
+        torch.optim.swa_utils.update_bn(
+            torch.utils.data.DataLoader(
+                torch.utils.data.TensorDataset(X_t),
+                batch_size=batch_size,
+            ),
+            swa_model,
+            device=DEVICE,
+        )
+        return swa_model.module, total_steps, num_updates
 
     return model, total_steps, num_updates
 
