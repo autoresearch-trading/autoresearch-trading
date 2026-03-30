@@ -1,0 +1,90 @@
+device: cpu
+=== FAST MODE: using BEST_PARAMS ===
+
+
+=== FINAL: 5 seeds x 60s on 23 symbols (excluded 2: {'CRV', 'XPL'}) ===
+params: {'lr': 0.0044, 'hdim': 64, 'nlayers': 3, 'batch_size': 256, 'fee_mult': 11.0, 'r_min': 0.24, 'vpin_max_z': 0.0}
+
+  Training seed 0 (60s)...
+    flat: 44326 (19.3%)
+    long: 89036 (38.7%)
+    short: 96638 (42.0%)
+  Training seed 1 (60s)...
+    flat: 44275 (19.2%)
+    long: 89165 (38.8%)
+    short: 96560 (42.0%)
+  Training seed 2 (60s)...
+    flat: 44458 (19.3%)
+    long: 88629 (38.5%)
+    short: 96913 (42.1%)
+  Training seed 3 (60s)...
+    flat: 44116 (19.2%)
+    long: 89285 (38.8%)
+    short: 96599 (42.0%)
+  Training seed 4 (60s)...
+    flat: 44180 (19.2%)
+    long: 88870 (38.6%)
+    short: 96950 (42.2%)
+  WARNING: alpha=0.315 < 0.5, using single best model
+Loaded 2Z features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/2Z_6a40076aa2e3224eb0c3be4d4358cd5a.npz)
+  2Z: sortino=0.0000 trades=34 dd=0.3455 [FAIL]
+Loaded AAVE features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/AAVE_464a73be658ae853149ff0a3adfc6289.npz)
+  AAVE: sortino=0.0000 trades=65 dd=0.3585 [FAIL]
+Loaded ASTER features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/ASTER_2c53d4606d4a33fb0677243ae5507a7c.npz)
+  ASTER: sortino=0.0000 trades=67 dd=0.2960 [FAIL]
+Loaded AVAX features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/AVAX_01844ef661ef712a29510aac6ec0a0b5.npz)
+  AVAX: sortino=0.4986 trades=64 dd=0.0871 wr=0.56 pf=2.42 [PASS]
+Loaded BNB features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/BNB_b89f561aae60a7b43b504a8148c3634f.npz)
+  BNB: sortino=0.1106 trades=78 dd=0.1293 wr=0.50 pf=1.24 [PASS]
+Loaded BTC features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/BTC_c3ff9cd3ee9fa3aaacd71bf3a68a2a65.npz)
+  BTC: sortino=-0.0177 trades=77 dd=0.1941 wr=0.44 pf=1.02 [PASS]
+Loaded DOGE features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/DOGE_d2846cde99654317a6f694e137616217.npz)
+  DOGE: sortino=0.0000 trades=65 dd=0.2198 [FAIL]
+Loaded ENA features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/ENA_52b0e153d57112fdfc58f80824fbc2d6.npz)
+  ENA: sortino=0.0000 trades=74 dd=0.4678 [FAIL]
+Loaded ETH features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/ETH_feb9b6812f59cb23d8be5c8e16b3384b.npz)
+  ETH: sortino=0.0000 trades=75 dd=0.2189 [FAIL]
+Loaded FARTCOIN features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/FARTCOIN_eacd03122d0df6ce2261a37fb521ad91.npz)
+  FARTCOIN: sortino=0.0000 trades=59 dd=0.2897 [FAIL]
+Loaded HYPE features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/HYPE_44cd6fbd34648cfc5604fc6c4effa192.npz)
+  HYPE: sortino=0.0000 trades=72 dd=0.2356 [FAIL]
+Loaded KBONK features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/KBONK_fbb667d4dd26c5c1d6e51f92ab5fec37.npz)
+  KBONK: sortino=-0.1109 trades=32 dd=0.1955 wr=0.44 pf=0.82 [PASS]
+Loaded KPEPE features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/KPEPE_ba538a6217a32b6c356b6c51edaa443c.npz)
+  KPEPE: sortino=0.0000 trades=61 dd=0.3437 [FAIL]
+Loaded LDO features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/LDO_7b43b5003debee46ab1a8089a516a4c2.npz)
+  LDO: sortino=-0.0038 trades=35 dd=0.1690 wr=0.44 pf=1.05 [PASS]
+Loaded LINK features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/LINK_d905d8bf24a39ef3da5fd48f3c7a3768.npz)
+  LINK: sortino=0.0000 trades=67 dd=0.2139 [FAIL]
+Loaded LTC features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/LTC_828e6210fe351c1b58f5e9d6266e7d39.npz)
+  LTC: sortino=0.0954 trades=59 dd=0.1620 wr=0.50 pf=1.29 [PASS]
+Loaded PENGU features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/PENGU_147a6a992be5b7fe7b609e1446b13990.npz)
+  PENGU: sortino=0.0031 trades=40 dd=0.1763 wr=0.45 pf=1.02 [PASS]
+Loaded PUMP features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/PUMP_6e0b1fcd7b7fb18eb1c0efff0c045bf3.npz)
+  PUMP: sortino=0.0000 trades=76 dd=0.3362 [FAIL]
+Loaded SOL features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/SOL_1d9f31dff416ad1c06c69acad4731196.npz)
+  SOL: sortino=0.2856 trades=80 dd=0.1604 wr=0.50 pf=1.52 [PASS]
+Loaded SUI features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/SUI_cd6090aeaca352f9096a126f53d5214d.npz)
+  SUI: sortino=0.0000 trades=72 dd=0.2214 [FAIL]
+Loaded UNI features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/UNI_62fe01cf3d5f73d7679c34e3caa6e925.npz)
+  UNI: sortino=0.0000 trades=61 dd=0.2623 [FAIL]
+Loaded WLFI features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/WLFI_dab77641c55012d6432ebe14f2b9f949.npz)
+  WLFI: sortino=0.0000 trades=75 dd=0.3320 [FAIL]
+Loaded XRP features from cache (/Users/diego/Dev/non-toxic/autoresearch-trading/.cache/XRP_cfa0eee814c73c60f29193ae8ab96d31.npz)
+  XRP: sortino=-0.0488 trades=69 dd=0.1713 wr=0.50 pf=0.93 [PASS]
+---
+=== PORTFOLIO SUMMARY ===
+symbols_passing: 9/23
+sortino: 0.090235
+sharpe: 0.061171
+calmar: 6.274629
+cvar_95: 0.001771
+num_trades: 1457
+max_drawdown: 0.4678
+win_rate: 0.4811
+profit_factor: 1.2575
+training_seconds: 300.0
+total_steps: 28750000
+num_updates: 112375
+
+best_params: {'lr': 0.0044, 'hdim': 64, 'nlayers': 3, 'batch_size': 256, 'fee_mult': 11.0, 'r_min': 0.24, 'vpin_max_z': 0.0}

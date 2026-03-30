@@ -1,0 +1,61 @@
+# Theorem 27: Sharpe, Sortino, and Calmar Ratio Relationships
+
+## Definitions
+
+Let R = (R_1, ..., R_N) be a return sequence with mean mu, standard deviation sigma, and risk-free rate r_f = 0.
+
+Define:
+- **Sharpe ratio**: Sh = mu / sigma * sqrt(m)  where m = steps_per_day (annualization)
+- **Sortino ratio**: So = mu / TDD * sqrt(m)  where TDD = sqrt((1/N) * sum min(R_i, 0)^2)
+- **Calmar ratio**: Cal = (annualized return) / max_drawdown = (mu * m * days_per_year) / MDD
+- **Omega ratio**: Omega = sum max(R_i, 0) / sum max(-R_i, 0) = gross_wins / gross_losses = PF (profit factor)
+
+## Claims
+
+### Part A: Sharpe-Sortino Relationship
+
+1. TDD <= sigma always. Prove this: TDD^2 = (1/N) * sum min(R_i,0)^2 <= (1/N) * sum R_i^2, and sigma^2 = (1/N) * sum (R_i - mu)^2. Show that TDD <= sigma when mu >= 0 (profitable strategy).
+
+2. Therefore So >= Sh when mu >= 0. A profitable strategy always has Sortino >= Sharpe.
+
+3. The ratio So/Sh = sigma/TDD depends on the skewness of returns:
+   - If returns are symmetric (skew = 0): So/Sh = sqrt(2) (approximately, under normality)
+   - If returns are positively skewed (skew > 0): So/Sh > sqrt(2) (Sortino rewards positive skew)
+   - If returns are negatively skewed (skew < 0): So/Sh < sqrt(2) (Sortino penalizes negative skew)
+
+   Prove the symmetric case under normality: for Z ~ N(0,1), E[min(Z,0)^2] = 1/2, so TDD = sigma/sqrt(2), giving So/Sh = sqrt(2).
+
+### Part B: Calmar Ratio Properties
+
+4. Calmar = annualized_return / MDD. For a strategy with N steps over D days:
+   - annualized_return = mu * (N/D) * 365
+   - MDD = max_{i<=j} (E_i - E_j) where E_k = sum_{t=1}^k R_t
+
+   Prove that Calmar is NOT a function of Sharpe or Sortino alone — it depends on the path (temporal ordering of returns), while Sharpe and Sortino are permutation-invariant.
+
+5. Prove that for i.i.d. returns with mean mu > 0 and std sigma, the expected maximum drawdown satisfies:
+
+     E[MDD] ~ sigma * sqrt(2 * ln(N)) - mu * something
+
+   (exact asymptotics from Asmussen, 2000). This implies Calmar decreases with longer test periods even if the strategy is profitable, because MDD grows with sqrt(ln(N)).
+
+### Part C: Omega-PF Equivalence
+
+6. Prove that Omega ratio (threshold = 0) equals profit factor PF:
+
+     Omega(0) = sum max(R_i, 0) / sum max(-R_i, 0) = gross_wins / gross_losses = PF
+
+   This is algebraic: Omega splits returns at the threshold into gains and losses.
+
+7. Prove that Omega > 1 iff mu > 0 (mean return is positive). Since PF = Omega(0), this reproves our earlier result (Theorem 21) that PF > 1 implies positive mean return.
+
+### Part D: Cross-Metric Consistency Check
+
+8. Given our empirical values (corrected Sortino ≈ 0.24, PF = 1.34, WR = 0.597, N = 900 trades, D = 20 days, MDD = 0.336):
+
+   Derive the implied Sharpe ratio: under normality assumption, Sh ≈ So / sqrt(2) ≈ 0.17.
+   Derive the implied Calmar ratio: Cal = annualized_return / MDD.
+
+   Compute annualized_return from mu = So * TDD / sqrt(m) and verify Calmar.
+
+   Verify consistency: are these values mutually compatible, or does any metric contradict the others?

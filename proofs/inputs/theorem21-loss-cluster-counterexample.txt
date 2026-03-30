@@ -1,0 +1,53 @@
+# Theorem 21: LossClusterCounterexample (corrected statement)
+
+Use the standard definitions
+
+  PF      = gross_wins / gross_losses,
+  win rate w = wins / total_trades,
+  Sortino = mean_return / downside_std * sqrt(m),
+
+where downside_std is the downside semideviation computed from the same return sequence, and m > 0 is steps_per_day.
+
+This theorem asks for a corrected counterexample, because the naive claim
+
+  PF > 1, w > 0.5, but Sortino <= 0
+
+is not compatible with the standard definition of Sortino.
+
+Prove the following claims.
+
+1. Impossibility of the original statement. For any finite return sequence with at least one losing trade and standard Sortino defined from the same sequence, if PF > 1 then the mean return is strictly positive. Therefore Sortino > 0. Conclude that the conjunction
+
+     PF > 1 and Sortino <= 0
+
+   is impossible under the standard definition.
+
+2. Nevertheless, there is no positive lower bound on Sortino in terms of PF > 1 and w > 0.5 alone. For every epsilon > 0, construct a finite return sequence with
+
+     PF > 1,
+     w > 1 / 2,
+     0 < Sortino < epsilon.
+
+3. Give an explicit six-trade family. Let delta > 0 and consider the return sequence
+
+     (1/2 + delta, 1/2 + delta, 1/2 + delta, 1/2 + delta, -1, -1).
+
+   Prove that
+
+     PF = 1 + 2 * delta,
+     w = 2 / 3,
+     mean_return = 2 * delta / 3,
+     downside_std = 1 / sqrt(3),
+     Sortino = (2 / sqrt(3)) * delta * sqrt(m).
+
+   Hence Sortino can be made arbitrarily small and positive by taking delta -> 0+ even though PF > 1 and w > 0.5.
+
+4. Order-independence. Prove that PF, win rate, mean return, and downside semideviation of a finite return sequence depend only on the multiset of returns, not on their temporal order. Conclude that temporal clustering of losses, by itself, does not change the standard Sortino ratio.
+
+5. To make clustering relevant, one must change the objective to a path-dependent one. Give an explicit example of two return sequences with the same multiset of returns but different max drawdown values, for example
+
+     (1, 1, -1, -1)
+     and
+     (1, -1, 1, -1).
+
+   Prove that they have the same PF, win rate, mean return, and standard trade-level Sortino, but different max drawdown. Conclude that standard Sortino is permutation-invariant, whereas drawdown-based objectives are genuinely path-dependent.

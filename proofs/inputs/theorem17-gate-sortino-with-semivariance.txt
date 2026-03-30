@@ -1,0 +1,57 @@
+# Theorem 17: GateSortinoWithSemivariance
+
+Let m > 0 be steps_per_day. Consider a trading strategy with ungated mean return mu > 0 and ungated downside deviation sigma_down > 0, so that
+
+  Sortino_all = (mu / sigma_down) * sqrt(m).
+
+Now let a binary gate G keep only a fraction phi of all candidate trades, where 0 < phi <= 1. Let
+
+  mu_pass = E[r | G = pass],
+  sigma_down_pass = downside deviation of r conditional on G = pass.
+
+Define
+
+  k = mu_pass / mu,
+  d = sigma_down_pass / sigma_down.
+
+The gated strategy has Sortino
+
+  Sortino_gated = (mu_pass / sigma_down_pass) * sqrt(phi * m).
+
+Prove the following claims.
+
+1. The exact Sortino ratio identity is
+
+     Sortino_gated / Sortino_all = k * sqrt(phi) / d.
+
+2. The gate improves Sortino if and only if
+
+     k * sqrt(phi) > d.
+
+3. A gate can improve conditional edge while still hurting Sortino. Construct an explicit example with
+
+     0 < phi < 1,
+     k > 1,
+     d > k * sqrt(phi),
+
+   and conclude that the gate raises conditional mean return but lowers Sortino.
+
+   Also give a separate explicit two-symbol example showing that the number of symbols whose Sortino exceeds a fixed threshold tau can increase after gating even while the average Sortino across symbols decreases.
+
+4. Portfolio characterization. Let symbols j = 1, ..., N be independent. For symbol j, let ungated mean return be mu_j > 0 and ungated downside deviation be sigma_j > 0. After gating, let
+
+     mu_j' = phi_j * k_j * mu_j,
+     sigma_j' = sqrt(phi_j) * d_j * sigma_j,
+
+   where 0 < phi_j <= 1, k_j > 0, and d_j > 0.
+
+   Define the ungated and gated portfolio Sortino values by
+
+     S_all  = (sum_j mu_j) / sqrt(sum_j sigma_j^2) * sqrt(m),
+     S_gate = (sum_j mu_j') / sqrt(sum_j (sigma_j')^2) * sqrt(m).
+
+   Prove that gating improves portfolio Sortino if and only if
+
+     (sum_j phi_j * k_j * mu_j) / sqrt(sum_j phi_j * d_j^2 * sigma_j^2)
+     >
+     (sum_j mu_j) / sqrt(sum_j sigma_j^2).

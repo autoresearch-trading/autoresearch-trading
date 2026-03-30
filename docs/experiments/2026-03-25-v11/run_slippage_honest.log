@@ -1,0 +1,353 @@
+device: cpu
+=== FAST MODE: using BEST_PARAMS ===
+
+
+=== FINAL: 5 seeds x 60s on all 25 symbols ===
+params: {'lr': 0.0044, 'hdim': 64, 'nlayers': 3, 'batch_size': 256, 'fee_mult': 11.0, 'r_min': 0.24, 'vpin_max_z': 0.0}
+
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+  Training seed 0 (60s)...
+    flat: 52381 (21.0%)
+    long: 95509 (38.2%)
+    short: 102110 (40.8%)
+  Training seed 1 (60s)...
+    flat: 52369 (20.9%)
+    long: 95434 (38.2%)
+    short: 102197 (40.9%)
+  Training seed 2 (60s)...
+    flat: 52028 (20.8%)
+    long: 95682 (38.3%)
+    short: 102290 (40.9%)
+  Training seed 3 (60s)...
+    flat: 52267 (20.9%)
+    long: 95344 (38.1%)
+    short: 102389 (41.0%)
+  Training seed 4 (60s)...
+    flat: 52107 (20.8%)
+    long: 95380 (38.2%)
+    short: 102513 (41.0%)
+  WARNING: alpha=0.257 < 0.5, using single best model
+Cache miss for 2Z test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached 2Z features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/2Z_6a40076aa2e3224eb0c3be4d4358cd5a.npz
+  2Z: sortino=-0.0923 trades=44 dd=0.1495 wr=0.32 pf=0.92 [PASS]
+Cache miss for AAVE test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached AAVE features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/AAVE_464a73be658ae853149ff0a3adfc6289.npz
+  AAVE: sortino=0.0000 trades=93 dd=0.2043 [FAIL]
+Cache miss for ASTER test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached ASTER features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/ASTER_2c53d4606d4a33fb0677243ae5507a7c.npz
+  ASTER: sortino=0.0000 trades=90 dd=0.3095 [FAIL]
+Cache miss for AVAX test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached AVAX features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/AVAX_01844ef661ef712a29510aac6ec0a0b5.npz
+  AVAX: sortino=-0.1667 trades=93 dd=0.1775 wr=0.40 pf=0.86 [PASS]
+Cache miss for BNB test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached BNB features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/BNB_b89f561aae60a7b43b504a8148c3634f.npz
+  BNB: sortino=-0.1104 trades=123 dd=0.1123 wr=0.39 pf=0.93 [PASS]
+Cache miss for BTC test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached BTC features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/BTC_c3ff9cd3ee9fa3aaacd71bf3a68a2a65.npz
+  BTC: sortino=-0.1901 trades=117 dd=0.1698 wr=0.41 pf=0.85 [PASS]
+Cache miss for CRV test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached CRV features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/CRV_33c58c3233991753c3512d28d729555e.npz
+  CRV: sortino=-0.0057 trades=35 dd=0.1481 wr=0.39 pf=1.17 [PASS]
+Cache miss for DOGE test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached DOGE features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/DOGE_d2846cde99654317a6f694e137616217.npz
+  DOGE: sortino=0.0075 trades=92 dd=0.1411 wr=0.48 pf=1.07 [PASS]
+Cache miss for ENA test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached ENA features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/ENA_52b0e153d57112fdfc58f80824fbc2d6.npz
+  ENA: sortino=0.0000 trades=121 dd=0.3562 [FAIL]
+Cache miss for ETH test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached ETH features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/ETH_feb9b6812f59cb23d8be5c8e16b3384b.npz
+  ETH: sortino=-0.0547 trades=118 dd=0.1975 wr=0.40 pf=0.97 [PASS]
+Cache miss for FARTCOIN test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached FARTCOIN features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/FARTCOIN_eacd03122d0df6ce2261a37fb521ad91.npz
+  FARTCOIN: sortino=0.0000 trades=77 dd=0.3057 [FAIL]
+Cache miss for HYPE test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached HYPE features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/HYPE_44cd6fbd34648cfc5604fc6c4effa192.npz
+  HYPE: sortino=0.1748 trades=119 dd=0.1879 wr=0.55 pf=1.33 [PASS]
+Cache miss for KBONK test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached KBONK features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/KBONK_fbb667d4dd26c5c1d6e51f92ab5fec37.npz
+  KBONK: sortino=0.0000 trades=38 dd=0.2626 [FAIL]
+Cache miss for KPEPE test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached KPEPE features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/KPEPE_ba538a6217a32b6c356b6c51edaa443c.npz
+  KPEPE: sortino=0.0000 trades=82 dd=0.2948 [FAIL]
+Cache miss for LDO test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached LDO features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/LDO_7b43b5003debee46ab1a8089a516a4c2.npz
+  LDO: sortino=0.1142 trades=37 dd=0.1249 wr=0.58 pf=1.57 [PASS]
+Cache miss for LINK test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached LINK features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/LINK_d905d8bf24a39ef3da5fd48f3c7a3768.npz
+  LINK: sortino=0.2346 trades=83 dd=0.1254 wr=0.52 pf=1.53 [PASS]
+Cache miss for LTC test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached LTC features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/LTC_828e6210fe351c1b58f5e9d6266e7d39.npz
+  LTC: sortino=-0.0626 trades=77 dd=0.1314 wr=0.44 pf=1.00 [PASS]
+Cache miss for PENGU test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached PENGU features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/PENGU_147a6a992be5b7fe7b609e1446b13990.npz
+  PENGU: sortino=0.0000 trades=50 dd=0.2273 [FAIL]
+Cache miss for PUMP test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached PUMP features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/PUMP_6e0b1fcd7b7fb18eb1c0efff0c045bf3.npz
+  PUMP: sortino=0.0000 trades=117 dd=0.4179 [FAIL]
+Cache miss for SOL test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached SOL features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/SOL_1d9f31dff416ad1c06c69acad4731196.npz
+  SOL: sortino=-0.0567 trades=122 dd=0.1794 wr=0.40 pf=0.97 [PASS]
+Cache miss for SUI test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:909: RuntimeWarning: invalid value encountered in divide
+  buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:910: RuntimeWarning: invalid value encountered in divide
+  sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached SUI features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/SUI_cd6090aeaca352f9096a126f53d5214d.npz
+  SUI: sortino=0.0000 trades=111 dd=0.2531 [FAIL]
+Cache miss for UNI test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached UNI features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/UNI_62fe01cf3d5f73d7679c34e3caa6e925.npz
+  UNI: sortino=0.0000 trades=75 dd=0.2816 [FAIL]
+Cache miss for WLFI test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached WLFI features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/WLFI_dab77641c55012d6432ebe14f2b9f949.npz
+  WLFI: sortino=0.0000 trades=102 dd=0.3630 [FAIL]
+Cache miss for XPL test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached XPL features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/XPL_3b02b8e32b9f8d5699aa219f6124ff26.npz
+  XPL: sortino=0.0000 trades=60 dd=0.4324 [FAIL]
+Cache miss for XRP test, computing features...
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:848: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+/Users/diego/Dev/non-toxic/autoresearch-trading/prepare.py:934: RuntimeWarning: divide by zero encountered in divide
+  batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+Cached XRP features to /Users/diego/Dev/non-toxic/autoresearch-trading/.cache/XRP_cfa0eee814c73c60f29193ae8ab96d31.npz
+  XRP: sortino=-0.0008 trades=110 dd=0.1561 wr=0.48 pf=1.06 [PASS]
+---
+=== PORTFOLIO SUMMARY ===
+symbols_passing: 13/25
+sortino: -0.016077
+sharpe: -0.011470
+calmar: -0.163874
+cvar_95: 0.001864
+num_trades: 2186
+max_drawdown: 0.4324
+win_rate: 0.4429
+profit_factor: 1.0956
+training_seconds: 300.0
+total_steps: 31250000
+num_updates: 122125
+
+best_params: {'lr': 0.0044, 'hdim': 64, 'nlayers': 3, 'batch_size': 256, 'fee_mult': 11.0, 'r_min': 0.24, 'vpin_max_z': 0.0}

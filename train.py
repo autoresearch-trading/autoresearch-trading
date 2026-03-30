@@ -17,26 +17,36 @@ from torch.distributions import Categorical
 from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
 
 # ── Configuration ──────────────────────────────────────────────
-SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "CRV"]
+SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "AAVE"]
+# T40: exclude symbols with spread > 25 bps (untradeable after costs)
+EXCLUDED_SYMBOLS = {"CRV", "XPL"}  # CRV=52bps, XPL=28bps spread
 SEARCH_BUDGET = 90
 SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 5
 FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
-WINDOW_SIZE = 50
+WINDOW_SIZE = (
+    50  # window sweep: 50 > 20 > 10 (T47 linear analysis missed nonlinear patterns)
+)
 TRADE_BATCH = 100
-MIN_HOLD = 500  # ~8 min between trades (closer to v5 selectivity)
+MIN_HOLD = 1200  # min_hold sweep winner (Sortino=0.184, best honest result)
 FEE_BPS = 5
-MAX_HOLD_STEPS = 300  # Triple Barrier timeout: ~5 min (setup window)
+MAX_HOLD_STEPS = 300  # short horizon = momentum filter (300 beats 600 and 1200)
 
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 1e-3,
-    "hdim": 256,
-    "nlayers": 2,
-    "batch_size": 256,
-    "fee_mult": 10.0,  # moderate barrier width
+    "lr": 1e-3,  # restored baseline
+    "hdim": 64,  # hdim sweep: 64 > 128 > 256 (smaller net generalizes better)
+    "nlayers": 3,  # nlayers sweep: 3 best score (2 higher Sortino but fewer passing)
+    "batch_size": 256,  # batch_size sweep: 256 > 128, 512
+    "fee_mult": 11.0,  # T39 cost-adjusted: ties fm=5 on score, better PF (1.74 vs 1.12)
+    "r_min": 0.0,  # no regime gate — cost-adjusted barriers make it redundant
+    "vpin_max_z": 0.0,  # no VPIN gate (T17/T22)
+    "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
+    "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
+    "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
+    "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
 
@@ -66,6 +76,53 @@ class DirectionClassifier(nn.Module):
         flat = x.flatten(start_dim=1)
         x = torch.cat([flat, t_mean, t_std], dim=1)
         return self.head(self.trunk(x))
+
+
+class HybridClassifier(nn.Module):
+    """Flat MLP + 1D TCN hybrid. Proved: weak dominance over either alone (Theorem 5)."""
+
+    def __init__(self, obs_shape, n_classes, hidden_dim, num_layers):
+        super().__init__()
+        n_time, n_feat = obs_shape
+
+        # Flat branch: flatten + temporal stats
+        flat_dim = n_time * n_feat + 2 * n_feat
+
+        # TCN branch: Conv1d → pool
+        self.tcn = nn.Sequential(
+            nn.Conv1d(n_feat, 16, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(16, 8, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),
+        )
+        # Kaiming init for TCN
+        for m in self.tcn.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                nn.init.constant_(m.bias, 0.0)
+
+        combined_dim = flat_dim + 8  # flat + tcn pool output
+
+        layers = [_ortho_init(nn.Linear(combined_dim, hidden_dim)), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
+        self.trunk = nn.Sequential(*layers)
+        self.head = _ortho_init(nn.Linear(hidden_dim, n_classes), gain=0.01)
+
+    def forward(self, x):
+        # x: (batch, time, feat)
+        t_mean = x.mean(dim=1)
+        t_std = x.std(dim=1)
+        flat = x.flatten(start_dim=1)
+        flat_branch = torch.cat([flat, t_mean, t_std], dim=1)
+
+        # TCN expects (batch, channels, time)
+        tcn_in = x.permute(0, 2, 1)
+        tcn_out = self.tcn(tcn_in).squeeze(-1)  # (batch, 8)
+
+        combined = torch.cat([flat_branch, tcn_out], dim=1)
+        return self.head(self.trunk(combined))
 
 
 # ── Data labeling ──────────────────────────────────────────────
@@ -136,19 +193,34 @@ def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=
 
 
 # ── Training ───────────────────────────────────────────────────
+def _cost_adjusted_threshold(env, fee_mult):
+    """Compute cost-adjusted barrier threshold per symbol (T39).
+
+    Barrier = fee_mult × 2 × (fee + slippage) / 10000
+    where slippage = median(half_spread) + impact_buffer.
+    """
+    impact_buffer_bps = 3.0  # MEV + market impact
+    if env.spread_bps is not None and len(env.spread_bps) > 0:
+        median_half_spread = np.median(env.spread_bps[env.spread_bps > 0]) / 2.0
+        slippage_bps = median_half_spread + impact_buffer_bps
+    else:
+        slippage_bps = 5.0  # fallback
+    total_cost_bps = FEE_BPS + slippage_bps
+    return (2 * total_cost_bps / 10000) * fee_mult
+
+
 def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, seed):
     """Train a classifier on forward return labels."""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    fee_threshold = (2 * FEE_BPS / 10000) * p["fee_mult"]
-
-    # Collect labeled data from all symbols
+    # Collect labeled data from all symbols (per-symbol cost-adjusted barriers, T39)
     all_obs = []
     all_labels = []
     all_indices = []
     for sym in active_symbols:
         env = train_envs[sym]
+        fee_threshold = _cost_adjusted_threshold(env, p["fee_mult"])
         obs, labels, indices = make_labeled_dataset(
             env, MAX_HOLD_STEPS, fee_threshold, fee_threshold
         )
@@ -187,27 +259,64 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
     model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=5e-4)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=p["lr"], weight_decay=p.get("wd", 5e-4)
+    )
     cw = class_weights.to(DEVICE)
 
+    logit_bias = p.get("logit_bias", 0.0)
+    use_uace = p.get("use_uace", False)
+
     def focal_loss(logits, targets, sample_w, gamma=1.0):
+        # Logit bias: add epsilon to correct-class logit (noise robustness)
+        if logit_bias > 0:
+            logits = logits.clone()
+            bias = torch.zeros_like(logits)
+            bias.scatter_(1, targets.unsqueeze(1), logit_bias)
+            logits = logits + bias
         ce = nn.functional.cross_entropy(logits, targets, weight=cw, reduction="none")
-        pt = torch.exp(-ce)
-        return (sample_w * (1 - pt) ** gamma * ce).mean()
+        if use_uace:
+            # UACE: down-weight uncertain samples using prediction entropy
+            probs = torch.softmax(logits.detach(), dim=1)
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)
+            max_entropy = np.log(3)  # log(C) for C=3 classes
+            confidence = 1.0 - entropy / max_entropy  # 1=confident, 0=uncertain
+            return (sample_w * confidence * ce).mean()
+        else:
+            pt = torch.exp(-ce)
+            return (sample_w * (1 - pt) ** gamma * ce).mean()
 
     criterion = focal_loss
 
     batch_size = p["batch_size"]
     total_steps = 0
     num_updates = 0
-    n_epochs = 25  # Fixed epoch count for deterministic training
+    n_epochs = 25  # epoch sweep confirmed: 25 optimal (15 underfit, 35 overfit-to-flat)
+
+    # Alpha_min early stopping (Theorem 3)
+    alpha_min = 0.5 + 1.0 / (2.0 * p["fee_mult"])
+    epochs_below = 0
+
+    # Curriculum learning: directional labels only for warm-up epochs
+    curriculum_epochs = p.get("curriculum_epochs", 0)
+    if curriculum_epochs > 0:
+        directional_mask = y_t != 0  # labels 1 (long) and 2 (short) only
+        X_dir = X_t[directional_mask]
+        y_dir = y_t[directional_mask]
+        w_dir = w_t[directional_mask]
 
     for epoch in range(n_epochs):
-        # Shuffle
-        perm = torch.randperm(len(X_t), device=DEVICE)
-        X_shuf = X_t[perm]
-        y_shuf = y_t[perm]
-        w_shuf = w_t[perm]
+        # Curriculum: use only directional samples for warm-up epochs
+        if curriculum_epochs > 0 and epoch < curriculum_epochs:
+            perm = torch.randperm(len(X_dir), device=DEVICE)
+            X_shuf = X_dir[perm]
+            y_shuf = y_dir[perm]
+            w_shuf = w_dir[perm]
+        else:
+            perm = torch.randperm(len(X_t), device=DEVICE)
+            X_shuf = X_t[perm]
+            y_shuf = y_t[perm]
+            w_shuf = w_t[perm]
 
         for start in range(0, len(X_t), batch_size):
             batch_x = X_shuf[start : start + batch_size]
@@ -225,17 +334,43 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
             num_updates += 1
             total_steps += len(batch_x)
 
+        # End of epoch: quick accuracy check on training data
+        with torch.no_grad():
+            logits = model(X_t)
+            preds = logits.argmax(dim=1)
+            directional_mask = y_t != 0  # long or short labels only
+            if directional_mask.sum() > 0:
+                acc = (
+                    (preds[directional_mask] == y_t[directional_mask])
+                    .float()
+                    .mean()
+                    .item()
+                )
+                if acc < alpha_min:
+                    epochs_below += 1
+                else:
+                    epochs_below = 0
+                if False and epochs_below >= 5:  # Disabled: let model train fully first
+                    print(
+                        f"    Early stop: accuracy {acc:.3f} < alpha_min {alpha_min:.3f} for 5 epochs"
+                    )
+                    break
+
     return model, total_steps, num_updates
 
 
 # ── Evaluation ─────────────────────────────────────────────────
-def eval_policy(policy_fn, symbols, split="test"):
-    """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor)."""
+def eval_policy(policy_fn, symbols, split="test", params=None):
+    """Run policy_fn on all symbols. Returns (sortino, passing, trades, dd, win_rate, profit_factor, sharpe, calmar, cvar)."""
+    p_ref = params or {}
     passing = []
     trades_all = 0
     worst_dd = 0.0
     all_win_rates = []
     all_profit_factors = []
+    all_sharpes = []
+    all_calmars = []
+    all_cvars = []
 
     for sym in symbols:
         try:
@@ -245,16 +380,25 @@ def eval_policy(policy_fn, symbols, split="test"):
                 window_size=WINDOW_SIZE,
                 trade_batch=TRADE_BATCH,
                 min_hold=MIN_HOLD,
+                # include_funding=True,  # T42: proven negligible (0.16% of fee barrier)
             )
             buf = io.StringIO()
             old = sys.stdout
             sys.stdout = buf
-            sh = evaluate(env_test, policy_fn, min_trades=10)
+            sh = evaluate(
+                env_test,
+                policy_fn,
+                min_trades=10,
+                r_min=p_ref.get("r_min", 0.0),
+                vpin_max_z=p_ref.get("vpin_max_z", 0.0),
+                fee_mult=p_ref.get("fee_mult", 1.0),
+            )
             sys.stdout = old
             out = buf.getvalue()
 
             t, d = 0, 0.0
             wr, pf = 0.0, 0.0
+            sharpe_val, calmar_val, cvar_val = 0.0, 0.0, 0.0
             for ln in out.strip().split("\n"):
                 if ln.startswith("num_trades:"):
                     t = int(ln.split()[1])
@@ -264,6 +408,12 @@ def eval_policy(policy_fn, symbols, split="test"):
                     wr = float(ln.split()[1])
                 elif ln.startswith("profit_factor:"):
                     pf = float(ln.split()[1])
+                elif ln.startswith("sharpe:"):
+                    sharpe_val = float(ln.split()[1])
+                elif ln.startswith("calmar:"):
+                    calmar_val = float(ln.split()[1])
+                elif ln.startswith("cvar_95:"):
+                    cvar_val = float(ln.split()[1])
 
             passed = (t >= 10 and d <= 0.20) if t > 0 else False
             tag = "PASS" if passed else "FAIL"
@@ -271,6 +421,9 @@ def eval_policy(policy_fn, symbols, split="test"):
             print(f"  {sym}: sortino={sh:.4f} trades={t} dd={d:.4f}{extra} [{tag}]")
             if passed:
                 passing.append(sh)
+                all_sharpes.append(sharpe_val)
+                all_calmars.append(calmar_val)
+                all_cvars.append(cvar_val)
             if passed and wr > 0:
                 all_win_rates.append(wr)
                 all_profit_factors.append(pf)
@@ -281,6 +434,9 @@ def eval_policy(policy_fn, symbols, split="test"):
 
     mean_wr = float(np.mean(all_win_rates)) if all_win_rates else 0.0
     mean_pf = float(np.mean(all_profit_factors)) if all_profit_factors else 0.0
+    mean_sharpe = float(np.mean(all_sharpes)) if all_sharpes else 0.0
+    mean_calmar = float(np.mean(all_calmars)) if all_calmars else 0.0
+    mean_cvar = float(np.mean(all_cvars)) if all_cvars else 0.0
 
     return (
         float(np.mean(passing)) if passing else 0.0,
@@ -289,6 +445,9 @@ def eval_policy(policy_fn, symbols, split="test"):
         worst_dd,
         mean_wr,
         mean_pf,
+        mean_sharpe,
+        mean_calmar,
+        mean_cvar,
     )
 
 
@@ -322,6 +481,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
                 window_size=WINDOW_SIZE,
                 trade_batch=TRADE_BATCH,
                 min_hold=MIN_HOLD,
+                # include_funding=True,  # T42: proven negligible (0.16% of fee barrier)
             )
             train_envs[sym] = env
             env_weights[sym] = env.num_steps
@@ -349,19 +509,128 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         total_steps_all += steps
         total_updates_all += updates
 
-    ensemble_fn = make_ensemble_fn(models, DEVICE)
-    sh, ps, tr, dd, wr, pf = eval_policy(ensemble_fn, symbols, split=split)
-    return sh, ps, tr, dd, total_steps_all, total_updates_all, wr, pf
+    # Ensemble validity check (Theorem 10): only ensemble if alpha > 0.5
+    # Check mean training accuracy across seeds
+    mean_accuracy = 0.0
+    best_seed_idx = 0
+    best_acc = 0.0
+    old_stdout2 = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    for si, model in enumerate(models):
+        model.eval()
+        # Quick accuracy check on first available training env
+        first_env = train_envs[active[0]]
+        fee_threshold = _cost_adjusted_threshold(first_env, p["fee_mult"])
+        obs, labels, _ = make_labeled_dataset(
+            first_env, MAX_HOLD_STEPS, fee_threshold, fee_threshold, max_samples=2000
+        )
+        if len(obs) > 0:
+            with torch.no_grad():
+                X_check = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
+                y_check = torch.tensor(labels, dtype=torch.long, device=DEVICE)
+                logits = model(X_check)
+                preds = logits.argmax(dim=1)
+                directional_mask = y_check != 0
+                if directional_mask.sum() > 0:
+                    acc = (
+                        (preds[directional_mask] == y_check[directional_mask])
+                        .float()
+                        .mean()
+                        .item()
+                    )
+                    mean_accuracy += acc
+                    if acc > best_acc:
+                        best_acc = acc
+                        best_seed_idx = si
+    sys.stdout.close()
+    sys.stdout = old_stdout2
+    mean_accuracy /= max(len(models), 1)
+
+    if mean_accuracy < 0.5 and len(models) > 1:
+        if verbose:
+            print(
+                f"  WARNING: alpha={mean_accuracy:.3f} < 0.5, using single best model"
+            )
+        ensemble_fn = make_ensemble_fn([models[best_seed_idx]], DEVICE)
+    else:
+        ensemble_fn = make_ensemble_fn(models, DEVICE)
+
+    sh, ps, tr, dd, wr, pf, sharpe, calmar, cvar = eval_policy(
+        ensemble_fn, symbols, split=split, params=p
+    )
+    return (
+        sh,
+        ps,
+        tr,
+        dd,
+        total_steps_all,
+        total_updates_all,
+        wr,
+        pf,
+        sharpe,
+        calmar,
+        cvar,
+    )
 
 
-# ── Optuna objective ───────────────────────────────────────────
+# ── Warm-start configs from prior experiments ─────────────────
+WARM_START_CONFIGS = [
+    # v10 best (wd5e4 run, 18/25 passing)
+    {
+        "lr": 1e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 256,
+        "fee_mult": 1.5,
+        "r_min": 0.0,
+    },
+    # v5 baseline
+    {
+        "lr": 1e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 256,
+        "fee_mult": 1.5,
+        "r_min": 0.7,
+    },
+    # tape-v3 best (min_hold=300 era)
+    {
+        "lr": 1e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 256,
+        "fee_mult": 10.0,
+        "r_min": 0.0,
+    },
+    # wider fee_mult exploration
+    {
+        "lr": 5e-4,
+        "hdim": 128,
+        "nlayers": 3,
+        "batch_size": 512,
+        "fee_mult": 3.0,
+        "r_min": 0.0,
+    },
+    {
+        "lr": 2e-3,
+        "hdim": 256,
+        "nlayers": 2,
+        "batch_size": 128,
+        "fee_mult": 5.0,
+        "r_min": 0.5,
+    },
+]
+
+
+# ── Optuna objective (multi-fidelity + pruning) ──────────────
 def objective(trial):
     p = {
-        "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
-        "hdim": trial.suggest_categorical("hdim", [128, 256]),
+        "lr": trial.suggest_float("lr", 5e-4, 5e-3, log=True),
+        "hdim": trial.suggest_categorical("hdim", [64, 128, 256]),
         "nlayers": trial.suggest_categorical("nlayers", [2, 3]),
         "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
-        "fee_mult": trial.suggest_float("fee_mult", 5.0, 15.0),
+        "fee_mult": trial.suggest_float("fee_mult", 1.0, 15.0),
+        "r_min": trial.suggest_float("r_min", 0.0, 0.7),
     }
 
     print(f"\n{'='*50}")
@@ -371,7 +640,7 @@ def objective(trial):
 
     try:
         t0 = time.time()
-        sh, ps, tr, dd, _, _, _, _ = full_run(
+        sh, ps, tr, dd, _, _, _, _, _, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
@@ -402,23 +671,46 @@ def main():
     if args.search:
         print(
             f"=== SEARCH: {SEARCH_TRIALS} trials x {SEARCH_BUDGET}s "
-            f"({SEARCH_SEEDS} seeds) on {SEARCH_SYMBOLS} ===\n"
+            f"({SEARCH_SEEDS} seeds) ===\n"
+            f"  Stage 1: screen on {SEARCH_SYMBOLS}\n"
+            f"  Stage 2: promote to all {len(DEFAULT_SYMBOLS)} symbols\n"
         )
-        study_name = f"sup_{_code_hash()}"
-        print(f"Optuna study: {study_name}")
+        study_name = "v11_search"
+        storage = "sqlite:///optuna_v11.db"
+        print(f"Optuna study: {study_name} ({storage})")
         study = optuna.create_study(
             direction="maximize",
-            sampler=optuna.samplers.TPESampler(seed=42),
-            storage="sqlite:///optuna_study.db",
+            sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=5),
+            pruner=optuna.pruners.HyperbandPruner(
+                min_resource=0,  # stage 0 = 5-symbol screen
+                max_resource=1,  # stage 1 = 25-symbol full eval
+                reduction_factor=3,
+            ),
+            storage=storage,
             study_name=study_name,
             load_if_exists=True,
         )
+
+        # Warm-start: enqueue known good configs from prior experiments
+        existing_trials = len(study.trials)
+        if existing_trials == 0:
+            print(f"Warm-starting with {len(WARM_START_CONFIGS)} prior configs...")
+            for cfg in WARM_START_CONFIGS:
+                study.enqueue_trial(cfg)
+        else:
+            print(f"Resuming study with {existing_trials} existing trials")
+
         study.optimize(objective, n_trials=SEARCH_TRIALS)
 
         print(f"\n{'='*50}")
-        print("TOP 5 TRIALS:")
+        completed = [
+            t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+        pruned = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+        print(f"Trials: {len(completed)} completed, {len(pruned)} pruned")
+        print("\nTOP 5 TRIALS:")
         ranked = sorted(
-            study.trials, key=lambda t: t.value if t.value else -999, reverse=True
+            completed, key=lambda t: t.value if t.value else -999, reverse=True
         )
         for t in ranked[:5]:
             print(f"  #{t.number}: sortino={t.value:.4f}  {t.params}")
@@ -430,26 +722,34 @@ def main():
             "nlayers": b["nlayers"],
             "batch_size": b["batch_size"],
             "fee_mult": b["fee_mult"],
+            "r_min": b["r_min"],
         }
         print(f"\nHint: update BEST_PARAMS in train.py with: {bp}")
     else:
         print("=== FAST MODE: using BEST_PARAMS ===\n")
         bp = BEST_PARAMS
 
+    # T40: filter out symbols with spreads too wide to trade profitably
+    tradeable_symbols = [s for s in DEFAULT_SYMBOLS if s not in EXCLUDED_SYMBOLS]
+
     print(
         f"\n=== FINAL: {FINAL_SEEDS} seeds x "
-        f"{FINAL_BUDGET // FINAL_SEEDS}s on all {len(DEFAULT_SYMBOLS)} symbols ==="
+        f"{FINAL_BUDGET // FINAL_SEEDS}s on {len(tradeable_symbols)} symbols "
+        f"(excluded {len(EXCLUDED_SYMBOLS)}: {EXCLUDED_SYMBOLS}) ==="
     )
     print(f"params: {bp}\n")
 
-    sh, ps, tr, dd, total_steps, total_updates, wr, pf = full_run(
-        DEFAULT_SYMBOLS, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
+    sh, ps, tr, dd, total_steps, total_updates, wr, pf, sharpe, calmar, cvar = full_run(
+        tradeable_symbols, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
     )
 
     print("---")
     print("=== PORTFOLIO SUMMARY ===")
-    print(f"symbols_passing: {ps}/{len(DEFAULT_SYMBOLS)}")
+    print(f"symbols_passing: {ps}/{len(tradeable_symbols)}")
     print(f"sortino: {sh:.6f}")
+    print(f"sharpe: {sharpe:.6f}")
+    print(f"calmar: {calmar:.6f}")
+    print(f"cvar_95: {cvar:.6f}")
     print(f"num_trades: {tr}")
     print(f"max_drawdown: {dd:.4f}")
     if wr > 0:

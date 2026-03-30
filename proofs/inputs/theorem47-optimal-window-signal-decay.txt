@@ -1,0 +1,71 @@
+# Theorem 47: Optimal Observation Window from Signal-to-Noise Ratio
+
+## Definitions
+
+Let X_t ∈ R^d be a d-dimensional feature vector at time step t.
+Let Y_t = (P_{t+1} - P_t) / P_t be the one-step forward return.
+
+Define the predictive cross-correlation at lag k:
+  rho_xy(k) = Corr(X_t, Y_{t+k})
+
+Define the feature autocorrelation at lag k:
+  rho_xx(k) = Corr(X_t, X_{t+k})
+
+A classifier observes a window of W consecutive feature vectors:
+  O_t = (X_{t-W+1}, X_{t-W+2}, ..., X_t) ∈ R^{W x d}
+
+## Claims
+
+1. **Signal content of window.** Under a linear predictive model where Y_t = sum_{k=0}^{inf} beta_k * X_{t-k} + epsilon_t, the total signal content in a window of size W is:
+     Signal(W) = sum_{k=0}^{W-1} |beta_k|^2
+
+   When predictive power decays as |beta_k| = |beta_0| * exp(-k/tau) for some decay constant tau > 0, prove:
+     Signal(W) = |beta_0|^2 * (1 - exp(-2W/tau)) / (1 - exp(-2/tau))
+
+   And Signal(W) → |beta_0|^2 / (1 - exp(-2/tau)) as W → infinity (bounded above).
+
+2. **Noise content of window.** For a classifier that takes a flattened W*d dimensional input plus 2*d summary statistics (mean and std), the estimation noise of the summary statistics decreases with W:
+     Var(mean_hat) = sigma_x^2 / W
+     Var(std_hat) ≈ sigma_x^2 / (2*W)
+
+   But the flattened input noise grows with W. For W*d i.i.d. noise dimensions, the expected squared norm of noise is:
+     E[||noise||^2] = W * d * sigma_noise^2
+
+3. **SNR tradeoff.** Define the effective signal-to-noise ratio for a linear classifier on the flattened + stats input:
+
+     SNR(W) = Signal(W) / sqrt(W * d * sigma_noise^2 + d * sigma_x^2 / W)
+
+   When Signal(W) is approximately constant (all signal at lag 0, i.e. tau → 0):
+     Signal(W) ≈ |beta_0|^2  (independent of W)
+
+   And the noise term simplifies. Prove that in this case:
+     SNR(W) = |beta_0|^2 / sqrt(W * d * sigma_noise^2 + d * sigma_x^2 / W)
+
+   Show that dSNR/dW < 0 when Signal(W) = constant, because the denominator is increasing in W for W > sqrt(sigma_x^2 / sigma_noise^2). Therefore, the optimal W* minimizes noise, which is:
+     W* = sqrt(sigma_x^2 / sigma_noise^2)
+
+   When sigma_noise ≈ sigma_x (features are mostly noise), W* ≈ 1.
+
+4. **Practical minimum window for statistics.** The summary statistics (per-feature mean and std) require a minimum number of samples for stable estimation. For a standard deviation estimator to have relative error < epsilon with probability > 1-alpha:
+     W >= 1 / (2 * epsilon^2) * chi2_inv(1-alpha, W-1) / (W-1)
+
+   For epsilon = 0.2 (20% relative error) and alpha = 0.05, prove that W >= 10 is sufficient (i.e., with 10 samples, the relative error of the std estimator is below 20% with 95% confidence).
+
+5. **Window size for MLP with flattened input.** An MLP with flattened input dimension W*d has O(W*d*h) parameters in the first layer, where h is the hidden dimension. Increasing W linearly increases parameter count and risk of overfitting. By the bias-variance tradeoff, when Signal(W) is approximately constant:
+   - Bias is constant (does not depend on W since all signal is at lag 0)
+   - Variance increases with W (more parameters)
+
+   Therefore the optimal W* for generalization minimizes variance subject to bias being constant, which gives W* as small as possible while maintaining stable summary statistics.
+
+6. **Empirical finding and recommendation.** Given:
+   - All 13 features have predictive cross-correlation below the noise threshold (2/sqrt(N) with N=50,000, threshold ≈ 0.009) at lag >= 1
+   - Feature autocorrelation half-lives: median 1 step, mean 19 steps
+   - 10 of 13 features have half-life <= 10 steps
+   - Current window W = 50 produces flat input dimension 50*13 = 650
+
+   By Claims 3 and 5, with tau ≈ 0 (no temporal signal):
+   - W = 50 adds ~40 steps of pure noise to the input
+   - W = 10 captures all lag-0 signal with 87% less noise dimensions (130 vs 650)
+   - W = 10 provides sufficient samples for ~20% relative error on std estimates (Claim 4)
+
+   Conclude: W_optimal ∈ [10, 20], and the recommended sweep is W ∈ {10, 20, 50} to validate empirically.

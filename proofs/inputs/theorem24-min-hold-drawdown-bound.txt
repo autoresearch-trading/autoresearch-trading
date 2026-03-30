@@ -1,0 +1,48 @@
+# Theorem 24: Min-Hold Drawdown Bound
+
+We formalize the relationship between minimum holding period, trade frequency, win rate, and the probability of exceeding a maximum drawdown threshold.
+
+## Definitions
+
+Consider a sequence of T non-overlapping trades, each with holding period at least H steps. Each trade has:
+- probability w of being a win with profit +W
+- probability (1-w) of being a loss with loss -L
+- trades are independent
+
+The maximum number of trades in a period of N total steps is T_max = floor(N / H).
+
+Define the equity process E_0 = 1, E_k = E_{k-1} + X_k where X_k ∈ {+W, -L}.
+
+Define the maximum drawdown of the equity process as
+
+  MDD_T = max_{0 <= i <= j <= T} (E_i - E_j).
+
+Prove the following claims.
+
+1. For a fixed number of trades T, the expected maximum drawdown satisfies
+
+     E[MDD_T] >= L * E[max run length of consecutive losses in T Bernoulli(1-w) trials].
+
+   For T independent Bernoulli trials with loss probability q = 1-w, the expected longest run of losses satisfies
+
+     E[longest_run] >= log(T*q) / log(1/q) - 1 when T*q > 1.
+
+2. P(MDD_T > D) is increasing in T for fixed w, W, L, D. That is, more trades (shorter min_hold) increases the probability of exceeding any drawdown threshold D.
+
+3. Define T_safe(D, w, L, delta) as the largest T such that P(MDD_T > D) <= delta. Prove that T_safe is finite for any D > 0 and delta < 1 when q = 1-w > 0.
+
+4. Numerical claim. With:
+   - w = 0.60 (win rate)
+   - W = 0.003 (average win, ~30 bps)
+   - L = 0.003 (average loss, ~30 bps, symmetric for PF ≈ 1.5 at w=0.6)
+   - D = 0.20 (20% drawdown threshold)
+   - N = 28000 (test set steps per symbol, ~20 days)
+
+   Compare P(MDD > 0.20) for:
+   - H = 200 → T_max = 140 trades
+   - H = 400 → T_max = 70 trades
+   - H = 800 → T_max = 35 trades
+
+   Show that longer min_hold materially reduces P(MDD > D), and compute the approximate min_hold H* that gives P(MDD > 0.20) = 0.20 (matching the guard rail, so roughly half of symbols pass).
+
+5. The key tradeoff: expected portfolio Sortino is (mean_return_per_trade * T) / (downside_std * sqrt(T)) = mean_return_per_trade * sqrt(T) / downside_std. So Sortino grows with sqrt(T). But P(MDD > D) also grows with T. Prove that there exists a unique T* that maximizes E[Sortino] subject to P(MDD > D) <= delta, and derive its dependence on w, W, L, D, delta.

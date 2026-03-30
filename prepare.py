@@ -18,7 +18,7 @@ TRAIN_BUDGET_SECONDS = 300  # 5-minute training budget
 TRAIN_START = "2025-10-16"
 TRAIN_END = "2026-01-23"
 VAL_END = "2026-02-17"
-TEST_END = "2026-03-09"
+TEST_END = "2026-03-25"
 DEFAULT_SYMBOLS = [
     "2Z",
     "AAVE",
@@ -47,6 +47,7 @@ DEFAULT_SYMBOLS = [
     "XRP",
 ]
 FEE_BPS = 5  # Taker fee in basis points
+USE_V9 = True  # v10: 9 features (5 Aristotle + 4 top permutation importance)
 
 DATA_ROOT = Path(__file__).parent / "data"
 CACHE_DIR = Path(__file__).parent / ".cache"
@@ -694,6 +695,387 @@ ROBUST_FEATURE_INDICES = {
     37,
 }
 
+# ============================================================
+# v9 Aristotle-Proven Features (5 features)
+# ============================================================
+
+V9_FEATURE_NAMES = [
+    "lambda_ofi",  # 0
+    "directional_conviction",  # 1
+    "vpin",  # 2
+    "hawkes_branching",  # 3
+    "reservation_price_dev",  # 4
+    "vol_of_vol",  # 5
+    "utc_hour_linear",  # 6
+    "microprice_dev",  # 7
+    "delta_tfi",  # 8
+    "multi_level_ofi",  # 9  (v11, ablation: HELPS)
+    "buy_vwap_dev",  # 10 (v11, ablation: HELPS)
+    "trade_arrival_rate",  # 11 (v11, ablation: HELPS)
+    "r_20",  # 12 (v11, ablation: HELPS)
+]
+# Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
+
+V9_NUM_FEATURES = 13
+V9_ROBUST_FEATURE_INDICES = {
+    4,
+    5,
+    11,
+}  # reservation_price_dev, vol_of_vol, trade_arrival_rate
+
+
+def compute_features_v9(
+    trades_df: pd.DataFrame,
+    orderbook_df: pd.DataFrame,
+    funding_df: pd.DataFrame,
+    trade_batch: int = 100,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute 13 v11a features from trade/orderbook data.
+
+    Returns: (features, timestamps, prices, raw_hawkes_branching, spread_bps)
+    where features has shape (num_batches, 13) and spread_bps is per-step
+    bid-ask spread in basis points (used for slippage modeling, not as a feature).
+
+    Feature layout (9 v10 + 4 ablation-validated new):
+      0: lambda_ofi              - kyle_lambda * signed_notional
+      1: directional_conviction  - TFI * |signed_notional|
+      2: vpin                    - rolling mean of |TFI|
+      3: hawkes_branching        - 1 - 1/sqrt(Var(R)/E[R])
+      4: reservation_price_dev   - orderbook_imbalance * realvol^2
+      5: vol_of_vol              - rolling std of realvol
+      6: utc_hour_linear         - hour_utc / 24
+      7: microprice_dev          - microprice - midprice
+      8: delta_tfi               - first difference of TFI
+      9: multi_level_ofi         - weighted depth changes across 5 levels (T30)
+     10: buy_vwap_dev            - buy VWAP - VWAP (T31)
+     11: trade_arrival_rate      - trades / second per batch (T34)
+     12: r_20                    - 20-batch cumulative return (T35)
+
+    Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
+    """
+    if trades_df.empty:
+        return np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+
+    # --- Reuse batching logic from compute_features ---
+    trades_df = trades_df.copy()
+    trades_df["norm_side"] = trades_df["side"].apply(normalize_side)
+    trades_df["is_buy"] = trades_df["norm_side"] == "buy"
+    trades_df["notional"] = trades_df["price"] * trades_df["qty"]
+
+    num_trades = len(trades_df)
+    num_batches = num_trades // trade_batch
+    if num_batches == 0:
+        return np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+
+    prices_arr = (
+        trades_df["price"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+    notionals_batched = (
+        trades_df["notional"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+    is_buy_batched = (
+        trades_df["is_buy"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+    ts_batched = (
+        trades_df["ts_ms"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+    )
+
+    # VWAP per batch
+    total_batch_notional = notionals_batched.sum(axis=1)
+    total_batch_qty = (
+        trades_df["qty"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+        .sum(axis=1)
+    )
+    vwap = np.where(total_batch_qty > 0, total_batch_notional / total_batch_qty, 0)
+    vwap = np.where(vwap == 0, prices_arr[:, -1], vwap)
+
+    # Returns
+    returns = np.zeros(num_batches)
+    returns[1:] = np.diff(np.log(np.clip(vwap, 1e-10, None)))
+
+    # --- Intermediate: TFI ---
+    buy_vol = (notionals_batched * is_buy_batched).sum(axis=1)
+    sell_vol = (notionals_batched * ~is_buy_batched).sum(axis=1)
+    total_vol = buy_vol + sell_vol
+    tfi = np.where(total_vol > 0, (buy_vol - sell_vol) / total_vol, 0.0)
+
+    # --- Intermediate: signed_notional ---
+    signed_notional = buy_vol - sell_vol
+
+    # --- Intermediate: kyle_lambda (rolling 50-batch) ---
+    ret_s = pd.Series(returns)
+    sn_s = pd.Series(signed_notional)
+    rolling_cov = ret_s.rolling(window=50, min_periods=10).cov(sn_s)
+    rolling_var = sn_s.rolling(window=50, min_periods=10).var()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        kyle_lambda = np.where(
+            rolling_var.values > 1e-20,
+            rolling_cov.values / rolling_var.values,
+            0.0,
+        )
+    kyle_lambda = np.nan_to_num(kyle_lambda)
+
+    # --- Intermediate: realvol (rolling 10-batch std) ---
+    realvol = (
+        pd.Series(returns).rolling(window=10, min_periods=2).std().fillna(0).values
+    )
+
+    # === Feature 0: lambda_ofi ===
+    lambda_ofi = kyle_lambda * signed_notional
+
+    # === Feature 1: directional_conviction ===
+    directional_conviction = tfi * np.abs(signed_notional)
+
+    # === Feature 2: vpin ===
+    abs_tfi = np.abs(tfi)
+    vpin = pd.Series(abs_tfi).rolling(window=50, min_periods=1).mean().fillna(0).values
+
+    # === Feature 3: hawkes_branching ===
+    batch_first_ts = ts_batched[:, 0]
+    batch_last_ts = ts_batched[:, -1]
+    batch_duration_s = (batch_last_ts - batch_first_ts) / 1000.0
+    arrival_rates = np.where(
+        batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+    )
+
+    hawkes_branching = np.zeros(num_batches)
+    hawkes_window = 50
+    for i in range(hawkes_window, num_batches):
+        window_rates = arrival_rates[i - hawkes_window : i]
+        window_rates = window_rates[window_rates > 0]
+        if len(window_rates) < 10:
+            continue
+        mean_r = window_rates.mean()
+        var_r = window_rates.var()
+        if mean_r > 0:
+            ratio = var_r / mean_r
+            if ratio > 1.0:
+                hawkes_branching[i] = 1.0 - 1.0 / np.sqrt(ratio)
+    hawkes_branching = np.clip(hawkes_branching, 0.0, 0.99)
+    raw_hawkes_branching = hawkes_branching.copy()
+
+    # --- Orderbook features (unified helper) ---
+    batch_timestamps_final = ts_batched[:, -1]
+    microprice_dev, spread_bps_arr, mlofi, weighted_imbalance = (
+        _compute_orderbook_features(orderbook_df, batch_timestamps_final, num_batches)
+    )
+
+    # === Feature 4: reservation_price_dev ===
+    reservation_price_dev = weighted_imbalance * (realvol**2)
+
+    # === Feature 5: vol_of_vol ===
+    vol_of_vol = (
+        pd.Series(realvol).rolling(window=50, min_periods=10).std().fillna(0).values
+    )
+
+    # === Feature 6: utc_hour_linear ===
+    utc_hour_linear = ((batch_timestamps_final / 1000 / 3600) % 24) / 24.0
+
+    # === Feature 7: microprice_dev (from unified OB helper) ===
+    # (already computed above)
+
+    # === Feature 8: delta_TFI ===
+    delta_tfi = np.zeros(num_batches)
+    delta_tfi[1:] = tfi[1:] - tfi[:-1]
+
+    # === Feature 9: multi_level_ofi (T30) ===
+    # (already computed by _compute_orderbook_features)
+
+    # === Feature 10: buy_vwap_dev (T31) ===
+    buy_notional = (notionals_batched * is_buy_batched).sum(axis=1)
+    buy_qty = (
+        trades_df["qty"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+        * is_buy_batched
+    ).sum(axis=1)
+    sell_notional = (notionals_batched * ~is_buy_batched).sum(axis=1)
+    sell_qty = (
+        trades_df["qty"]
+        .values[: num_batches * trade_batch]
+        .reshape(num_batches, trade_batch)
+        * ~is_buy_batched
+    ).sum(axis=1)
+    buy_vwap = np.where(buy_qty > 0, buy_notional / buy_qty, vwap)
+    sell_vwap = np.where(sell_qty > 0, sell_notional / sell_qty, vwap)
+    buy_vwap_dev = buy_vwap - vwap
+    # === Feature 11: sell_vwap_dev (T31) ===
+    sell_vwap_dev = sell_vwap - vwap
+
+    # === Feature 12: spread_bps (T32, from unified OB helper) ===
+    # (already computed above)
+
+    # === Feature 13: amihud_illiq (T32) ===
+    amihud = np.where(
+        total_batch_notional > 0, np.abs(returns) / total_batch_notional, 0.0
+    )
+
+    # === Feature 14: roll_measure (T32) ===
+    roll_measure = np.zeros(num_batches)
+    roll_window = 20
+    for i in range(roll_window, num_batches):
+        r_win = returns[i - roll_window : i]
+        if len(r_win) > 1:
+            autocov = np.cov(r_win[1:], r_win[:-1])[0, 1]
+            roll_measure[i] = np.sqrt(max(-autocov, 0))
+
+    # === Feature 15: trade_arrival_rate (T34) ===
+    trade_arrival_rate = np.where(
+        batch_duration_s > 0.001, trade_batch / batch_duration_s, 0.0
+    )
+
+    # === Feature 16: r_20 (T35) ===
+    r_20 = pd.Series(returns).rolling(window=20, min_periods=1).sum().fillna(0).values
+
+    # --- Stack features ---
+    # Ablation-validated: 4 of 8 new features kept, 4 dropped (HURTS)
+    # Dropped: sell_vwap_dev, spread_bps_arr, amihud, roll_measure
+    features = np.column_stack(
+        [
+            lambda_ofi,  # 0
+            directional_conviction,  # 1
+            vpin,  # 2
+            hawkes_branching,  # 3
+            reservation_price_dev,  # 4
+            vol_of_vol,  # 5
+            utc_hour_linear,  # 6
+            microprice_dev,  # 7
+            delta_tfi,  # 8
+            mlofi,  # 9  (HELPS -0.020)
+            buy_vwap_dev,  # 10 (HELPS -0.029)
+            trade_arrival_rate,  # 11 (HELPS -0.016)
+            r_20,  # 12 (HELPS -0.017)
+        ]
+    )
+
+    batch_prices = vwap
+
+    return (
+        features,
+        batch_timestamps_final,
+        batch_prices,
+        raw_hawkes_branching,
+        spread_bps_arr,
+    )
+
+
+def _compute_orderbook_features(
+    orderbook_df: pd.DataFrame, batch_timestamps: np.ndarray, num_batches: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute orderbook-derived features aligned to batch timestamps.
+
+    Returns: (microprice_dev, spread_bps, multi_level_ofi, weighted_imbalance)
+    """
+    microprice_dev = np.zeros(num_batches)
+    spread_bps = np.zeros(num_batches)
+    mlofi = np.zeros(num_batches)
+    weighted_imbalance = np.zeros(num_batches)
+
+    if orderbook_df.empty:
+        return microprice_dev, spread_bps, mlofi, weighted_imbalance
+
+    ob_ts = orderbook_df["ts_ms"].values
+    ob_idx = 0
+    prev_bid_depths = None
+    prev_ask_depths = None
+    weights = [1.0, 0.5, 1 / 3, 0.25, 0.2]
+
+    for i in range(num_batches):
+        while ob_idx < len(ob_ts) - 1 and ob_ts[ob_idx + 1] <= batch_timestamps[i]:
+            ob_idx += 1
+        if ob_idx >= len(ob_ts) or ob_ts[ob_idx] > batch_timestamps[i]:
+            continue
+
+        row = orderbook_df.iloc[ob_idx]
+        bids = row.get("bids", [])
+        asks = row.get("asks", [])
+        if len(bids) == 0 or len(asks) == 0:
+            continue
+
+        best_bid = bids[0]["price"]
+        best_ask = asks[0]["price"]
+        mid = (best_bid + best_ask) / 2
+
+        # Spread in bps (T32)
+        if mid > 0:
+            spread_bps[i] = (best_ask - best_bid) / mid * 10000
+
+        # Microprice deviation (T33)
+        best_bid_qty = bids[0]["qty"]
+        best_ask_qty = asks[0]["qty"]
+        total_qty = best_bid_qty + best_ask_qty
+        if total_qty > 0:
+            microprice = (best_bid * best_ask_qty + best_ask * best_bid_qty) / total_qty
+            microprice_dev[i] = microprice - mid
+
+        # Multi-level OFI (T30): change in depth at each level
+        n_levels = min(5, len(bids), len(asks))
+        curr_bid_depths = np.array(
+            [bids[lvl]["qty"] * bids[lvl]["price"] for lvl in range(n_levels)]
+        )
+        curr_ask_depths = np.array(
+            [asks[lvl]["qty"] * asks[lvl]["price"] for lvl in range(n_levels)]
+        )
+
+        if prev_bid_depths is not None and len(prev_bid_depths) == n_levels:
+            delta_bid = curr_bid_depths - prev_bid_depths
+            delta_ask = curr_ask_depths - prev_ask_depths
+            ofi_per_level = delta_bid - delta_ask
+            level_weights = np.array(weights[:n_levels])
+            mlofi[i] = np.sum(level_weights * ofi_per_level)
+
+        prev_bid_depths = curr_bid_depths.copy()
+        prev_ask_depths = curr_ask_depths.copy()
+
+        # Weighted imbalance (for reservation_price_dev)
+        bid_depth = sum(
+            w * b["qty"] * b["price"]
+            for w, b in zip(weights[: min(5, len(bids))], bids[:5])
+        )
+        ask_depth = sum(
+            w * a["qty"] * a["price"]
+            for w, a in zip(weights[: min(5, len(asks))], asks[:5])
+        )
+        total = bid_depth + ask_depth
+        if total > 0:
+            weighted_imbalance[i] = (bid_depth - ask_depth) / total
+
+    return microprice_dev, spread_bps, mlofi, weighted_imbalance
+
+
+def normalize_features_v9(features: np.ndarray, window: int = 1000) -> np.ndarray:
+    """Normalize v9 features. IQR for feature 4, z-score for rest."""
+    if features.ndim != 2 or len(features) == 0:
+        return features
+
+    normalized = np.zeros_like(features)
+    for col in range(features.shape[1]):
+        series = pd.Series(features[:, col])
+        if col in V9_ROBUST_FEATURE_INDICES:
+            rolling_median = series.rolling(window=window, min_periods=100).median()
+            rolling_q75 = series.rolling(window=window, min_periods=100).quantile(0.75)
+            rolling_q25 = series.rolling(window=window, min_periods=100).quantile(0.25)
+            iqr = (rolling_q75 - rolling_q25).replace(0, 1)
+            z = (series - rolling_median) / iqr
+        else:
+            rolling_mean = series.rolling(window=window, min_periods=100).mean()
+            rolling_std = series.rolling(window=window, min_periods=100).std()
+            z = (series - rolling_mean) / rolling_std.replace(0, 1)
+        normalized[:, col] = z.fillna(0).values
+
+    np.clip(normalized, -5, 5, out=normalized)
+    return normalized
+
 
 def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     """Hybrid rolling normalization.
@@ -731,7 +1113,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v6"  # v6: 39 features (v5 + 8 tape reading features)
+_FEATURE_VERSION = "v11b"  # v11b: 13 features + spread_bps for slippage modeling
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:
@@ -749,12 +1131,19 @@ def cache_features(
     start: str,
     end: str,
     trade_batch: int,
+    raw_hawkes: np.ndarray | None = None,
+    spread_bps: np.ndarray | None = None,
 ) -> None:
     """Save features to .npz cache file."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     key = _cache_key(symbol, start, end, trade_batch)
     path = cache_dir / f"{symbol}_{key}.npz"
-    np.savez_compressed(path, features=features, timestamps=timestamps, prices=prices)
+    save_dict = dict(features=features, timestamps=timestamps, prices=prices)
+    if raw_hawkes is not None:
+        save_dict["raw_hawkes"] = raw_hawkes
+    if spread_bps is not None:
+        save_dict["spread_bps"] = spread_bps
+    np.savez_compressed(path, **save_dict)
     print(f"Cached {symbol} features to {path}")
 
 
@@ -764,14 +1153,29 @@ def load_cached(
     start: str,
     end: str,
     trade_batch: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Load features from .npz cache if exists."""
+) -> (
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]
+    | None
+):
+    """Load features from .npz cache if exists.
+
+    Returns (features, timestamps, prices, raw_hawkes, spread_bps) or None.
+    raw_hawkes/spread_bps are None for older caches that don't contain them.
+    """
     key = _cache_key(symbol, start, end, trade_batch)
     path = cache_dir / f"{symbol}_{key}.npz"
     if path.exists():
         data = np.load(path)
         print(f"Loaded {symbol} features from cache ({path})")
-        return data["features"], data["timestamps"], data["prices"]
+        raw_hawkes = data["raw_hawkes"] if "raw_hawkes" in data else None
+        spread_bps = data["spread_bps"] if "spread_bps" in data else None
+        return (
+            data["features"],
+            data["timestamps"],
+            data["prices"],
+            raw_hawkes,
+            spread_bps,
+        )
     return None
 
 
@@ -787,7 +1191,8 @@ def prepare_data(
 ) -> dict:
     """Prepare data for all symbols and splits.
 
-    Returns dict of {symbol: {train: (features, timestamps, prices), val: ..., test: ...}}
+    Returns dict of {symbol: {train: (features, timestamps, prices, raw_hawkes), ...}}
+    raw_hawkes is None when using v8 features (USE_V9=False).
     """
     if symbols is None:
         symbols = DEFAULT_SYMBOLS
@@ -808,7 +1213,14 @@ def prepare_data(
             if not force_recompute:
                 cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
                 if cached is not None:
-                    result[symbol][split_name] = cached
+                    features, timestamps, prices, raw_hawkes, spread_bps = cached
+                    result[symbol][split_name] = (
+                        features,
+                        timestamps,
+                        prices,
+                        raw_hawkes,
+                        spread_bps,
+                    )
                     continue
 
             print(f"Computing features for {symbol} {split_name} ({start} to {end})...")
@@ -821,21 +1233,46 @@ def prepare_data(
                 f"  Loaded {len(trades_df)} trades, {len(orderbook_df)} orderbook snapshots, {len(funding_df)} funding rates"
             )
 
-            features, timestamps, prices = compute_features(
-                trades_df, orderbook_df, funding_df, trade_batch
-            )
-
-            if len(features) > 0:
-                features = normalize_features(features)
+            spread_bps = None
+            if USE_V9:
+                features, timestamps, prices, raw_hawkes, spread_bps = (
+                    compute_features_v9(
+                        trades_df, orderbook_df, funding_df, trade_batch
+                    )
+                )
+                if len(features) > 0:
+                    features = normalize_features_v9(features)
+            else:
+                features, timestamps, prices = compute_features(
+                    trades_df, orderbook_df, funding_df, trade_batch
+                )
+                raw_hawkes = None
+                if len(features) > 0:
+                    features = normalize_features(features)
 
             print(f"  Features shape: {features.shape}")
 
             # Cache
             cache_features(
-                symbol, features, timestamps, prices, CACHE_DIR, start, end, trade_batch
+                symbol,
+                features,
+                timestamps,
+                prices,
+                CACHE_DIR,
+                start,
+                end,
+                trade_batch,
+                raw_hawkes=raw_hawkes,
+                spread_bps=spread_bps,
             )
 
-            result[symbol][split_name] = (features, timestamps, prices)
+            result[symbol][split_name] = (
+                features,
+                timestamps,
+                prices,
+                raw_hawkes,
+                spread_bps,
+            )
 
     return result
 
@@ -871,6 +1308,9 @@ class TradingEnv(gymnasium.Env):
         self.fee_bps = fee_bps
         self.min_hold = min_hold
         self.num_steps = len(features)
+        self.spread_bps = None  # set externally for slippage modeling
+        self.raw_hawkes = None  # set externally for regime gate
+        self.funding_rates = None  # set externally for funding cost modeling
 
         self.observation_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -946,14 +1386,32 @@ class TradingEnv(gymnasium.Env):
         else:
             step_pnl = 0.0
 
-        # Position change and transaction costs
+        # Funding cost: charged every step when holding a position
+        if prev_position != 0 and self.funding_rates is not None:
+            if self._idx < len(self.funding_rates):
+                fr = self.funding_rates[self._idx]
+                if prev_position == 1:  # long pays positive funding
+                    step_pnl -= fr
+                elif prev_position == 2:  # short receives positive funding
+                    step_pnl += fr
+
+        # Position change and transaction costs (fee + slippage)
         if action != prev_position:
-            # Apply fee for closing old position
+            # Slippage: half-spread from orderbook data + impact buffer
+            slippage_bps = 0.0
+            if self.spread_bps is not None and self._idx < len(self.spread_bps):
+                half_spread = self.spread_bps[self._idx] / 2.0
+                impact_buffer = 3.0  # MEV + market impact (bps)
+                slippage_bps = half_spread + impact_buffer
+            else:
+                slippage_bps = 5.0  # fallback: 5 bps total slippage
+
+            # Apply fee + slippage for closing old position
             if prev_position != 0:
-                step_pnl -= self.fee_bps / 10000
-            # Apply fee for opening new position
+                step_pnl -= (self.fee_bps + slippage_bps) / 10000
+            # Apply fee + slippage for opening new position
             if action != 0:
-                step_pnl -= self.fee_bps / 10000
+                step_pnl -= (self.fee_bps + slippage_bps) / 10000
             self._trade_count += 1
             self._hold_duration = 0
             self._steps_since_trade = 0
@@ -1009,7 +1467,13 @@ class TradingEnv(gymnasium.Env):
 
 
 def evaluate(
-    env_test: TradingEnv, policy_fn, min_trades: int = 50, max_drawdown: float = 0.20
+    env_test: TradingEnv,
+    policy_fn,
+    min_trades: int = 50,
+    max_drawdown: float = 0.20,
+    r_min: float = 0.0,
+    vpin_max_z: float = 0.0,
+    fee_mult: float = 1.0,
 ) -> float:
     """Run policy on FULL test env, return Sortino ratio.
 
@@ -1032,10 +1496,38 @@ def evaluate(
     prev_position = 0
     step_num = 0
 
+    # Directional accuracy tracking
+    directional_correct = 0
+    directional_total = 0
+    prev_action = 0
+
     # Run full test set — step directly, ignoring episode truncation
     while env_test._idx < env_test.num_steps:
         action = policy_fn(obs)
+        # Regime gate 1: force flat when Hawkes branching below threshold
+        if (
+            r_min > 0
+            and hasattr(env_test, "raw_hawkes")
+            and env_test.raw_hawkes is not None
+        ):
+            if env_test.raw_hawkes[env_test._idx] < r_min:
+                action = 0
+        # Regime gate 2: force flat when VPIN too high (toxic flow, Theorem 13)
+        # Uses z-scored VPIN from normalized features (index 2)
+        if vpin_max_z > 0 and env_test._idx < len(env_test.features):
+            vpin_z = env_test.features[env_test._idx, 2]  # normalized VPIN
+            if vpin_z > vpin_max_z:
+                action = 0
         obs, _, done, truncated, info = env_test.step(action)
+        # Track directional accuracy: did PREVIOUS action's direction match this step's return?
+        step_pnl = info.get("step_pnl", 0)
+        if prev_action in (1, 2):
+            directional_total += 1
+            if (prev_action == 1 and step_pnl > 0) or (
+                prev_action == 2 and step_pnl < 0
+            ):
+                directional_correct += 1
+        prev_action = action
         step_returns.append(info["step_pnl"])
         max_dd = max(max_dd, info["drawdown"])
         total_trades = info["trade_count"]
@@ -1092,19 +1584,37 @@ def evaluate(
 
     # Sortino ratio (only penalizes downside vol)
     # Test period: use actual date range for annualization
-    test_days = 20  # VAL_END (Feb 17) to TEST_END (Mar 9)
+    test_days = (
+        datetime.strptime(TEST_END, "%Y-%m-%d") - datetime.strptime(VAL_END, "%Y-%m-%d")
+    ).days
     steps_per_day = max(len(returns) / test_days, 1)
 
     mean_ret = returns.mean()
-    downside = returns[returns < 0]
-    downside_std = np.sqrt(np.mean(downside**2)) if len(downside) > 0 else 1e-10
+    downside_returns = np.minimum(returns, 0)
+    downside_std = np.sqrt(np.mean(downside_returns**2)) if len(returns) > 0 else 1e-10
 
     if downside_std < 1e-10:
         sortino = 0.0
     else:
         sortino = mean_ret / downside_std * np.sqrt(steps_per_day)
 
+    # Sharpe ratio (T27)
+    std_ret = returns.std() if len(returns) > 1 else 1e-10
+    sharpe = mean_ret / std_ret * np.sqrt(steps_per_day) if std_ret > 1e-10 else 0.0
+
+    # Calmar ratio (T27: annualized return / max drawdown)
+    annual_return = mean_ret * steps_per_day * 365
+    calmar = annual_return / max_dd if max_dd > 1e-10 else 0.0
+
+    # CVaR 95% (T28: mean of worst 5% of returns)
+    sorted_returns = np.sort(returns)
+    k = max(1, int(0.05 * len(returns)))
+    cvar_95 = -np.mean(sorted_returns[:k])
+
     print(f"sortino: {sortino:.6f}")
+    print(f"sharpe: {sharpe:.6f}")
+    print(f"calmar: {calmar:.6f}")
+    print(f"cvar_95: {cvar_95:.6f}")
     print(f"num_trades: {total_trades}")
     print(f"max_drawdown: {max_dd:.4f}")
 
@@ -1123,6 +1633,28 @@ def evaluate(
         print(f"profit_factor: {profit_factor:.4f}")
         print(f"avg_hold_steps: {avg_hold:.0f}")
 
+        # Kelly optimal fee_mult (Theorem 3)
+        c = FEE_BPS / 10000
+        p_w = len(wins) / len(trade_pnls)
+        p_l = len(losses) / len(trade_pnls)
+        if (p_w + p_l) > 0 and c > 0:
+            f_kelly = (p_w - p_l) * (1 - c) / ((p_w + p_l) * c)
+            print(f"f_opt_kelly: {f_kelly:.4f}")
+
+    # Regime gate diagnostics
+    alpha_min_val = 0.5 + 1.0 / (2.0 * fee_mult) if fee_mult > 0 else 1.0
+    print(f"alpha_min: {alpha_min_val:.4f}")
+    if directional_total > 0:
+        print(f"empirical_accuracy: {directional_correct / directional_total:.4f}")
+    if (
+        r_min > 0
+        and hasattr(env_test, "raw_hawkes")
+        and env_test.raw_hawkes is not None
+    ):
+        filtered = np.sum(env_test.raw_hawkes[: env_test.num_steps] < r_min)
+        print(f"regime_filter_rate: {filtered / env_test.num_steps:.4f}")
+        print(f"hawkes_branching_mean: {np.mean(env_test.raw_hawkes):.4f}")
+
     return sortino
 
 
@@ -1137,19 +1669,30 @@ def make_env(
     window_size: int = 50,
     trade_batch: int = 100,
     min_hold: int = 1,
+    include_funding: bool = False,
+    date_range: tuple[str, str] | None = None,
 ) -> TradingEnv:
-    """Create a TradingEnv for the given symbol and data split."""
-    splits = {
-        "train": (TRAIN_START, TRAIN_END),
-        "val": (TRAIN_END, VAL_END),
-        "test": (VAL_END, TEST_END),
-    }
-    start, end = splits[split]
+    """Create a TradingEnv for the given symbol and data split.
+
+    Args:
+        date_range: Optional (start, end) date strings to override the split lookup.
+                    Used by walk-forward validation to specify custom date windows.
+    """
+    if date_range is not None:
+        start, end = date_range
+    else:
+        splits = {
+            "train": (TRAIN_START, TRAIN_END),
+            "val": (TRAIN_END, VAL_END),
+            "test": (VAL_END, TEST_END),
+        }
+        start, end = splits[split]
 
     # Try cache first
     cached = load_cached(symbol, CACHE_DIR, start, end, trade_batch)
+    spread_bps_arr = None
     if cached is not None:
-        features, timestamps, prices = cached
+        features, timestamps, prices, raw_hawkes, spread_bps_arr = cached
     else:
         # Need to compute - run prepare_data for this split
         print(f"Cache miss for {symbol} {split}, computing features...")
@@ -1157,25 +1700,70 @@ def make_env(
         orderbook_df = load_orderbook(symbol, start, end)
         funding_df = load_funding(symbol, start, end)
 
-        features, timestamps, prices = compute_features(
-            trades_df, orderbook_df, funding_df, trade_batch
-        )
-
-        if len(features) > 0:
-            features = normalize_features(features)
-            cache_features(
-                symbol, features, timestamps, prices, CACHE_DIR, start, end, trade_batch
+        if USE_V9:
+            features, timestamps, prices, raw_hawkes, spread_bps_arr = (
+                compute_features_v9(trades_df, orderbook_df, funding_df, trade_batch)
             )
+            if len(features) > 0:
+                features = normalize_features_v9(features)
+                cache_features(
+                    symbol,
+                    features,
+                    timestamps,
+                    prices,
+                    CACHE_DIR,
+                    start,
+                    end,
+                    trade_batch,
+                    raw_hawkes=raw_hawkes,
+                    spread_bps=spread_bps_arr,
+                )
+        else:
+            features, timestamps, prices = compute_features(
+                trades_df, orderbook_df, funding_df, trade_batch
+            )
+            raw_hawkes = None
+            if len(features) > 0:
+                features = normalize_features(features)
+                cache_features(
+                    symbol,
+                    features,
+                    timestamps,
+                    prices,
+                    CACHE_DIR,
+                    start,
+                    end,
+                    trade_batch,
+                )
 
-    return TradingEnv(
+    env = TradingEnv(
         features, prices, window_size=window_size, fee_bps=FEE_BPS, min_hold=min_hold
     )
+    env.raw_hawkes = raw_hawkes  # for regime gate in evaluate()
+    env.spread_bps = spread_bps_arr  # for slippage modeling
+
+    # Compute funding rates per step on the fly (slow — loads many Parquet files)
+    if include_funding:
+        funding_df = load_funding(symbol, start, end)
+    else:
+        funding_df = pd.DataFrame()
+    if not funding_df.empty and len(timestamps) > 0:
+        fund_dedup = funding_df.drop_duplicates(subset="ts_ms", keep="first")
+        fund_ts = fund_dedup["ts_ms"].values
+        fund_rate = fund_dedup["rate"].values
+        indices = np.searchsorted(fund_ts, timestamps, side="right") - 1
+        funding_rates = np.zeros(len(timestamps))
+        valid = indices >= 0
+        funding_rates[valid] = fund_rate[indices[valid]]
+        env.funding_rates = funding_rates
+
+    return env
 
 
 if __name__ == "__main__":
     data = prepare_data(DEFAULT_SYMBOLS)
     for sym, splits in data.items():
-        for split_name, (features, timestamps, prices) in splits.items():
+        for split_name, (features, timestamps, prices, raw_hawkes) in splits.items():
             print(
                 f"{sym} {split_name}: features={features.shape}, steps={len(timestamps)}"
             )
