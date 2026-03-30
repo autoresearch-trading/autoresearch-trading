@@ -48,6 +48,7 @@ BEST_PARAMS = {
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
     "swa_start": 0,  # SWA: disabled (0.285 vs 0.353 baseline — weight averaging hurts)
     # asymmetric barriers: symmetric (11/11) wins over tp=15/sl=11 and tp=9/sl=11
+    "confidence_threshold": 0.45,  # confidence gating run 1
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
@@ -475,8 +476,11 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
     )
 
 
-def make_ensemble_fn(models, device):
-    """Create ensemble policy function using argmax of summed logits."""
+def make_ensemble_fn(models, device, confidence_threshold=0.0):
+    """Create ensemble policy function using argmax of summed logits.
+
+    If confidence_threshold > 0, force flat when max softmax prob < threshold.
+    """
 
     def fn(obs):
         with torch.no_grad():
@@ -485,6 +489,10 @@ def make_ensemble_fn(models, device):
             for m in models:
                 logits = m(obs_t)
                 logits_sum = logits if logits_sum is None else logits_sum + logits
+            if confidence_threshold > 0:
+                probs = torch.softmax(logits_sum, dim=-1)
+                if probs.max().item() < confidence_threshold:
+                    return 0  # force flat when uncertain
             return logits_sum.argmax(dim=-1).item()
 
     return fn
@@ -584,9 +592,13 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
             print(
                 f"  WARNING: alpha={mean_accuracy:.3f} < 0.5, using single best model"
             )
-        ensemble_fn = make_ensemble_fn([models[best_seed_idx]], DEVICE)
+        ensemble_fn = make_ensemble_fn(
+            [models[best_seed_idx]], DEVICE, p.get("confidence_threshold", 0.0)
+        )
     else:
-        ensemble_fn = make_ensemble_fn(models, DEVICE)
+        ensemble_fn = make_ensemble_fn(
+            models, DEVICE, p.get("confidence_threshold", 0.0)
+        )
 
     sh, ps, tr, dd, wr, pf, sharpe, calmar, cvar = eval_policy(
         ensemble_fn, symbols, split=split, params=p
