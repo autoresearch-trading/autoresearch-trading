@@ -47,7 +47,7 @@ BEST_PARAMS = {
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
     "swa_start": 0,  # SWA: disabled (0.285 vs 0.353 baseline — weight averaging hurts)
-    "tp_mult": 15.0,  # asymmetric barriers run 1: wider TP
+    "tp_mult": 9.0,  # asymmetric barriers run 2: tighter TP
     "sl_mult": 11.0,  # keep SL at baseline
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
