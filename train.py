@@ -48,7 +48,7 @@ BEST_PARAMS = {
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
     "swa_start": 0,  # SWA: disabled (0.285 vs 0.353 baseline — weight averaging hurts)
     # asymmetric barriers: symmetric (11/11) wins over tp=15/sl=11 and tp=9/sl=11
-    "confidence_threshold": 0.55,  # confidence gating run 2
+    "confidence_threshold": 0.0,  # confidence gating: 0 > 0.45 > 0.55 (gating hurts, same as r_min)
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
