@@ -34,6 +34,10 @@ Read these files to understand where you are:
 3. The entry point file (see state.md `Entry point`) — current config constants at top of file
 4. Recent `docs/experiments/*/report.md` — what was learned from prior experiments
 
+### 1a. Verify state is current
+
+Before proceeding, run `git log --oneline -20` and cross-reference against state.md. If commits show experiments that state.md doesn't reflect (swept variables still listed as "not yet swept", answered questions still in "Open Questions", outdated "Current Best"), update state.md first. A stale state leads to redundant experiments.
+
 ## 2. Hypothesize
 
 Identify the single most impactful question to answer next. Priority order:

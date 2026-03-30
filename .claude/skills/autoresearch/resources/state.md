@@ -3,77 +3,63 @@
 ## Environment
 - Run command: `uv run python train.py`
 - Entry point: `train.py`
-- Files to modify per experiment: `train.py` (config), `prepare.py` (features/metrics)
-- Output contract: PORTFOLIO SUMMARY block with `sortino:`, `sharpe:`, `calmar:`, `cvar_95:`, `symbols_passing:`, `num_trades:`, `max_drawdown:`, `win_rate:`, `profit_factor:` lines
+- Files to modify per experiment: `train.py` (config constants at top of file)
+- Output contract: PORTFOLIO SUMMARY block with `sortino:`, `symbols_passing:`, `num_trades:`, `max_drawdown:`, `win_rate:`, `profit_factor:` lines
 - Parser: `bash .claude/skills/autoresearch/resources/parse_summary.sh <logfile>`
-- Symbols: 25
-- Approximate run duration: ~30 min (DirectionClassifier), ~80 min (HybridClassifier)
-- Primary metric: Sortino ratio (FIXED in v11 — T26, divides by N not N_neg)
-- Default scoring: `score = mean_sortino * 0.6 + (passing / total_symbols) * 0.4`
-- Cache note: v5, v9, v10, v11, v11a, v11b caches all exist.
-- Data: 161 days synced (2025-10-16 → 2026-03-25, 40GB). TEST_END=2026-03-25 (36 test days).
+- Symbols: 23 (25 minus CRV, XPL excluded)
+- Approximate run duration: ~10 min (local M4 CPU, 23 symbols × 5 seeds × 25 epochs)
+- Primary metric: Sortino ratio
+- Default scoring: `score = mean_sortino * 0.6 + (passing / 23) * 0.4`
+- Cache note: Changing prepare.py features invalidates .cache/*.npz (~30 min rebuild). Avoid mid-experiment.
 
-## Current Best (v11b, honest slippage, 36 test days)
-- Config: {lr=1e-3, hdim=64, nlayers=3, batch_size=256, fee_mult=11.0, r_min=0.0, min_hold=1200, MAX_HOLD=300, features=v11a (13), window=50, seeds=5, epochs=25}
-- Slippage: half_spread (from OB data) + 3 bps impact per side. T40 filter: CRV/XPL excluded.
-- Score: sortino=0.333, passing=9/23, PF=1.67, WR=53.2%, trades=1332
-- T41 maker upper bound: Sortino=0.257 with maker costs (would be higher with lr=1e-3)
+## Current Best
+- Config: {lr=1e-3, hdim=64, nlayers=3, batch_size=256, wd=0.0, fee_mult=11.0, min_hold=1200, window_size=50, MAX_HOLD_STEPS=300, labeling=triple_barrier, features=13, seeds=5, epochs=25, logit_bias=0.0, use_uace=False, curriculum_epochs=0}
+- Score: 0.368 (sortino=0.353, passing=9/23, trades=1269)
+- Walk-forward: mean=0.261, std=0.220, all 4 folds positive
+- Commit: ac92256 (wd=0 experiment)
 
-## Prior Best (v10, buggy Sortino, 20 test days)
-- Config: {lr=1e-3, hdim=256, nlayers=2, batch_size=256, fee_mult=1.5, min_hold=800, features=v10 (9)}
-- Score: sortino=+0.230 (BUGGY, true ≈ 0.154), passing=18/25, trades=923
-- Note: Not comparable — different Sortino formula, different test period
-
-## v11a Progression
-- v11 baseline (17 feat, fee_mult=1.5): Sortino=0.032, 5/25
-- v11a ablated (13 feat, fee_mult=1.5): Sortino=0.091, 6/25 (dropped 4 hurting features)
-- v11a Optuna (13 feat, fee_mult=12.9): Sortino=0.144, 9/25 (tuned params)
-
-## Key Findings (This Session)
-1. **Feature set is the bottleneck** — v5 (31 feat) >> v9 (5 feat) for Sortino; v10 (9 feat) captures 91%
-2. **Permutation importance** identified top 4 missing features: vol_of_vol, utc_hour, microprice_dev, delta_TFI
-3. **DirectionClassifier beats HybridClassifier** — T19 confirmed (TCN adds variance, not signal)
-4. **VPIN gate is harmful** — T17 paradox confirmed empirically
-5. **r_min=0.7 validated** but needs raw_hawkes (only in v9+ features)
-6. **Sortino formula is WRONG** — T26 proved buggy = correct × √p, ~1.49x understatement
-7. **36 trades/symbol is NOT statistically significant** — T29: need ~99 for WR=60%
-8. **T25 corrected our assumption** — new symbol must have Sortino ≥ portfolio mean (not just >0) to help
-9. **Not a tape reading model** — it's a microstructure-informed direction classifier
-10. **No public dataset matches our Pacifica data** — our trade-level DEX perps data is unique
-11. **5 core feature families** (OFI, spread, VWAP, volatility, activity) — v11 covers all 5
-12. **Academic literature** confirms our features: VPIN best OOS (Easley 2024), Amihud #1 in-sample, multi-level OFI adds significant R²
-
-## Aristotle Proofs (35 total, 0 sorry)
-- T0-T15: Original batch (math review, sufficient statistics, Kelly, Hawkes, gates, diversification)
-- T16-T22: Experiment-backed (optimal trade count, gate paradox, frequency, complexity, min_hold, loss clusters, dual gate)
-- T23-T29: Metrics validation (optimal features k*, drawdown bounds, marginal symbols, Sortino bug, Sharpe-Calmar, VaR/CVaR, statistical significance)
-- T30-T35: Feature validation (multi-level OFI, VWAP decomposition, Roll/Amihud, microprice, arrival rate, momentum)
-
-## Swept Variables (cost-adjusted regime)
-- fee_mult: 3,5,7,8,9,10,11,12.9,15 → winner 11.0
-- epochs: 15,25,35 → winner 25
-- min_hold: 400,600,800,1200 → winner 1200
-- MAX_HOLD: 300,600,1200 → winner 300 (momentum filter)
-- r_min: 0.0,0.24,0.5 → winner 0.0 (no gate, redundant with cost-adjusted barriers)
-- features: 17→13 (ablation dropped 4 hurting)
-- symbols: 25→23 (T40 excluded CRV/XPL for wide spreads)
-
-## Not Yet Swept
-- lr: 4.4e-3 from Optuna, not re-swept in cost-adjusted regime
-- weight_decay: 5e-4 hardcoded, never swept
-- batch_size: 256 from Optuna, not re-swept
-- window_size: 50, never swept in v11
+## Swept Variables (all confirmed optimal at current values)
+| Variable | Values tested | Winner |
+|----------|--------------|--------|
+| features | 39→17→13 (ablation) | 13 |
+| fee_mult | 3,5,7,8,9,10,11,12.9,15 | 11.0 |
+| min_hold | 400,600,800,1200 | 1200 |
+| MAX_HOLD | 300,600,1200 | 300 |
+| r_min | 0.0,0.24,0.5 | 0.0 |
+| epochs | 15,25,35 | 25 |
+| lr | 1e-3,2e-3,4.4e-3,8e-3 | 1e-3 |
+| weight_decay | 0.0,1e-3,5e-4 | 0.0 |
+| window_size | 10,20,50 | 50 |
+| batch_size | 128,256,512 | 256 |
+| hdim | 64,128,256 | 64 |
+| nlayers | 2,3,4 | 3 |
+| symbols | 25→23 (CRV/XPL excluded) | 23 |
+| logit_bias | 0.0,0.5,1.0 | 0.0 |
+| curriculum_epochs | 0,10 | 0 |
+| use_uace | False,True (with lr sweep 1e-4 to 3e-3) | False |
 
 ## Open Questions
-1. Does lr need re-tuning now that barriers/costs are different?
-2. Is weight_decay=5e-4 optimal for the smaller 64-dim network?
-3. Walk-forward validation — still not implemented
-4. Can we build limit order execution? T41 shows Sortino=0.257 with maker costs
+1. Would more data (sync newer dates from Pacifica) improve the model? T46 proved 207 days needed for SE(Sortino)<0.1, we have 160.
+2. Would asymmetric barriers (wider TP than SL) capture more upside?
+3. Would new feature families (cross-symbol, volatility regime) help?
+4. Would learned temporal reweighting (meta-learning) outperform fixed decay=1.0?
 
-## Completed Experiments
-- v5→v6→v9→v5.5→v10→v11→v11a (feature iterations)
-- v11a ablation (17→13 features)
-- Slippage model (T39 cost-adjusted barriers, T40 symbol filter)
-- fee_mult sweep (cost-adjusted), epoch sweep, min_hold sweep, MAX_HOLD sweep, r_min sweep
-- T41 maker execution simulation
-- See results.tsv and docs/experiments/ for full history
+## Completed Experiments (this session, 2026-03-28)
+- Realism improvements (T42-T45): funding negligible, no spread widening, rho=0.28, latency covered
+- Walk-forward validation: 4 folds all positive, mean Sortino=0.261, T46 proved variance is sampling noise
+- Aristotle T42-T47: 73 theorems, 0 sorry, all formally verified in Lean 4
+- T47 signal autocorrelation: signal decays at lag 1, but MLP learns nonlinear temporal patterns (window=50 wins)
+- window_size sweep: 50 > 20 > 10
+- batch_size sweep: 256 > 128, 512
+- hdim sweep: 64 > 128 > 256
+- nlayers sweep: 3 > 2, 4
+- logit bias: no bias > 0.5 > 1.0
+- curriculum learning: no curriculum > 10 warm-up epochs
+- UACE loss (with proper lr sweep): focal loss > UACE at all tested lr (best UACE=0.258@3e-4 vs focal=0.353@1e-3)
+
+## Key Findings
+- Model is at a local optimum on the hyperparameter surface — every variable has been swept
+- Focal loss + gamma=1.0 + class weights + recency weighting is a strong training setup that resists "improvements"
+- Smaller network generalizes better (64 > 128 > 256 hdim)
+- Walk-forward edge is real but modest (Sharpe ~0.18, regime-dependent)
+- When testing new training methods, must re-tune at least lr for a fair comparison (AlgoPerf protocol)
