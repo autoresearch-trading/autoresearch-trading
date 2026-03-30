@@ -46,7 +46,7 @@ BEST_PARAMS = {
     "wd": 0.0,  # no weight decay — 64-dim net doesn't overfit at 25 epochs
     "logit_bias": 0.0,  # logit bias sweep: 0 > 0.5 > 1.0 (bias hurts)
     "curriculum_epochs": 0,  # curriculum sweep: 0 > 10 (directional warm-up hurts)
-    "swa_start": 20,  # SWA experiment: average weights over epochs 20-24
+    "swa_start": 0,  # SWA: disabled (0.285 vs 0.353 baseline — weight averaging hurts)
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
 }
 
