@@ -470,27 +470,31 @@ def make_ensemble_fn(models, device):
 def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
     """Train n_seeds models, evaluate ensemble."""
     old_stdout = sys.stdout
-    sys.stdout = open(os.devnull, "w")
     train_envs = {}
     env_weights = {}
-    for sym in symbols:
-        try:
-            env = make_env(
-                sym,
-                "train",
-                window_size=WINDOW_SIZE,
-                trade_batch=TRADE_BATCH,
-                min_hold=MIN_HOLD,
-                # include_funding=True,  # T42: proven negligible (0.16% of fee barrier)
-            )
-            train_envs[sym] = env
-            env_weights[sym] = env.num_steps
-        except Exception:
-            pass
-    sys.stdout.close()
-    sys.stdout = old_stdout
+    try:
+        sys.stdout = open(os.devnull, "w")
+        for sym in symbols:
+            try:
+                env = make_env(
+                    sym,
+                    "train",
+                    window_size=WINDOW_SIZE,
+                    trade_batch=TRADE_BATCH,
+                    min_hold=MIN_HOLD,
+                )
+                train_envs[sym] = env
+                env_weights[sym] = env.num_steps
+            except Exception as e:
+                old_stdout.write(f"  WARNING: {sym} failed to load: {e}\n")
+    finally:
+        sys.stdout.close()
+        sys.stdout = old_stdout
 
     active = list(train_envs.keys())
+    if not active:
+        print("  ERROR: no symbols loaded successfully")
+        return (0.0, 0, 0, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
     weights = np.array([env_weights[s] for s in active], dtype=np.float64)
     weights /= weights.sum()
     obs_shape = train_envs[active[0]].observation_space.shape
@@ -515,35 +519,40 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
     best_seed_idx = 0
     best_acc = 0.0
     old_stdout2 = sys.stdout
-    sys.stdout = open(os.devnull, "w")
-    for si, model in enumerate(models):
-        model.eval()
-        # Quick accuracy check on first available training env
-        first_env = train_envs[active[0]]
-        fee_threshold = _cost_adjusted_threshold(first_env, p["fee_mult"])
-        obs, labels, _ = make_labeled_dataset(
-            first_env, MAX_HOLD_STEPS, fee_threshold, fee_threshold, max_samples=2000
-        )
-        if len(obs) > 0:
-            with torch.no_grad():
-                X_check = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
-                y_check = torch.tensor(labels, dtype=torch.long, device=DEVICE)
-                logits = model(X_check)
-                preds = logits.argmax(dim=1)
-                directional_mask = y_check != 0
-                if directional_mask.sum() > 0:
-                    acc = (
-                        (preds[directional_mask] == y_check[directional_mask])
-                        .float()
-                        .mean()
-                        .item()
-                    )
-                    mean_accuracy += acc
-                    if acc > best_acc:
-                        best_acc = acc
-                        best_seed_idx = si
-    sys.stdout.close()
-    sys.stdout = old_stdout2
+    try:
+        sys.stdout = open(os.devnull, "w")
+        for si, model in enumerate(models):
+            model.eval()
+            first_env = train_envs[active[0]]
+            fee_threshold = _cost_adjusted_threshold(first_env, p["fee_mult"])
+            obs, labels, _ = make_labeled_dataset(
+                first_env,
+                MAX_HOLD_STEPS,
+                fee_threshold,
+                fee_threshold,
+                max_samples=2000,
+            )
+            if len(obs) > 0:
+                with torch.no_grad():
+                    X_check = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
+                    y_check = torch.tensor(labels, dtype=torch.long, device=DEVICE)
+                    logits = model(X_check)
+                    preds = logits.argmax(dim=1)
+                    directional_mask = y_check != 0
+                    if directional_mask.sum() > 0:
+                        acc = (
+                            (preds[directional_mask] == y_check[directional_mask])
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                        mean_accuracy += acc
+                        if acc > best_acc:
+                            best_acc = acc
+                            best_seed_idx = si
+    finally:
+        sys.stdout.close()
+        sys.stdout = old_stdout2
     mean_accuracy /= max(len(models), 1)
 
     if mean_accuracy < 0.5 and len(models) > 1:

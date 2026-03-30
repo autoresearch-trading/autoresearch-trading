@@ -1558,9 +1558,10 @@ def evaluate(
             entry_equity = current_equity
         prev_position = current_position
 
-        # If truncated but not at end of data, reset episode counter and continue
+        # If truncated but not at end of data, reset episode counter and get fresh obs
         if truncated and env_test._idx < env_test.num_steps:
             env_test._episode_step = 0
+            obs = env_test._get_obs()
 
     # Close any open position at end of data
     if prev_position != 0 and entry_step is not None:
@@ -1763,7 +1764,13 @@ def make_env(
 if __name__ == "__main__":
     data = prepare_data(DEFAULT_SYMBOLS)
     for sym, splits in data.items():
-        for split_name, (features, timestamps, prices, raw_hawkes) in splits.items():
+        for split_name, (
+            features,
+            timestamps,
+            prices,
+            raw_hawkes,
+            spread_bps,
+        ) in splits.items():
             print(
                 f"{sym} {split_name}: features={features.shape}, steps={len(timestamps)}"
             )
