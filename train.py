@@ -57,6 +57,7 @@ BEST_PARAMS = {
     "use_metalabeling": False,  # metalabeling sweep: off > t=0.5 (0.340) > t=0.7 (0.122) vs baseline 0.353
     "meta_threshold": 0.5,  # meta-model confidence threshold — unused when use_metalabeling=False
     "activation": "relu",  # activation sweep: relu > gelu (0.282) > silu (0.099)
+    "adaptive_barriers": True,  # adaptive barriers experiment
 }
 
 
@@ -159,13 +160,23 @@ class HybridClassifier(nn.Module):
 
 
 # ── Data labeling ──────────────────────────────────────────────
-def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=10000):
+def make_labeled_dataset(
+    env,
+    max_hold,
+    tp_threshold,
+    sl_threshold,
+    max_samples=10000,
+    adaptive_barriers=False,
+):
     """Extract (obs, label) pairs using Triple Barrier labeling.
 
     For each sample, scan forward up to max_hold steps:
     - TP barrier hit first (return >= +tp_threshold) → long (1)
     - SL barrier hit first (return <= -sl_threshold) → short (2)
     - Neither hit within max_hold → flat (0) (timeout)
+
+    If adaptive_barriers=True, scale thresholds by local realized volatility
+    (rolling 50-step std of log returns), so volatile periods get wider barriers.
 
     Vectorized via numpy broadcasting. Memory: O(n_samples × max_hold).
     """
@@ -207,9 +218,21 @@ def make_labeled_dataset(env, max_hold, tp_threshold, sl_threshold, max_samples=
         :, np.newaxis
     ]
 
-    # First barrier hit per sample
-    hit_tp = fwd_returns >= tp_threshold
-    hit_sl = fwd_returns <= -sl_threshold
+    # Per-sample thresholds (adaptive or fixed)
+    if adaptive_barriers:
+        # Rolling 50-step realized vol of log returns
+        log_returns = np.diff(np.log(np.clip(prices, 1e-10, None)))
+        log_returns = np.concatenate([[0], log_returns])
+        vol = np.array([log_returns[max(0, i - 50) : i].std() for i in idx])
+        median_vol = np.median(vol[vol > 0]) if (vol > 0).any() else 1.0
+        vol_scaler = np.clip(vol / median_vol, 0.5, 2.0)  # clamp to [0.5x, 2x]
+        tp_thresh = tp_threshold * vol_scaler  # (n_samples,)
+        sl_thresh = sl_threshold * vol_scaler
+        hit_tp = fwd_returns >= tp_thresh[:, np.newaxis]
+        hit_sl = fwd_returns <= -sl_thresh[:, np.newaxis]
+    else:
+        hit_tp = fwd_returns >= tp_threshold
+        hit_sl = fwd_returns <= -sl_threshold
     tp_any = hit_tp.any(axis=1)
     sl_any = hit_sl.any(axis=1)
     tp_first = np.where(tp_any, hit_tp.argmax(axis=1), max_hold)
@@ -258,7 +281,11 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
         tp_threshold = _cost_adjusted_threshold(env, tp_mult)
         sl_threshold = _cost_adjusted_threshold(env, sl_mult)
         obs, labels, indices = make_labeled_dataset(
-            env, MAX_HOLD_STEPS, tp_threshold, sl_threshold
+            env,
+            MAX_HOLD_STEPS,
+            tp_threshold,
+            sl_threshold,
+            adaptive_barriers=p.get("adaptive_barriers", False),
         )
         if len(obs) > 0:
             all_obs.append(obs)
