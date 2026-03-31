@@ -55,7 +55,7 @@ BEST_PARAMS = {
     "use_gce": False,  # GCE sweep: focal wins at all lr (best GCE=0.240@1e-3 vs focal=0.353)
     "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced) — unused when use_gce=False
     "use_metalabeling": True,  # metalabeling experiment
-    "meta_threshold": 0.5,  # meta-model confidence threshold
+    "meta_threshold": 0.7,  # meta-model confidence threshold
 }
 
 
