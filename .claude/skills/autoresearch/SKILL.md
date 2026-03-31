@@ -40,6 +40,23 @@ Before proceeding, run `git log --oneline -20` and cross-reference against state
 
 ## 2. Hypothesize
 
+### Prior-Art Check (mandatory before every hypothesis)
+
+Before proposing any new feature, loss function, architecture change, or configuration:
+
+1. **Check state.md swept variables table** — is this variable already swept? If yes, what won? Proposing a re-test requires a clear reason why the previous result might be wrong (e.g., different feature set, different labeling).
+2. **Check ablation history** — was this feature/approach part of a larger set that was ablated? Search `prepare.py` comments for "Dropped by ablation" and `train.py` BEST_PARAMS comments. A feature that was ablated from v6's 39-feature set has already been tested and lost.
+3. **Check experiment docs** — `grep -r` the hypothesis keyword in `docs/experiments/` and `results.tsv`. If a prior experiment exists, read its report before proceeding.
+4. **Check CLAUDE.md Key Discoveries** — does any existing discovery contradict or subsume this hypothesis?
+
+If the prior-art check finds a previous negative result, you MUST either:
+- Explain why this time is different (different context, different feature set, different interaction)
+- Or abandon the hypothesis and form a new one
+
+Never re-test a previously failed idea without a clear mechanistic reason for a different outcome.
+
+### Hypothesis Formation
+
 Identify the single most impactful question to answer next. Priority order:
 
 1. **Regressions** — if something got worse, isolate why (ablation)
