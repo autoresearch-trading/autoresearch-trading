@@ -56,7 +56,7 @@ BEST_PARAMS = {
     "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced) — unused when use_gce=False
     "use_metalabeling": False,  # metalabeling sweep: off > t=0.5 (0.340) > t=0.7 (0.122) vs baseline 0.353
     "meta_threshold": 0.5,  # meta-model confidence threshold — unused when use_metalabeling=False
-    "activation": "gelu",  # activation experiment
+    "activation": "silu",  # activation experiment
 }
 
 
