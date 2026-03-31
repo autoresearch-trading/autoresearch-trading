@@ -52,6 +52,8 @@ BEST_PARAMS = {
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
     "dropout": 0.0,  # dropout sweep: 0.0 > 0.1 > 0.2 (dropout hurts — model already regularized by small size)
     "residual": False,  # residual sweep: False > True (skip connections hurt — 0.167 vs 0.353)
+    "use_gce": True,  # GCE experiment: testing noise-robust loss
+    "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced)
 }
 
 
@@ -296,6 +298,8 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
 
     logit_bias = p.get("logit_bias", 0.0)
     use_uace = p.get("use_uace", False)
+    use_gce = p.get("use_gce", False)
+    gce_q = p.get("gce_q", 0.7)
 
     def focal_loss(logits, targets, sample_w, gamma=1.0):
         # Logit bias: add epsilon to correct-class logit (noise robustness)
@@ -316,7 +320,16 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
             pt = torch.exp(-ce)
             return (sample_w * (1 - pt) ** gamma * ce).mean()
 
-    criterion = focal_loss
+    def gce_loss(logits, targets, sample_w):
+        # GCE: L_q = (1 - p_y^q) / q where p_y = softmax probability of true class
+        probs = torch.softmax(logits, dim=1)
+        p_y = probs.gather(1, targets.unsqueeze(1)).squeeze(1)  # prob of true class
+        # Apply class weights via per-sample weighting
+        target_cw = cw[targets]
+        loss = (1.0 - (p_y + 1e-8) ** gce_q) / gce_q
+        return (sample_w * target_cw * loss).mean()
+
+    criterion = gce_loss if use_gce else focal_loss
 
     batch_size = p["batch_size"]
     total_steps = 0
