@@ -715,6 +715,7 @@ V9_FEATURE_NAMES = [
     "r_20",  # 12 (v11, ablation: HELPS)
 ]
 # Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
+# Tested and HURTS: r_btc_lag1 (cross-asset BTC return, v12 experiment — degraded alpha below ensemble threshold)
 
 V9_NUM_FEATURES = 13
 V9_ROBUST_FEATURE_INDICES = {
@@ -730,7 +731,7 @@ def compute_features_v9(
     funding_df: pd.DataFrame,
     trade_batch: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 13 v11a features from trade/orderbook data.
+    """Compute 13 v11b features from trade/orderbook data.
 
     Returns: (features, timestamps, prices, raw_hawkes_branching, spread_bps)
     where features has shape (num_batches, 13) and spread_bps is per-step
