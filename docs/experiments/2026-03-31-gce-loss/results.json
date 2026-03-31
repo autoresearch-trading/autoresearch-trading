@@ -1,0 +1,26 @@
+[
+  {
+    "run": 1, "phase": "Phase 1", "name": "control_focal",
+    "config": {"loss": "focal", "lr": 1e-3},
+    "results": {"sortino": 0.353, "passing": 9, "alpha": 0.477},
+    "score": 0.368
+  },
+  {
+    "run": 2, "phase": "Phase 1", "name": "gce_lr1e-3",
+    "config": {"loss": "gce", "gce_q": 0.7, "lr": 1e-3},
+    "results": {"sortino": 0.240, "passing": 6, "alpha": 0.372},
+    "score": 0.248
+  },
+  {
+    "run": 3, "phase": "Phase 1", "name": "gce_lr3e-4",
+    "config": {"loss": "gce", "gce_q": 0.7, "lr": 3e-4},
+    "results": {"sortino": 0.125, "passing": 7},
+    "score": 0.197
+  },
+  {
+    "run": 4, "phase": "Phase 1", "name": "gce_lr3e-3",
+    "config": {"loss": "gce", "gce_q": 0.7, "lr": 3e-3},
+    "results": {"sortino": 0.052, "passing": 7},
+    "score": 0.153
+  }
+]

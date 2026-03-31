@@ -36,7 +36,7 @@ MAX_HOLD_STEPS = 300  # short horizon = momentum filter (300 beats 600 and 1200)
 DEVICE = torch.device("cpu")
 
 BEST_PARAMS = {
-    "lr": 3e-3,  # GCE lr sweep
+    "lr": 1e-3,  # restored baseline
     "hdim": 64,  # hdim sweep: 64 > 128 > 256 (smaller net generalizes better)
     "nlayers": 3,  # nlayers sweep: 3 best score (2 higher Sortino but fewer passing)
     "batch_size": 256,  # batch_size sweep: 256 > 128, 512
@@ -52,8 +52,8 @@ BEST_PARAMS = {
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
     "dropout": 0.0,  # dropout sweep: 0.0 > 0.1 > 0.2 (dropout hurts — model already regularized by small size)
     "residual": False,  # residual sweep: False > True (skip connections hurt — 0.167 vs 0.353)
-    "use_gce": True,  # GCE experiment: testing noise-robust loss
-    "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced)
+    "use_gce": False,  # GCE sweep: focal wins at all lr (best GCE=0.240@1e-3 vs focal=0.353)
+    "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced) — unused when use_gce=False
 }
 
 
