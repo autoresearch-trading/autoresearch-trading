@@ -51,7 +51,7 @@ BEST_PARAMS = {
     "confidence_threshold": 0.0,  # confidence gating: 0 > 0.45 > 0.55 (gating hurts, same as r_min)
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
     "dropout": 0.0,  # dropout sweep: 0.0 > 0.1 > 0.2 (dropout hurts — model already regularized by small size)
-    "residual": True,  # residual experiment: testing skip connections in MLP trunk
+    "residual": False,  # residual sweep: False > True (skip connections hurt — 0.167 vs 0.353)
 }
 
 

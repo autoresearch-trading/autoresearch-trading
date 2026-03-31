@@ -1,0 +1,14 @@
+[
+  {
+    "run": 1, "phase": "Phase 1", "name": "control_plain_mlp",
+    "config": {"residual": false},
+    "results": {"sortino": 0.353, "passing": 9, "trades": 1270, "alpha": 0.477},
+    "score": 0.368
+  },
+  {
+    "run": 2, "phase": "Phase 1", "name": "residual_mlp",
+    "config": {"residual": true},
+    "results": {"sortino": 0.167, "passing": 3, "trades": 1262, "alpha": 0.469},
+    "score": 0.152
+  }
+]
