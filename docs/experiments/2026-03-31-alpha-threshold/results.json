@@ -1,0 +1,14 @@
+[
+  {
+    "run": 1, "phase": "Phase 1", "name": "control_threshold_0.5",
+    "config": {"alpha_threshold": 0.5, "mode": "single_best_fallback"},
+    "results": {"sortino": 0.353, "passing": 9, "trades": 1270, "dd": 0.5458, "wr": 0.5504, "pf": 1.7123, "alpha": 0.477},
+    "score": 0.368
+  },
+  {
+    "run": 2, "phase": "Phase 1", "name": "force_ensemble",
+    "config": {"alpha_threshold": "disabled", "mode": "always_ensemble"},
+    "results": {"sortino": 0.320, "passing": 6, "trades": 1456, "dd": 0.5190, "wr": 0.5961, "pf": 1.8345, "alpha": 0.477},
+    "score": 0.296
+  }
+]

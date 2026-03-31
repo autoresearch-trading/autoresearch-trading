@@ -592,7 +592,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         sys.stdout = old_stdout2
     mean_accuracy /= max(len(models), 1)
 
-    if False and mean_accuracy < 0.5 and len(models) > 1:  # EXPERIMENT: force ensemble
+    if mean_accuracy < 0.5 and len(models) > 1:
         if verbose:
             print(
                 f"  WARNING: alpha={mean_accuracy:.3f} < 0.5, using single best model"
