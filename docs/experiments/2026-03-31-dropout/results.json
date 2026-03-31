@@ -1,0 +1,20 @@
+[
+  {
+    "run": 1, "phase": "Phase 1", "name": "control_dropout0",
+    "config": {"dropout": 0.0},
+    "results": {"sortino": 0.353, "passing": 9, "trades": 1270, "dd": 0.5458, "wr": 0.5504, "pf": 1.7123, "alpha": 0.477},
+    "score": 0.368
+  },
+  {
+    "run": 2, "phase": "Phase 1", "name": "dropout_0.1",
+    "config": {"dropout": 0.1},
+    "results": {"sortino": 0.294, "passing": 9, "trades": 1205, "dd": 0.6165, "wr": 0.5581, "pf": 1.6613, "alpha": 0.491},
+    "score": 0.333
+  },
+  {
+    "run": 3, "phase": "Phase 1", "name": "dropout_0.2",
+    "config": {"dropout": 0.2},
+    "results": {"sortino": 0.165, "passing": 7, "trades": 1238, "dd": 0.5763, "wr": 0.5441, "pf": 1.3660, "alpha": 0.490},
+    "score": 0.221
+  }
+]
