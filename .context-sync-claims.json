@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "generated": "2026-03-30T22:35:25.620838+00:00",
+  "claims": [
+    {
+      "file": "CLAUDE.md",
+      "line": 5,
+      "line_pattern": "~40GB of Hive-partitioned Parque",
+      "claim_value": "40",
+      "unit": "GB",
+      "verify_command": "echo $(( $(ls data/trades/symbol=BTC/ | wc -l) * 40 / 161 ))",
+      "compare": "approximate"
+    },
+    {
+      "file": "CLAUDE.md",
+      "line": 7,
+      "line_pattern": "Microstructure-informed direction classifier on 13 features",
+      "claim_value": "13",
+      "unit": "features",
+      "verify_command": "grep 'V9_NUM_FEATURES =' prepare.py | sed 's/.*= //'",
+      "compare": "exact"
+    },
+    {
+      "file": "CLAUDE.md",
+      "line": 43,
+      "line_pattern": "compute_features_v9 ... 13 features per step",
+      "claim_value": "13",
+      "unit": "features",
+      "verify_command": "grep 'V9_NUM_FEATURES =' prepare.py | sed 's/.*= //'",
+      "compare": "exact"
+    },
+    {
+      "file": "CLAUDE.md",
+      "line": 45,
+      "line_pattern": "legacy 39 features (inactive)",
+      "claim_value": "39",
+      "unit": "features",
+      "verify_command": null,
+      "compare": "exact",
+      "note": "Historical — legacy function still exists in code."
+    },
+    {
+      "file": "CLAUDE.md",
+      "line": 159,
+      "line_pattern": "16 variables tested",
+      "claim_value": "16",
+      "unit": "test",
+      "verify_command": null,
+      "compare": "exact",
+      "note": "Historical — count of tested variables, intentionally frozen."
+    },
+    {
+      "file": "docs/CODEBASE_MAP.md",
+      "line": 102,
+      "line_pattern": "computes 13 microstructure features",
+      "claim_value": "13",
+      "unit": "features",
+      "verify_command": "grep 'V9_NUM_FEATURES =' prepare.py | sed 's/.*= //'",
+      "compare": "exact"
+    },
+    {
+      "file": "docs/CODEBASE_MAP.md",
+      "line": 114,
+      "line_pattern": "Active 13 features (v11b)",
+      "claim_value": "13",
+      "unit": "features",
+      "verify_command": "grep 'V9_NUM_FEATURES =' prepare.py | sed 's/.*= //'",
+      "compare": "exact"
+    },
+    {
+      "file": "docs/CODEBASE_MAP.md",
+      "line": 212,
+      "line_pattern": "8 tape features (v6)",
+      "claim_value": "8",
+      "unit": "features",
+      "verify_command": null,
+      "compare": "exact",
+      "note": "Historical — v6 had 8 tape features. Intentionally frozen."
+    },
+    {
+      "file": "docs/CODEBASE_MAP.md",
+      "line": 214,
+      "line_pattern": "7 OB features + TCN (v8)",
+      "claim_value": "7",
+      "unit": "features",
+      "verify_command": null,
+      "compare": "exact",
+      "note": "Historical — v8 had 7 OB features. Intentionally frozen."
+    },
+    {
+      "file": "docs/CODEBASE_MAP.md",
+      "line": 215,
+      "line_pattern": "5 proven features",
+      "claim_value": "5",
+      "unit": "features",
+      "verify_command": null,
+      "compare": "exact",
+      "note": "Historical — v9 started with 5 Aristotle-proven features. Intentionally frozen."
+    },
+    {
+      "file": "docs/CODEBASE_MAP.md",
+      "line": 235,
+      "line_pattern": "compute_features() (39 features)",
+      "claim_value": "39",
+      "unit": "features",
+      "verify_command": null,
+      "compare": "exact",
+      "note": "Historical — legacy function still exists in code."
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 ## Codebase Overview
 
-**DEX perpetual futures trading research.** Supervised classification models trained on ~36GB of Hive-partitioned Parquet data (trades, orderbook, funding) for 25 crypto symbols from Pacifica API.
+**DEX perpetual futures trading research.** Supervised classification models trained on ~40GB of Hive-partitioned Parquet data (trades, orderbook, funding) for 25 crypto symbols from Pacifica API.
 
 **Current approach**: Supervised forward-return classifier with flat MLP (DirectionClassifier). Microstructure-informed direction classifier on 13 features, fully tuned.
 
@@ -40,46 +40,47 @@ docs/superpowers/
 
 - `make_env(symbol, split, window_size, trade_batch, min_hold, include_funding, date_range)` — creates TradingEnv
 - `evaluate(env, policy_fn, min_trades)` — runs policy on full test set, returns Sortino ratio
-- `compute_features(trades, orderbook, funding, trade_batch)` — features per step
-- `normalize_features(features, window)` — hybrid z-score + robust scaling
+- `compute_features_v9(trades, orderbook, funding, trade_batch)` — 13 features per step (active, `USE_V9=True`)
+- `normalize_features_v9(features)` — hybrid z-score + robust scaling (active)
+- `compute_features(trades, orderbook, funding, trade_batch)` — legacy 39 features (inactive)
 - `TradingEnv` — Gymnasium env, 3 actions (flat/long/short), obs shape (window, num_features)
 - `DEFAULT_SYMBOLS` — 25 crypto symbols
 - `TRAIN_BUDGET_SECONDS = 300` (legacy, not used by current epoch-based training)
 - Date constants: `TRAIN_START` (2025-10-16), `TRAIN_END` (2026-01-23), `VAL_END` (2026-02-17), `TEST_END` (2026-03-25)
 
-## Features (39, v6)
+## Features (13, v11b)
 
 Each step = 100 consecutive trades (~1-2 seconds for BTC).
 
 | # | Feature | Source |
 |---|---------|--------|
-| 0-3 | returns, r_5, r_20, r_100 | trade |
-| 4-5 | realvol_10, bipower_var_20 | trade |
-| 6-8 | tfi, volume_spike_ratio, large_trade_share | trade |
-| 9-11 | kyle_lambda_50, amihud_illiq_50, trade_arrival_rate | trade |
-| 12-17 | spread_bps, log_total_depth, weighted_imbalance_5lvl, microprice_dev, ofi, ob_slope_asym | orderbook |
-| 18-19 | funding_zscore, utc_hour_linear | funding/time |
-| 20-24 | r_500, r_2800, cum_tfi_100, cum_tfi_500, funding_rate_raw | longer-horizon |
-| 25-26 | VPIN, delta_TFI | v5 flow |
-| 27-30 | Hurst, realized_skew, vol_of_vol, sign_autocorr | v5 higher-order |
-| 31-32 | buy_run_max, sell_run_max | v6 tape reading |
-| 33-34 | large_buy_share, large_sell_share | v6 tape reading |
-| 35 | trade_size_entropy | v6 tape reading |
-| 36 | aggressor_imbalance | v6 tape reading |
-| 37 | price_level_absorption | v6 tape reading |
-| 38 | tfi_acceleration | v6 tape reading |
+| 0 | lambda_ofi | trade+orderbook |
+| 1 | directional_conviction | trade |
+| 2 | vpin | trade |
+| 3 | hawkes_branching | trade |
+| 4 | reservation_price_dev | orderbook |
+| 5 | vol_of_vol | trade |
+| 6 | utc_hour_linear | time |
+| 7 | microprice_dev | orderbook |
+| 8 | delta_tfi | trade |
+| 9 | multi_level_ofi | orderbook (v11) |
+| 10 | buy_vwap_dev | trade (v11) |
+| 11 | trade_arrival_rate | trade (v11) |
+| 12 | r_20 | trade (v11) |
+
+Robust scaling (IQR-based): indices {4, 5, 11} (reservation_price_dev, vol_of_vol, trade_arrival_rate)
 
 ## Data
 
 - **25 symbols**: 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
-- **Date range**: 2025-10-16 to 2026-03-09 (~145 days)
-- **Splits**: Train (100d) / Val (25d) / Test (20d)
+- **Date range**: 2025-10-16 to 2026-03-25 (~160 days)
+- **Splits**: Train (99d) / Val (25d) / Test (36d)
 - **Sync**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only`
-- **Cache**: v6, keyed on `(symbol, start, end, trade_batch, _FEATURE_VERSION)`
+- **Cache**: v11b, keyed on `(symbol, start, end, trade_batch, _FEATURE_VERSION)`
 
 ## Evaluation
 
-- **Metric**: Sortino ratio (downside vol only) on full test set (28K steps/symbol, no truncation)
+- **Metric**: Sortino ratio (downside vol only) on full test set (no truncation)
 - **Guardrails**: >= 10 trades, <= 20% drawdown per symbol
 - **Portfolio**: mean Sortino across all passing symbols
 - **Annualization**: `steps_per_day = total_steps / test_days` (dynamically computed)
@@ -96,7 +97,7 @@ Input: (batch, window=50, features=13)
   → ReLU, orthogonal init
 
 Ensemble: 5 seeds, logit sum argmax
-~160K parameters
+~52K parameters
 Device: CPU
 ```
 
@@ -137,7 +138,7 @@ The handoff: execute the superpowers plan to build new infrastructure, then auto
 1. **R2 fake timestamps**: Use `--size-only` with rclone — R2 returns 1999-12-31 for all file timestamps
 2. **Cache invalidation**: Bump `_FEATURE_VERSION` in prepare.py to invalidate. Currently `"v11b"`
 3. **Fee model**: Switching positions (long->short) pays 2x fees (close + open)
-4. **ROBUST_FEATURE_INDICES**: `{5, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 24, 25, 29, 33, 34, 35, 37}` — these use IQR-based robust scaling instead of z-score
+4. **V9_ROBUST_FEATURE_INDICES**: `{4, 5, 11}` (reservation_price_dev, vol_of_vol, trade_arrival_rate) — these use IQR-based robust scaling instead of z-score
 5. **`evaluate()` uses test split**: Despite being called during training runs, it evaluates on test data (2026-02-17 to 2026-03-25)
 6. **Full-test eval is ground truth**: Old 2000-step truncated eval was hiding failures (25/25 was an illusion, reality is 18/25)
 7. **v7 attention overfit**: 2D attention (window=2000, RunPod H100) scored Sortino=0.061, 11/25 — worse than v5 flat MLP. Learnings: temporal architectures need much more data/compute; flat MLP is surprisingly strong
