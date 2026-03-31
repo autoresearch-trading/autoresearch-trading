@@ -40,11 +40,12 @@
 
 ## Open Questions
 1. Would more data (sync newer dates from Pacifica) improve the model? T46 proved 207 days needed for SE(Sortino)<0.1, we have 160.
-2. Would asymmetric barriers (wider TP than SL) capture more upside?
-3. Would new feature families (cross-symbol, volatility regime) help?
-4. Would learned temporal reweighting (meta-learning) outperform fixed decay=1.0?
+2. Would dropout regularization help? (orthogonal to wd=0 which was swept)
+3. Would residual/skip connections in the MLP improve gradient flow?
+4. Would GCE loss (q=0.7) outperform focal loss? (different noise-robustness theory than UACE)
+5. Would more ensemble seeds (10) reduce variance?
 
-## Completed Experiments (this session, 2026-03-28)
+## Completed Experiments (through 2026-03-31)
 - Realism improvements (T42-T45): funding negligible, no spread widening, rho=0.28, latency covered
 - Walk-forward validation: 4 folds all positive, mean Sortino=0.261, T46 proved variance is sampling noise
 - Aristotle T42-T47: 73 theorems, 0 sorry, all formally verified in Lean 4
@@ -56,6 +57,10 @@
 - logit bias: no bias > 0.5 > 1.0
 - curriculum learning: no curriculum > 10 warm-up epochs
 - UACE loss (with proper lr sweep): focal loss > UACE at all tested lr (best UACE=0.258@3e-4 vs focal=0.353@1e-3)
+- SWA (weight averaging): 0.285 vs 0.353 baseline — hurts
+- Asymmetric barriers: symmetric 11/11 > tp=15/sl=11 and tp=9/sl=11
+- Confidence threshold: 0 > 0.45 > 0.55 (gating hurts)
+- r_btc_lag1 cross-asset feature: HURTS (0.343/5pass, alpha<0.5 broke ensemble)
 
 ## Key Findings
 - Model is at a local optimum on the hyperparameter surface — every variable has been swept
