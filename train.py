@@ -57,7 +57,7 @@ BEST_PARAMS = {
     "use_metalabeling": False,  # metalabeling sweep: off > t=0.5 (0.340) > t=0.7 (0.122) vs baseline 0.353
     "meta_threshold": 0.5,  # meta-model confidence threshold — unused when use_metalabeling=False
     "activation": "relu",  # activation sweep: relu > gelu (0.282) > silu (0.099)
-    "adaptive_barriers": True,  # adaptive barriers experiment
+    "adaptive_barriers": False,  # adaptive barriers: fixed wins (0.353 vs adaptive 0.058)
 }
 
 
