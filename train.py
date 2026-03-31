@@ -54,8 +54,8 @@ BEST_PARAMS = {
     "residual": False,  # residual sweep: False > True (skip connections hurt — 0.167 vs 0.353)
     "use_gce": False,  # GCE sweep: focal wins at all lr (best GCE=0.240@1e-3 vs focal=0.353)
     "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced) — unused when use_gce=False
-    "use_metalabeling": True,  # metalabeling experiment
-    "meta_threshold": 0.7,  # meta-model confidence threshold
+    "use_metalabeling": False,  # metalabeling sweep: off > t=0.5 (0.340) > t=0.7 (0.122) vs baseline 0.353
+    "meta_threshold": 0.5,  # meta-model confidence threshold — unused when use_metalabeling=False
 }
 
 

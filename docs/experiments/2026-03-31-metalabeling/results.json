@@ -1,0 +1,20 @@
+[
+  {
+    "run": 1, "phase": "Phase 1", "name": "control_no_meta",
+    "config": {"use_metalabeling": false},
+    "results": {"sortino": 0.353, "passing": 9, "trades": 1270, "wr": 0.5504, "pf": 1.7123},
+    "score": 0.368
+  },
+  {
+    "run": 2, "phase": "Phase 1", "name": "meta_t0.5",
+    "config": {"use_metalabeling": true, "meta_threshold": 0.5},
+    "results": {"sortino": 0.340, "passing": 7, "trades": 1617, "wr": 0.5701, "pf": 1.8671},
+    "score": 0.326
+  },
+  {
+    "run": 3, "phase": "Phase 2", "name": "meta_t0.7",
+    "config": {"use_metalabeling": true, "meta_threshold": 0.7},
+    "results": {"sortino": 0.122, "passing": 9, "trades": 1489, "wr": 0.5286, "pf": 1.3458},
+    "score": 0.229
+  }
+]
