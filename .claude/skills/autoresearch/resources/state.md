@@ -39,11 +39,7 @@
 | use_uace | False,True (with lr sweep 1e-4 to 3e-3) | False |
 
 ## Open Questions
-1. Would more data (sync newer dates from Pacifica) improve the model? T46 proved 207 days needed for SE(Sortino)<0.1, we have 160.
-2. Would dropout regularization help? (orthogonal to wd=0 which was swept)
-3. Would residual/skip connections in the MLP improve gradient flow?
-4. Would GCE loss (q=0.7) outperform focal loss? (different noise-robustness theory than UACE)
-5. Would more ensemble seeds (10) reduce variance?
+1. Would more data (sync newer dates from Pacifica) improve the model? T46 proved 207 days needed for SE(Sortino)<0.1, we have 160. This is the only untested lever with a strong theoretical basis.
 
 ## Completed Experiments (through 2026-03-31)
 - Realism improvements (T42-T45): funding negligible, no spread widening, rho=0.28, latency covered
@@ -61,6 +57,14 @@
 - Asymmetric barriers: symmetric 11/11 > tp=15/sl=11 and tp=9/sl=11
 - Confidence threshold: 0 > 0.45 > 0.55 (gating hurts)
 - r_btc_lag1 cross-asset feature: HURTS (0.343/5pass, alpha<0.5 broke ensemble)
+- 10-seed ensemble: DISCARD (alpha<0.5, ensemble never forms, seed count irrelevant)
+- Dropout 0.1/0.2: DISCARD (model already regularized by 676→64 bottleneck)
+- Alpha threshold removal: DISCARD (Theorem 10 confirmed, single model wins)
+- Residual connections: DISCARD (skip connections hurt at 52K params, 0.167 vs 0.353)
+- GCE loss (3 lr sweep): DISCARD (focal wins at all lr, best GCE=0.240 vs focal=0.353)
+- Metalabeling (t=0.5, 0.7): DISCARD (meta-model can't learn useful gate on 25d val data)
+- GELU/SiLU activations: DISCARD (ReLU > GELU 0.282 > SiLU 0.099)
+- Adaptive barriers: DISCARD (vol-scaled thresholds hurt badly, 0.058 vs 0.353)
 
 ## Key Findings
 - Model is at a local optimum on the hyperparameter surface — every variable has been swept
