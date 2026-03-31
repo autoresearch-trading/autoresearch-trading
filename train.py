@@ -56,6 +56,7 @@ BEST_PARAMS = {
     "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced) — unused when use_gce=False
     "use_metalabeling": False,  # metalabeling sweep: off > t=0.5 (0.340) > t=0.7 (0.122) vs baseline 0.353
     "meta_threshold": 0.5,  # meta-model confidence threshold — unused when use_metalabeling=False
+    "activation": "gelu",  # activation experiment
 }
 
 
@@ -69,18 +70,26 @@ def _ortho_init(layer, gain=np.sqrt(2)):
 
 class DirectionClassifier(nn.Module):
     def __init__(
-        self, obs_shape, n_classes, hidden_dim, num_layers, dropout=0.0, residual=False
+        self,
+        obs_shape,
+        n_classes,
+        hidden_dim,
+        num_layers,
+        dropout=0.0,
+        residual=False,
+        activation="relu",
     ):
         super().__init__()
+        act_fn = {"relu": nn.ReLU, "gelu": nn.GELU, "silu": nn.SiLU}[activation]
         n_time, n_feat = obs_shape
         flat_dim = n_time * n_feat + 2 * n_feat  # flat + temporal mean + std
         self.projection = nn.Sequential(
-            _ortho_init(nn.Linear(flat_dim, hidden_dim)), nn.ReLU()
+            _ortho_init(nn.Linear(flat_dim, hidden_dim)), act_fn()
         )
         self.residual = residual
         blocks = []
         for _ in range(num_layers - 1):
-            block = [_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()]
+            block = [_ortho_init(nn.Linear(hidden_dim, hidden_dim)), act_fn()]
             if dropout > 0:
                 block.append(nn.Dropout(dropout))
             blocks.append(nn.Sequential(*block))
@@ -292,6 +301,7 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
         p["nlayers"],
         dropout=p.get("dropout", 0.0),
         residual=p.get("residual", False),
+        activation=p.get("activation", "relu"),
     ).to(DEVICE)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=p["lr"], weight_decay=p.get("wd", 5e-4)
