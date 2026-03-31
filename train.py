@@ -24,7 +24,7 @@ SEARCH_BUDGET = 90
 SEARCH_SEEDS = 2
 SEARCH_TRIALS = 20
 FINAL_SEEDS = 10
-FINAL_BUDGET = TRAIN_BUDGET_SECONDS  # 300s
+FINAL_BUDGET = 600  # 60s/seed × 10 seeds
 WINDOW_SIZE = (
     50  # window sweep: 50 > 20 > 10 (T47 linear analysis missed nonlinear patterns)
 )
