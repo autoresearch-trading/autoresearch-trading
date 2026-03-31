@@ -50,7 +50,7 @@ BEST_PARAMS = {
     # asymmetric barriers: symmetric (11/11) wins over tp=15/sl=11 and tp=9/sl=11
     "confidence_threshold": 0.0,  # confidence gating: 0 > 0.45 > 0.55 (gating hurts, same as r_min)
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
-    "dropout": 0.1,  # dropout experiment: testing 0.0, 0.1, 0.2
+    "dropout": 0.2,  # dropout experiment: testing 0.0, 0.1, 0.2
 }
 
 
