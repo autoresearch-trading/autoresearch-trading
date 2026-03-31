@@ -1,0 +1,20 @@
+[
+  {
+    "run": 1,
+    "phase": "Phase 1: 10 seeds vs 5 seeds",
+    "name": "control_5seeds",
+    "config": {"FINAL_SEEDS": 5, "FINAL_BUDGET": 300},
+    "results": {"sortino": 0.353, "passing": 9, "trades": 1270, "dd": 0.5458, "wr": 0.5504, "pf": 1.7123},
+    "score": 0.368,
+    "timestamp": "2026-03-31T22:50:00Z"
+  },
+  {
+    "run": 2,
+    "phase": "Phase 1: 10 seeds vs 5 seeds",
+    "name": "10seeds_300s",
+    "config": {"FINAL_SEEDS": 10, "FINAL_BUDGET": 300},
+    "results": {"sortino": 0.205, "passing": 3, "trades": 1284, "dd": 0.5616, "wr": 0.4961, "pf": 1.4457},
+    "score": 0.175,
+    "timestamp": "2026-03-31T23:10:00Z"
+  }
+]
