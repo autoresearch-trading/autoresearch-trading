@@ -50,6 +50,7 @@ BEST_PARAMS = {
     # asymmetric barriers: symmetric (11/11) wins over tp=15/sl=11 and tp=9/sl=11
     "confidence_threshold": 0.0,  # confidence gating: 0 > 0.45 > 0.55 (gating hurts, same as r_min)
     "use_uace": False,  # UACE properly tested: focal wins at all lr (best UACE=0.258 at lr=3e-4 vs focal=0.353)
+    "dropout": 0.1,  # dropout experiment: testing 0.0, 0.1, 0.2
 }
 
 
@@ -62,12 +63,14 @@ def _ortho_init(layer, gain=np.sqrt(2)):
 
 
 class DirectionClassifier(nn.Module):
-    def __init__(self, obs_shape, n_classes, hidden_dim, num_layers):
+    def __init__(self, obs_shape, n_classes, hidden_dim, num_layers, dropout=0.0):
         super().__init__()
         n_time, n_feat = obs_shape
         flat_dim = n_time * n_feat + 2 * n_feat  # flat + temporal mean + std
         layers = [_ortho_init(nn.Linear(flat_dim, hidden_dim)), nn.ReLU()]
         for _ in range(num_layers - 1):
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
             layers.extend([_ortho_init(nn.Linear(hidden_dim, hidden_dim)), nn.ReLU()])
         self.trunk = nn.Sequential(*layers)
         self.head = _ortho_init(nn.Linear(hidden_dim, n_classes), gain=0.01)
@@ -264,7 +267,9 @@ def train_one_model(train_envs, active_symbols, weights, obs_shape, p, budget, s
     y_t = torch.tensor(y, dtype=torch.long, device=DEVICE)
     w_t = torch.tensor(recency_w, dtype=torch.float32, device=DEVICE)
 
-    model = DirectionClassifier(obs_shape, 3, p["hdim"], p["nlayers"]).to(DEVICE)
+    model = DirectionClassifier(
+        obs_shape, 3, p["hdim"], p["nlayers"], dropout=p.get("dropout", 0.0)
+    ).to(DEVICE)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=p["lr"], weight_decay=p.get("wd", 5e-4)
     )
