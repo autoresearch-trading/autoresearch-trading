@@ -54,6 +54,8 @@ BEST_PARAMS = {
     "residual": False,  # residual sweep: False > True (skip connections hurt — 0.167 vs 0.353)
     "use_gce": False,  # GCE sweep: focal wins at all lr (best GCE=0.240@1e-3 vs focal=0.353)
     "gce_q": 0.7,  # GCE q parameter (0=MAE, 1=CE, 0.7=balanced) — unused when use_gce=False
+    "use_metalabeling": True,  # metalabeling experiment
+    "meta_threshold": 0.5,  # meta-model confidence threshold
 }
 
 
@@ -513,10 +515,111 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
     )
 
 
-def make_ensemble_fn(models, device, confidence_threshold=0.0):
+class MetaModel(nn.Module):
+    """Small binary classifier for metalabeling: should we trade or skip?"""
+
+    def __init__(self, input_dim, hidden_dim=32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x):
+        return self.net(x).squeeze(-1)
+
+
+def train_meta_model(primary_model, val_envs, active_symbols, params, device):
+    """Train a metalabeling model on validation data.
+
+    Collects directional predictions from the primary model, labels them
+    as 1 (profitable) or 0 (unprofitable), and trains a small binary MLP.
+    """
+    primary_model.eval()
+    meta_X = []
+    meta_y = []
+
+    for sym in active_symbols:
+        if sym not in val_envs:
+            continue
+        env = val_envs[sym]
+        fee_threshold = _cost_adjusted_threshold(env, params["fee_mult"])
+        obs, labels, indices = make_labeled_dataset(
+            env, MAX_HOLD_STEPS, fee_threshold, fee_threshold, max_samples=5000
+        )
+        if len(obs) == 0:
+            continue
+
+        with torch.no_grad():
+            X_t = torch.tensor(obs, dtype=torch.float32, device=device)
+            logits = primary_model(X_t)
+            probs = torch.softmax(logits, dim=1)
+            preds = logits.argmax(dim=1).cpu().numpy()
+
+        # Only keep directional predictions (long=1 or short=2)
+        dir_mask = preds != 0
+        if dir_mask.sum() == 0:
+            continue
+
+        probs_np = probs.cpu().numpy()[dir_mask]  # (n, 3) softmax probs
+        max_prob = probs_np.max(axis=1, keepdims=True)  # (n, 1) confidence
+        # Temporal stats from obs (mean + std per feature)
+        obs_dir = obs[dir_mask]  # (n, window, features)
+        t_mean = obs_dir.mean(axis=1)  # (n, features)
+        t_std = obs_dir.std(axis=1)  # (n, features)
+
+        # Meta features: softmax probs (3) + max_prob (1) + temporal stats (2*features)
+        meta_features = np.concatenate([probs_np, max_prob, t_mean, t_std], axis=1)
+        meta_X.append(meta_features)
+
+        # Meta labels: was the primary prediction correct?
+        preds_dir = preds[dir_mask]
+        labels_dir = labels[dir_mask]
+        correct = (preds_dir == labels_dir).astype(np.float32)
+        meta_y.append(correct)
+
+    if not meta_X:
+        return None
+
+    meta_X = np.concatenate(meta_X)
+    meta_y = np.concatenate(meta_y)
+
+    # Train meta-model
+    input_dim = meta_X.shape[1]
+    meta_model = MetaModel(input_dim, hidden_dim=32).to(device)
+    optimizer = torch.optim.Adam(meta_model.parameters(), lr=1e-3)
+
+    X_t = torch.tensor(meta_X, dtype=torch.float32, device=device)
+    y_t = torch.tensor(meta_y, dtype=torch.float32, device=device)
+
+    # Class weights for meta labels
+    pos_rate = meta_y.mean()
+    pos_weight = torch.tensor([(1 - pos_rate) / max(pos_rate, 0.01)], device=device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    meta_model.train()
+    for epoch in range(50):
+        perm = torch.randperm(len(X_t))
+        for i in range(0, len(X_t), 256):
+            batch_idx = perm[i : i + 256]
+            logits = meta_model(X_t[batch_idx])
+            loss = criterion(logits, y_t[batch_idx])
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    meta_model.eval()
+    return meta_model
+
+
+def make_ensemble_fn(
+    models, device, confidence_threshold=0.0, meta_model=None, meta_threshold=0.5
+):
     """Create ensemble policy function using argmax of summed logits.
 
     If confidence_threshold > 0, force flat when max softmax prob < threshold.
+    If meta_model is provided, gate directional predictions through it.
     """
 
     def fn(obs):
@@ -530,7 +633,19 @@ def make_ensemble_fn(models, device, confidence_threshold=0.0):
                 probs = torch.softmax(logits_sum, dim=-1)
                 if probs.max().item() < confidence_threshold:
                     return 0  # force flat when uncertain
-            return logits_sum.argmax(dim=-1).item()
+            action = logits_sum.argmax(dim=-1).item()
+
+            # Metalabeling gate: if directional, check meta-model
+            if meta_model is not None and action != 0:
+                probs = torch.softmax(logits_sum, dim=-1)
+                max_prob = probs.max(dim=-1, keepdim=True).values
+                t_mean = obs_t.mean(dim=1)
+                t_std = obs_t.std(dim=1)
+                meta_features = torch.cat([probs, max_prob, t_mean, t_std], dim=1)
+                meta_logit = meta_model(meta_features)
+                if torch.sigmoid(meta_logit).item() < meta_threshold:
+                    return 0  # meta-model says skip
+            return action
 
     return fn
 
@@ -629,13 +744,49 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
             print(
                 f"  WARNING: alpha={mean_accuracy:.3f} < 0.5, using single best model"
             )
-        ensemble_fn = make_ensemble_fn(
-            [models[best_seed_idx]], DEVICE, p.get("confidence_threshold", 0.0)
-        )
+        selected_models = [models[best_seed_idx]]
     else:
-        ensemble_fn = make_ensemble_fn(
-            models, DEVICE, p.get("confidence_threshold", 0.0)
-        )
+        selected_models = models
+
+    # Metalabeling: train meta-model on val data if enabled
+    meta_model = None
+    use_metalabeling = p.get("use_metalabeling", False)
+    meta_threshold = p.get("meta_threshold", 0.5)
+    if use_metalabeling:
+        if verbose:
+            print("  Training meta-model on val data...")
+        val_envs = {}
+        old_stdout3 = sys.stdout
+        try:
+            sys.stdout = open(os.devnull, "w")
+            for sym in active:
+                try:
+                    val_envs[sym] = make_env(
+                        sym,
+                        "val",
+                        window_size=WINDOW_SIZE,
+                        trade_batch=TRADE_BATCH,
+                        min_hold=MIN_HOLD,
+                    )
+                except Exception:
+                    pass
+        finally:
+            sys.stdout.close()
+            sys.stdout = old_stdout3
+        if val_envs:
+            meta_model = train_meta_model(
+                selected_models[0], val_envs, active, p, DEVICE
+            )
+            if verbose:
+                print(f"  Meta-model: {'trained' if meta_model else 'failed'}")
+
+    ensemble_fn = make_ensemble_fn(
+        selected_models,
+        DEVICE,
+        p.get("confidence_threshold", 0.0),
+        meta_model=meta_model,
+        meta_threshold=meta_threshold,
+    )
 
     sh, ps, tr, dd, wr, pf, sharpe, calmar, cvar = eval_policy(
         ensemble_fn, symbols, split=split, params=p
