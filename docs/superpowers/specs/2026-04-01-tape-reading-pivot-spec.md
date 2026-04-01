@@ -19,62 +19,68 @@ If we shuffle trades within each 100-trade batch and the model performs identica
 
 ## Phase 1: Signal Existence Tests (no new model needed)
 
-Simple statistical tests using existing data and infrastructure. Each test answers a specific question.
+Statistical tests on the RAW DATA (all 160 days, all 23 symbols). No train/val/test splits — these are data analysis questions, not model evaluations. Use time-series cross-validation where a model is involved.
+
+**Data source:** Raw parquet files in `data/trades/`, `data/orderbook/`, `data/funding/` — all dates, all symbols.
 
 ### Test 1.1: Shuffle Test
 
 **Question:** Does trade ordering within a batch matter?
 
 **Method:**
-1. Take current v11b features computed normally → baseline Sortino
-2. Shuffle trades randomly within each 100-trade batch before computing features → shuffled Sortino
-3. If shuffled ≈ baseline: sequence order doesn't matter, current summaries are sufficient
-4. If shuffled < baseline: sequence carries information our features partially capture
+1. Load raw trades for 8 representative symbols (mix of high/low liquidity)
+2. Compute 13 features normally at batch=100 across ALL dates
+3. Compute 13 features with trades shuffled randomly within each batch
+4. Compare feature-return correlations (not Sortino — no model needed)
+5. For each feature, compute `corr(feature[t], return[t+1])` in both cases
+6. If shuffled correlations ≈ normal correlations: order doesn't matter
+7. If shuffled correlations < normal correlations: sequence has signal
 
-**Implementation:** Add a `shuffle_within_batch=True` flag to `compute_features_v9`. Shuffle trade rows within each batch before computing features. Run training, compare.
+**Why correlations, not Sortino:** We want to measure whether the raw features carry more information when order is preserved. This doesn't require training a model — just statistics on the raw data.
 
-**Cost:** ~10 min (same model, same pipeline, one flag)
+**Implementation:** Standalone script `scripts/test_shuffle.py`.
+
+**Cost:** ~5 min (no model training, no cache rebuild)
 
 ### Test 1.2: Granularity Test
 
-**Question:** Do smaller batches (more steps, less aggregation) help?
+**Question:** Do smaller batches (more steps, less aggregation) reveal more predictability?
 
 **Method:**
-1. Current: trade_batch=100 (~1-2 sec per step for BTC)
-2. Test: trade_batch=25 (~0.3-0.5 sec per step, 4x more steps)
-3. Test: trade_batch=10 (~0.1-0.2 sec per step, 10x more steps)
-4. Same 13 features, same MLP, same training — only batch size changes
+1. Load raw trades for 8 representative symbols, ALL dates
+2. Compute features at batch=100, batch=25, batch=10
+3. For each granularity, compute feature-return cross-correlation at lag 1
+4. Compare: does finer granularity increase or decrease predictability?
 
 **What this tells us:**
-- If smaller batches help: finer granularity has more signal, worth pursuing
-- If smaller batches hurt: aggregation is actually a feature (noise reduction), and we should stay at 100
-- If no difference: signal lives at the feature level, not the granularity level
+- Finer = more predictable: aggregation loses signal, worth pursuing
+- Finer = less predictable: aggregation reduces noise, stay at 100
+- No difference: signal lives at feature level, not granularity level
 
-**Implementation:** Change `TRADE_BATCH` constant. Requires cache rebuild (~30 min per batch size). Window size may need adjustment (window=50 at batch=100 covers ~100 sec; window=50 at batch=10 covers ~10 sec — need to keep the same time horizon).
+**Important:** Compare correlations at the same time horizon. At batch=10, lag-1 covers 10 trades (~0.2 sec). At batch=100, lag-1 covers 100 trades (~2 sec). To compare fairly, also compute lag-10 at batch=10 (same time horizon as lag-1 at batch=100).
 
-**Cost:** ~40 min per batch size (cache rebuild + training)
+**Implementation:** Standalone script `scripts/test_granularity.py`.
 
-**Important:** When changing trade_batch, adjust window_size to maintain the same time coverage:
-- batch=100, window=50 → covers ~5000 trades (~100 sec)
-- batch=25, window=200 → covers ~5000 trades (~100 sec)
-- batch=10, window=500 → covers ~5000 trades (~100 sec)
+**Cost:** ~10 min (feature computation at 3 granularities, no model training)
 
-### Test 1.3: Linear Predictability at Fine Granularity
+### Test 1.3: Linear Predictability Across All Symbols
 
-**Question:** Can a simple linear model predict next-step direction from current features?
+**Question:** Can a simple linear model predict next-step direction, and is this universal?
 
 **Method:**
-1. Compute features at batch=10 (fine granularity)
-2. Label: sign of next-step return (binary: up/down)
-3. Train logistic regression on the 13 features
-4. Report: accuracy per symbol, mean accuracy across all 23 symbols
+1. Load raw trades for ALL 23 symbols, ALL dates
+2. Compute features at batch=100 (current granularity)
+3. Label: sign of next-step return (binary: up/down)
+4. Fit logistic regression per symbol using time-series cross-validation (walk-forward: train on first 80%, predict last 20%)
+5. Report accuracy per symbol and mean accuracy across all 23
 
 **What this tells us:**
-- Accuracy > 51% on most symbols: linear signal exists at fine granularity
-- Accuracy varies wildly across symbols: signal is symbol-specific, not universal
-- Accuracy ≈ 50% everywhere: no linear signal at this granularity
+- Accuracy > 51% on 20+ symbols: universal linear signal exists
+- Accuracy > 51% on 9 symbols only: signal is symbol-specific (confirms current state)
+- Accuracy ≈ 50% everywhere: no linear signal, need nonlinear or sequential model
+- Accuracy varies wildly: features are not universal
 
-**Implementation:** Standalone script, no changes to prepare.py or train.py.
+**Implementation:** Standalone script `scripts/test_linear_predictability.py`.
 
 **Cost:** ~5 min (logistic regression is fast)
 
@@ -83,14 +89,19 @@ Simple statistical tests using existing data and infrastructure. Each test answe
 **Question:** Are the feature distributions similar across symbols?
 
 **Method:**
-1. For each of the 13 features, compute the distribution (mean, std, skew, kurtosis) per symbol
-2. Compare distributions across symbols
-3. High similarity → features capture universal microstructure
-4. Low similarity → features are symbol-specific, tape reading will struggle
+1. Load raw trades for ALL 23 symbols, ALL dates
+2. Compute 13 features at batch=100 (using existing caches where available)
+3. For each feature, compute per-symbol statistics: mean, std, skew, kurtosis
+4. Compute pairwise Kolmogorov-Smirnov test between symbols for each feature
+5. Report: which features are universal (similar distribution across symbols) and which are symbol-specific
 
-**Implementation:** Standalone analysis script.
+**What this tells us:**
+- Features with similar distributions across symbols → good for universal tape reading
+- Features with different distributions → these are capturing symbol-specific characteristics, not microstructure
 
-**Cost:** ~2 min
+**Implementation:** Standalone script `scripts/test_universality.py`.
+
+**Cost:** ~2 min (statistics on cached features)
 
 ## Phase 1 Decision Gate
 
