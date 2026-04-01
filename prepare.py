@@ -713,14 +713,11 @@ V9_FEATURE_NAMES = [
     "buy_vwap_dev",  # 10 (v11, ablation: HELPS)
     "trade_arrival_rate",  # 11 (v11, ablation: HELPS)
     "r_20",  # 12 (v11, ablation: HELPS)
-    "open_close_ratio",  # 13 (v13: OI flow from open/close side distinction)
-    "net_oi_flow",  # 14 (v13: OI flow)
-    "directional_oi_pressure",  # 15 (v13: OI flow)
 ]
 # Dropped by ablation (HURTS): sell_vwap_dev, spread_bps, amihud_illiq, roll_measure
-# Tested and HURTS: r_btc_lag1 (cross-asset BTC return, v12 experiment — degraded alpha below ensemble threshold)
+# Tested and HURTS: r_btc_lag1 (v12), open_close_ratio/net_oi_flow/directional_oi_pressure (v13)
 
-V9_NUM_FEATURES = 16
+V9_NUM_FEATURES = 13
 V9_ROBUST_FEATURE_INDICES = {
     4,
     5,
@@ -765,11 +762,6 @@ def compute_features_v9(
     trades_df["norm_side"] = trades_df["side"].apply(normalize_side)
     trades_df["is_buy"] = trades_df["norm_side"] == "buy"
     trades_df["notional"] = trades_df["price"] * trades_df["qty"]
-    # Preserve open/close distinction for OI flow features
-    raw_side_lower = trades_df["side"].str.lower()
-    trades_df["is_open"] = raw_side_lower.str.startswith("open_")
-    trades_df["is_open_long"] = raw_side_lower == "open_long"
-    trades_df["is_open_short"] = raw_side_lower == "open_short"
 
     num_trades = len(trades_df)
     num_batches = num_trades // trade_batch
@@ -946,31 +938,6 @@ def compute_features_v9(
     # === Feature 16: r_20 (T35) ===
     r_20 = pd.Series(returns).rolling(window=20, min_periods=1).sum().fillna(0).values
 
-    # --- OI flow features from open/close side distinction ---
-    is_open_batched = (
-        trades_df["is_open"]
-        .values[: num_batches * trade_batch]
-        .reshape(num_batches, trade_batch)
-    )
-    is_open_long_batched = (
-        trades_df["is_open_long"]
-        .values[: num_batches * trade_batch]
-        .reshape(num_batches, trade_batch)
-    )
-    is_open_short_batched = (
-        trades_df["is_open_short"]
-        .values[: num_batches * trade_batch]
-        .reshape(num_batches, trade_batch)
-    )
-    # open_close_ratio: fraction of trades that open new positions [0, 1]
-    open_close_ratio = is_open_batched.mean(axis=1).astype(np.float64)
-    # net_oi_flow: (opens - closes) / batch_size, normalized to [-1, 1]
-    net_oi_flow = (2 * is_open_batched.mean(axis=1) - 1).astype(np.float64)
-    # directional_oi_pressure: (open_long - open_short) / batch_size
-    directional_oi_pressure = (
-        is_open_long_batched.sum(axis=1) - is_open_short_batched.sum(axis=1)
-    ).astype(np.float64) / trade_batch
-
     # --- Stack features ---
     # Ablation-validated: 4 of 8 new features kept, 4 dropped (HURTS)
     # Dropped: sell_vwap_dev, spread_bps_arr, amihud, roll_measure
@@ -989,9 +956,6 @@ def compute_features_v9(
             buy_vwap_dev,  # 10 (HELPS -0.029)
             trade_arrival_rate,  # 11 (HELPS -0.016)
             r_20,  # 12 (HELPS -0.017)
-            open_close_ratio,  # 13 (v13: OI flow)
-            net_oi_flow,  # 14 (v13: OI flow)
-            directional_oi_pressure,  # 15 (v13: OI flow)
         ]
     )
 
@@ -1150,7 +1114,7 @@ def normalize_features(features: np.ndarray, window: int = 1000) -> np.ndarray:
     return normalized
 
 
-_FEATURE_VERSION = "v13"  # v13: 16 features (v11b + 3 OI flow from open/close side)
+_FEATURE_VERSION = "v11b"  # v11b: 13 features + spread_bps for slippage modeling
 
 
 def _cache_key(symbol: str, start: str, end: str, trade_batch: int) -> str:

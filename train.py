@@ -14,7 +14,14 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from prepare import DEFAULT_SYMBOLS, TRAIN_BUDGET_SECONDS, evaluate, make_env
+from prepare import (
+    DEFAULT_SYMBOLS,
+    TRAIN_BUDGET_SECONDS,
+    TRAIN_START,
+    VAL_END,
+    evaluate,
+    make_env,
+)
 
 # ── Configuration ──────────────────────────────────────────────
 SEARCH_SYMBOLS = ["BTC", "ETH", "SOL", "DOGE", "AAVE"]
@@ -703,6 +710,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
                     window_size=WINDOW_SIZE,
                     trade_batch=TRADE_BATCH,
                     min_hold=MIN_HOLD,
+                    date_range=(TRAIN_START, VAL_END),  # train+val combined (124 days)
                 )
                 train_envs[sym] = env
                 env_weights[sym] = env.num_steps
