@@ -1613,8 +1613,28 @@ def evaluate(
     k = max(1, int(0.05 * len(returns)))
     cvar_95 = -np.mean(sorted_returns[:k])
 
+    # Probabilistic Sharpe Ratio (Bailey & Lopez de Prado, 2012)
+    # PSR = Φ((SR - 0) * sqrt(n-1) / sqrt(1 - skew*SR + (kurt-1)/4 * SR²))
+    # Answers: "what's the probability that the true Sharpe > 0?"
+    from scipy.stats import kurtosis as _kurt_fn
+    from scipy.stats import norm as _norm
+    from scipy.stats import skew as _skew_fn
+
+    n = len(returns)
+    if n > 2 and sharpe != 0:
+        skew_val = float(_skew_fn(returns))
+        kurt_val = float(_kurt_fn(returns, fisher=False))  # excess=False → raw kurtosis
+        denom = np.sqrt(1 - skew_val * sharpe + (kurt_val - 1) / 4 * sharpe**2)
+        if denom > 1e-10:
+            psr = float(_norm.cdf(sharpe * np.sqrt(n - 1) / denom))
+        else:
+            psr = 0.5
+    else:
+        psr = 0.5
+
     print(f"sortino: {sortino:.6f}")
     print(f"sharpe: {sharpe:.6f}")
+    print(f"psr: {psr:.4f}")
     print(f"calmar: {calmar:.6f}")
     print(f"cvar_95: {cvar_95:.6f}")
     print(f"num_trades: {total_trades}")
