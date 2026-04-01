@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 
-from prepare import compute_features_v9
+from prepare import V9_NUM_FEATURES, compute_features_v9
 
 
 def test_compute_orderbook_features_shape(make_orderbook):
@@ -49,7 +49,7 @@ def test_buy_vwap_dev_computed(make_trades, make_orderbook, make_funding):
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
     features, *_ = compute_features_v9(trades, ob, funding, trade_batch=100)
-    assert features.shape[1] == 13  # v11a feature count
+    assert features.shape[1] == V9_NUM_FEATURES
     # buy_vwap_dev = feature 10
     assert features[:, 10].shape[0] > 0
 
@@ -65,9 +65,9 @@ def test_trade_arrival_rate_positive(make_trades, make_orderbook, make_funding):
 
 
 def test_feature_count_v11a(make_trades, make_orderbook, make_funding):
-    """v11a should output exactly 13 features (9 v10 + 4 ablation-validated)."""
+    """Feature count should match V9_NUM_FEATURES."""
     trades = make_trades(n=500)
     ob = make_orderbook(n=125)
     funding = make_funding(n=10)
     features, *_ = compute_features_v9(trades, ob, funding, trade_batch=100)
-    assert features.shape[1] == 13
+    assert features.shape[1] == V9_NUM_FEATURES
