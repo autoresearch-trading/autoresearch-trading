@@ -472,6 +472,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
     all_sharpes = []
     all_calmars = []
     all_cvars = []
+    all_psrs = []
 
     for sym in symbols:
         try:
@@ -499,7 +500,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
 
             t, d = 0, 0.0
             wr, pf = 0.0, 0.0
-            sharpe_val, calmar_val, cvar_val = 0.0, 0.0, 0.0
+            sharpe_val, calmar_val, cvar_val, psr_val = 0.0, 0.0, 0.0, 0.5
             for ln in out.strip().split("\n"):
                 if ln.startswith("num_trades:"):
                     t = int(ln.split()[1])
@@ -511,6 +512,8 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
                     pf = float(ln.split()[1])
                 elif ln.startswith("sharpe:"):
                     sharpe_val = float(ln.split()[1])
+                elif ln.startswith("psr:"):
+                    psr_val = float(ln.split()[1])
                 elif ln.startswith("calmar:"):
                     calmar_val = float(ln.split()[1])
                 elif ln.startswith("cvar_95:"):
@@ -525,6 +528,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
                 all_sharpes.append(sharpe_val)
                 all_calmars.append(calmar_val)
                 all_cvars.append(cvar_val)
+                all_psrs.append(psr_val)
             if passed and wr > 0:
                 all_win_rates.append(wr)
                 all_profit_factors.append(pf)
@@ -538,6 +542,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
     mean_sharpe = float(np.mean(all_sharpes)) if all_sharpes else 0.0
     mean_calmar = float(np.mean(all_calmars)) if all_calmars else 0.0
     mean_cvar = float(np.mean(all_cvars)) if all_cvars else 0.0
+    mean_psr = float(np.mean(all_psrs)) if all_psrs else 0.5
 
     return (
         float(np.mean(passing)) if passing else 0.0,
@@ -549,6 +554,7 @@ def eval_policy(policy_fn, symbols, split="test", params=None):
         mean_sharpe,
         mean_calmar,
         mean_cvar,
+        mean_psr,
     )
 
 
@@ -825,7 +831,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         meta_threshold=meta_threshold,
     )
 
-    sh, ps, tr, dd, wr, pf, sharpe, calmar, cvar = eval_policy(
+    sh, ps, tr, dd, wr, pf, sharpe, calmar, cvar, psr = eval_policy(
         ensemble_fn, symbols, split=split, params=p
     )
     return (
@@ -840,6 +846,7 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
         sharpe,
         calmar,
         cvar,
+        psr,
     )
 
 
@@ -910,7 +917,7 @@ def objective(trial):
 
     try:
         t0 = time.time()
-        sh, ps, tr, dd, _, _, _, _, _, _, _ = full_run(
+        sh, ps, tr, dd, _, _, _, _, _, _, _, _ = full_run(
             SEARCH_SYMBOLS, p, SEARCH_BUDGET, SEARCH_SEEDS, split="val", verbose=False
         )
         elapsed = time.time() - t0
@@ -1009,8 +1016,10 @@ def main():
     )
     print(f"params: {bp}\n")
 
-    sh, ps, tr, dd, total_steps, total_updates, wr, pf, sharpe, calmar, cvar = full_run(
-        tradeable_symbols, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
+    sh, ps, tr, dd, total_steps, total_updates, wr, pf, sharpe, calmar, cvar, psr = (
+        full_run(
+            tradeable_symbols, bp, FINAL_BUDGET, FINAL_SEEDS, split="test", verbose=True
+        )
     )
 
     print("---")
@@ -1018,6 +1027,7 @@ def main():
     print(f"symbols_passing: {ps}/{len(tradeable_symbols)}")
     print(f"sortino: {sh:.6f}")
     print(f"sharpe: {sharpe:.6f}")
+    print(f"psr: {psr:.4f}")
     print(f"calmar: {calmar:.6f}")
     print(f"cvar_95: {cvar:.6f}")
     print(f"num_trades: {tr}")
