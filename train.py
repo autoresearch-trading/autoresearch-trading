@@ -710,7 +710,6 @@ def full_run(symbols, p, budget, n_seeds, split="test", verbose=True):
                     window_size=WINDOW_SIZE,
                     trade_batch=TRADE_BATCH,
                     min_hold=MIN_HOLD,
-                    date_range=(TRAIN_START, VAL_END),  # train+val combined (124 days)
                 )
                 train_envs[sym] = env
                 env_weights[sym] = env.num_steps
