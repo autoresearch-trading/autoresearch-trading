@@ -66,6 +66,20 @@ Per trade, 10 features from 2 data sources (trades + orderbook):
 - `open_interest` — same
 - `funding_rate` — available for 160 days but updates hourly, too slow to be per-trade context. Could be added later as a regime feature.
 
+## Sequence Length
+
+**200 trades** (~2-4 seconds of tape).
+
+Determined empirically from autocorrelation analysis of raw trade features:
+- `is_buy` and `log_return` have half-life of 1 trade (no persistence)
+- `is_open` has half-life of 20 trades (median), persists up to 500
+- `log_qty` has half-life of 18 trades (median), persists up to 500
+- 200 trades captures ~10× the median half-life of the persistent features
+
+The tape reading signal is in **position flow** (is_open) and **size clustering** (log_qty), not in buy/sell direction (is_buy). The model needs enough context to see a full accumulation/distribution cycle.
+
+Sweep {100, 200, 500} once the pipeline works.
+
 ## Label
 
 **Next-N-trade direction** (binary: did price go up or down over next N trades?)
@@ -78,7 +92,7 @@ Per trade, 10 features from 2 data sources (trades + orderbook):
 ### Option A: 1D CNN (simplest, try first)
 
 ```
-Input: (batch, seq_len=1000, 10)     — 1000 consecutive trades, 10 features each
+Input: (batch, seq_len=200, 10)      — 200 consecutive trades, 10 features each
 
 Conv1d(10 → 32, kernel=5, stride=1)  — local patterns (5-trade motifs)
 Conv1d(32 → 64, kernel=5, stride=2)  — wider patterns, downsample
@@ -123,7 +137,7 @@ Last hidden state → Linear(64 → 1, sigmoid)
 
 ### Data Loading
 
-- Each training sample: 1000 consecutive raw trades with aligned orderbook context + label
+- Each training sample: 200 consecutive raw trades with aligned orderbook context + label (direction of next 100 trades)
 - For each sample, load trades and align nearest-prior orderbook snapshot per trade
 - Samples drawn from ALL symbols — no per-symbol distinction during training
 - Random offset within each day to avoid alignment artifacts
@@ -132,9 +146,9 @@ Last hidden state → Linear(64 → 1, sigmoid)
 
 ### Scale
 
-Per symbol per day: ~140K trades → ~139 non-overlapping samples of 1000 trades
-Total: 25 symbols × 160 days × 139 samples ≈ **556K training samples**
-Each sample: 1000 trades × 6 features = 6000 floats
+Per symbol per day: ~140K trades → ~700 non-overlapping samples of 200 trades
+Total: 25 symbols × 160 days × 700 samples ≈ **2.8M training samples**
+Each sample: 200 trades × 10 features = 2000 floats
 
 This fits in memory on a single H100 (80GB). Can stream from disk if needed.
 
@@ -179,7 +193,7 @@ Build a PyTorch Dataset that:
 1. Loads raw trade parquet files per symbol per day
 2. Aligns each trade with nearest-prior orderbook snapshot (np.searchsorted on timestamps)
 3. Computes the 10 per-trade features (5 trade + 5 book-context)
-4. Returns (sequence, label) tuples of shape (1000, 10) and (1,)
+4. Returns (sequence, label) tuples of shape (200, 10) and (1,)
 5. Draws samples across all symbols and dates
 6. Precomputes aligned features per symbol-day and caches to disk (.npz) to avoid reprocessing
 
