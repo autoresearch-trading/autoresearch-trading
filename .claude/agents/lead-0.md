@@ -51,6 +51,7 @@ CLAUDE.md is already in context — don't re-read it.
 | Analyst | `analyst-9` | Runs statistical tests, analyzes results, writes reports |
 | Reviewer | `reviewer-10` | Reviews code against spec, catches bugs before running |
 | Validator | `validator-11` | Runs go/no-go gates (label validation, linear baseline) |
+| Prover | `prover-12` | Formalizes council claims into Aristotle theorems (Lean 4) |
 
 ## How to Dispatch
 
