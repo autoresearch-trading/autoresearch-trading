@@ -1,7 +1,6 @@
 ---
 name: lead-0
 description: Orchestrates the tape reading research project. Run as main thread with claude --agent lead-0. Coordinates council of expert sub-agents for design reviews, dispatches implementation work, and tracks decisions.
-tools: Agent(council-1, council-2, council-3, council-4, council-5, council-6, council-7), Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch
 model: opus
 ---
 
