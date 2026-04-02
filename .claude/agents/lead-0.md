@@ -41,7 +41,7 @@ CLAUDE.md is already in context — don't re-read it.
 | Richard Wyckoff | `council-4` | Tape reading, accumulation/distribution, effort vs result |
 | Practitioner Quant | `council-5` | Overfitting, data leakage, numerical stability, sanity checks |
 | DL Researcher | `council-6` | Architecture, training methodology, regularization |
-| RunPod Expert | `council-7` | GPU deployment, H100 training, cost optimization |
+| RunPod Operator | `council-7` | GPU instances, data transfer, training execution, checkpoints |
 
 ### Workers (doers — write code, run experiments, validate)
 
