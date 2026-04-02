@@ -71,30 +71,36 @@ This reduces noise (one order = one event, not multiple rows) and captures order
 
 ## Input Representation
 
-Per order event, 12 features from 2 data sources (trades + orderbook):
+Per order event, 14 features from 2 data sources (trades + orderbook):
 
-**From trade events (7 features):**
+**From trade events (9 features):**
 ```
-1. log_return:      log(vwap / prev_event_vwap)          — relative price change
-2. log_total_qty:   log(total_qty / median_event_qty)     — relative order size
-3. is_buy:          1 if buy, 0 if sell
-4. is_open:         fraction of fills that are opens [0,1] — position flow signal
-5. time_delta:      log(ts - prev_event_ts + 1)           — urgency
-6. num_fills:       log(fill count)                        — order complexity
-7. price_impact:    (last_fill - first_fill) / mid         — how much the order walked the book
+1. log_return:        log(vwap / prev_event_vwap)                — relative price change
+2. log_total_qty:     log(total_qty / median_event_qty)           — relative order size
+3. is_buy:            1 if buy, 0 if sell
+4. is_open:           fraction of fills that are opens [0,1]      — position flow (Wyckoff's Composite Operator)
+5. time_delta:        log(ts - prev_event_ts + 1)                 — urgency
+6. num_fills:         log(fill count)                              — order complexity
+7. price_impact:      (last_fill - first_fill) / mid               — how much the order walked the book
+8. effort_vs_result:  log_total_qty - log(abs(log_return) + 1e-8)  — Wyckoff: high = absorption, low = breakout
+9. is_climax:         1 if qty > 2σ AND |return| > 2σ, else 0      — Wyckoff: buying/selling climax
 ```
 
 **From orderbook (aligned by nearest prior snapshot, 5 features):**
 ```
-8.  log_spread:      log(best_ask - best_bid + 1e-10)                   — current spread
-9.  imbalance_L1:    (bid_qty_L1 - ask_qty_L1) / (bid_qty_L1 + ask_qty_L1)  — top of book imbalance
-10. imbalance_L5:    (bid_qty_L1:5 - ask_qty_L1:5) / (bid_qty_L1:5 + ask_qty_L1:5)  — near book imbalance
-11. depth_ratio:     log(total_bid_qty / total_ask_qty)                  — deep book asymmetry
-12. trade_vs_mid:    (event_vwap - mid) / spread                        — where in spread this event executed
+10. log_spread:      log(best_ask - best_bid + 1e-10)                   — current spread
+11. imbalance_L1:    (bid_qty_L1 - ask_qty_L1) / (bid_qty_L1 + ask_qty_L1)  — top of book imbalance
+12. imbalance_L5:    (bid_qty_L1:5 - ask_qty_L1:5) / (bid_qty_L1:5 + ask_qty_L1:5)  — near book imbalance
+13. depth_ratio:     log(total_bid_qty / total_ask_qty)                  — deep book asymmetry
+14. trade_vs_mid:    (event_vwap - mid) / spread                        — where in spread this event executed
 ```
 
-**Why level-separated imbalance:**
-- `imbalance_L1` (best bid/ask only): most predictive, changes fastest, captures immediate liquidity
+**Why these 14:**
+- Features 1-7 capture the order event itself (what happened, how aggressively)
+- Feature 8 (effort_vs_result) is Wyckoff's core insight: volume/price divergence = absorption = reversal
+- Feature 9 (is_climax) flags extreme events that mark phase transitions
+- Features 10-14 capture the market context (liquidity landscape when it happened)
+- `imbalance_L1` (best bid/ask): most predictive, captures immediate liquidity
 - `imbalance_L5` (top 5 levels): captures near-term supply/demand
 - `depth_ratio` (all levels): captures structural positioning
 
@@ -128,7 +134,7 @@ Binary per horizon: did price go up or down?
 
 **Before training ANY neural network, fit logistic regression on the same data.**
 
-Flatten the (200, 12) input to 2400 features, fit logistic regression per horizon. Report accuracy.
+Flatten the (200, 14) input to 2800 features, fit logistic regression per horizon. Report accuracy.
 
 If logistic regression achieves < 50.5% accuracy on all horizons across all symbols: **STOP.** The signal does not exist at this granularity, and a neural network will just overfit.
 
@@ -141,10 +147,10 @@ If logistic regression achieves > 51%: clear signal, neural network should impro
 ### Option A: 1D CNN (simplest, try first)
 
 ```
-Input: (batch, seq_len=200, 12)      — 200 order events, 12 features each
+Input: (batch, seq_len=200, 14)      — 200 order events, 14 features each
 
-BatchNorm1d(12)                       — normalize across features
-Conv1d(12 → 32, kernel=5, stride=1)   — local patterns (5-event motifs)
+BatchNorm1d(14)                       — normalize across features
+Conv1d(14 → 32, kernel=5, stride=1)   — local patterns (5-event motifs)
 BatchNorm1d(32) + ReLU
 Conv1d(32 → 64, kernel=5, stride=2)   — wider patterns, downsample
 BatchNorm1d(64) + ReLU
@@ -159,9 +165,9 @@ Linear(64 → 4, sigmoid)               — 4 horizon predictions
 ### Option B: Transformer (if CNN shows signal)
 
 ```
-Input: (batch, seq_len=200, 12)
+Input: (batch, seq_len=200, 14)
 
-Linear(12 → 64)                       — project to model dim
+Linear(14 → 64)                       — project to model dim
 PositionalEncoding(64)                 — sequence position
 TransformerEncoder(64, 4 heads, 2 layers)
 CLS token pooling → Linear(64 → 4, sigmoid)
@@ -172,9 +178,9 @@ CLS token pooling → Linear(64 → 4, sigmoid)
 ### Option C: LSTM (baseline sequential)
 
 ```
-Input: (batch, seq_len=200, 12)
+Input: (batch, seq_len=200, 14)
 
-LSTM(12 → 64, 2 layers, bidirectional=False)
+LSTM(14 → 64, 2 layers, bidirectional=False)
 Last hidden state → Linear(64 → 4, sigmoid)
 
 ~80K parameters
@@ -196,7 +202,7 @@ Last hidden state → Linear(64 → 4, sigmoid)
 
 Per symbol per day: ~140K trades → ~50-70K order events → ~300 non-overlapping samples of 200 events
 Total: 25 symbols × 160 days × 300 samples ≈ **1.2M training samples**
-Each sample: 200 events × 12 features = 2400 floats
+Each sample: 200 events × 14 features = 2800 floats
 
 This fits in memory on a single H100 (80GB). Can stream from disk if needed.
 
@@ -225,7 +231,7 @@ This fits in memory on a single H100 (80GB). Can stream from disk if needed.
 - If label is noise: stop or redesign labels
 
 ### Phase 0.5: Linear Baseline
-- Logistic regression on flattened (200×12=2400) features
+- Logistic regression on flattened (200×12=2800) features
 - If < 50.5% on all horizons: stop
 - This is the floor the neural network must beat
 
@@ -257,15 +263,15 @@ Build a PyTorch Dataset that:
 1. Loads raw trade parquet files per symbol per day
 2. Groups same-timestamp trades into order events
 3. Aligns each event with nearest-prior orderbook snapshot (np.searchsorted on timestamps)
-4. Computes the 12 per-event features (7 trade + 5 book-context)
-5. Returns (sequence, label) tuples of shape (200, 12) and (4,)
+4. Computes the 14 per-event features (9 trade + 5 book-context)
+5. Returns (sequence, label) tuples of shape (200, 14) and (4,)
 6. Draws samples across all symbols and dates
 7. Precomputes aligned features per symbol-day and caches to disk (.npz) to avoid reprocessing
 
 Deliverable: `tape_dataset.py`
 
 ### Step 1.5: Linear Baseline (local, 10 min)
-- Flatten (200, 12) → 2400 features
+- Flatten (200, 14) → 2800 features
 - Logistic regression per horizon, per symbol
 - Deliverable: accuracy report, go/no-go decision
 
