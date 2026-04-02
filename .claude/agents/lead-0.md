@@ -41,13 +41,13 @@ CLAUDE.md is already in context — don't re-read it.
 | Richard Wyckoff | `council-4` | Tape reading, accumulation/distribution, effort vs result |
 | Practitioner Quant | `council-5` | Overfitting, data leakage, numerical stability, sanity checks |
 | DL Researcher | `council-6` | Architecture, training methodology, regularization |
-| RunPod Operator | `runpod-7` | GPU instances, data transfer, training execution, checkpoints |
 
 ### Workers (doers — write code, run experiments, validate)
 
 | Agent | Codename | Role |
 |-------|----------|------|
-| Builder | `builder-8` | Writes code, runs tests, builds pipelines |
+| RunPod Operator | `runpod-7` | GPU instances, data transfer, training execution, checkpoints |
+| Builder | `builder-8` | Writes model code, training loops, tests |
 | Analyst | `analyst-9` | Runs statistical tests, analyzes results, writes reports |
 | Reviewer | `reviewer-10` | Reviews code against spec, catches bugs before running |
 | Validator | `validator-11` | Runs go/no-go gates (label validation, linear baseline) |
