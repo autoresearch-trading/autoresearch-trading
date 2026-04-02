@@ -32,21 +32,39 @@ event_type: fulfill_taker      (fulfill_taker/fulfill_maker — new, collecting 
 
 ## Input Representation
 
-Per trade, 6 features:
+Per trade, 10 features from 2 data sources (trades + orderbook):
+
+**From trades (per trade):**
 ```
-1. log_return:    log(price / prev_price)         — relative price change
-2. log_qty:       log(qty / median_qty)           — relative size
-3. is_buy:        1 if buy (open_long/close_short), 0 if sell
-4. is_open:       1 if opening new position, 0 if closing
-5. time_delta:    log(ts - prev_ts + 1)           — time between trades (log-scaled)
-6. side_encoded:  0=open_long, 1=close_long, 2=open_short, 3=close_short (or one-hot)
+1. log_return:      log(price / prev_price)         — relative price change
+2. log_qty:         log(qty / median_qty)            — relative size
+3. is_buy:          1 if buy (open_long/close_short), 0 if sell
+4. is_open:         1 if opening position, 0 if closing
+5. time_delta:      log(ts - prev_ts + 1)            — time between trades (log-scaled)
 ```
 
-Why these:
-- `log_return` and `log_qty` are scale-invariant — same representation for BTC at $68K and DOGE at $0.17
-- `is_buy` and `is_open` are the signals we've been ignoring
-- `time_delta` captures urgency — fast sequences mean different things than slow ones
+**From orderbook (aligned to each trade by nearest prior snapshot):**
+```
+6. log_spread:      log(best_ask - best_bid + 1e-10) — spread at time of trade
+7. book_imbalance:  (bid_depth - ask_depth) / (bid_depth + ask_depth)  — who has more size
+8. bid_depth_norm:  log(total_bid_qty / median_depth) — how thick is the bid
+9. ask_depth_norm:  log(total_ask_qty / median_depth) — how thick is the ask
+10. trade_vs_mid:   (trade_price - mid) / spread      — where in the spread did this trade execute
+```
+
+**Why these 10:**
+- Features 1-5 capture the trade itself (what happened)
+- Features 6-10 capture the market context (what the book looked like when it happened)
+- A buy hitting a thin ask (low ask_depth_norm, high trade_vs_mid) is aggressive — the model needs to see this
 - All features are relative/normalized — no absolute prices or sizes that differ across symbols
+
+**Orderbook alignment:** Each trade gets the most recent orderbook snapshot where `ob.ts_ms <= trade.ts_ms`. Orderbook is sampled every ~3 seconds, trades happen every ~10-20ms, so many consecutive trades share the same book state. This is correct — the book context doesn't change between snapshots.
+
+**Not included (only available from Apr 1, not 160 days):**
+- `cause` (liquidation flag) — would be very valuable but only 1 day of data
+- `event_type` (taker/maker) — same
+- `open_interest` — same
+- `funding_rate` — available for 160 days but updates hourly, too slow to be per-trade context. Could be added later as a regime feature.
 
 ## Label
 
@@ -60,15 +78,15 @@ Why these:
 ### Option A: 1D CNN (simplest, try first)
 
 ```
-Input: (batch, seq_len=1000, 6)     — 1000 consecutive trades
+Input: (batch, seq_len=1000, 10)     — 1000 consecutive trades, 10 features each
 
-Conv1d(6 → 32, kernel=5, stride=1)  — local patterns (5-trade motifs)
-Conv1d(32 → 64, kernel=5, stride=2) — wider patterns, downsample
-Conv1d(64 → 64, kernel=5, stride=2) — wider still
-GlobalAvgPool                        — compress to fixed length
-Linear(64 → 1, sigmoid)             — binary direction
+Conv1d(10 → 32, kernel=5, stride=1)  — local patterns (5-trade motifs)
+Conv1d(32 → 64, kernel=5, stride=2)  — wider patterns, downsample
+Conv1d(64 → 64, kernel=5, stride=2)  — wider still
+GlobalAvgPool                         — compress to fixed length
+Linear(64 → 1, sigmoid)              — binary direction
 
-~50K parameters
+~55K parameters
 ```
 
 Why 1D CNN first:
@@ -80,10 +98,10 @@ Why 1D CNN first:
 ### Option B: Transformer (if CNN shows signal)
 
 ```
-Input: (batch, seq_len=1000, 6)
+Input: (batch, seq_len=1000, 10)
 
-Linear(6 → 64)                       — project to model dim
-PositionalEncoding(64)                — sequence position
+Linear(10 → 64)                       — project to model dim
+PositionalEncoding(64)                 — sequence position
 TransformerEncoder(64, 4 heads, 2 layers)
 CLS token pooling → Linear(64 → 1, sigmoid)
 
@@ -93,22 +111,24 @@ CLS token pooling → Linear(64 → 1, sigmoid)
 ### Option C: LSTM (baseline sequential)
 
 ```
-Input: (batch, seq_len=1000, 6)
+Input: (batch, seq_len=1000, 10)
 
-LSTM(6 → 64, 2 layers, bidirectional=False)
+LSTM(10 → 64, 2 layers, bidirectional=False)
 Last hidden state → Linear(64 → 1, sigmoid)
 
-~70K parameters
+~75K parameters
 ```
 
 ## Training Strategy
 
 ### Data Loading
 
-- Each training sample: 1000 consecutive raw trades + label (direction of next 100 trades)
+- Each training sample: 1000 consecutive raw trades with aligned orderbook context + label
+- For each sample, load trades and align nearest-prior orderbook snapshot per trade
 - Samples drawn from ALL symbols — no per-symbol distinction during training
 - Random offset within each day to avoid alignment artifacts
 - Shuffle across symbols and dates each epoch
+- Orderbook alignment: precompute per-symbol per-day to avoid repeated joins
 
 ### Scale
 
@@ -156,10 +176,12 @@ Only after Phase 1 targets are met:
 ### Step 1: Data Pipeline (local CPU)
 
 Build a PyTorch Dataset that:
-1. Memory-maps raw trade parquet files
-2. Returns (sequence, label) tuples of shape (1000, 6) and (1,)
-3. Draws samples across all symbols and dates
-4. Handles the open/close side encoding
+1. Loads raw trade parquet files per symbol per day
+2. Aligns each trade with nearest-prior orderbook snapshot (np.searchsorted on timestamps)
+3. Computes the 10 per-trade features (5 trade + 5 book-context)
+4. Returns (sequence, label) tuples of shape (1000, 10) and (1,)
+5. Draws samples across all symbols and dates
+6. Precomputes aligned features per symbol-day and caches to disk (.npz) to avoid reprocessing
 
 Deliverable: `tape_dataset.py`
 
