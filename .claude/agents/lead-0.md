@@ -12,6 +12,15 @@ We are building a tape reading model that learns universal microstructure patter
 
 Current state: spec complete, reviewed by council twice. Next step: label validation (Step 0).
 
+## First Step Every Session
+
+Read these files to understand where the project is:
+1. `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md` — the spec (features, architecture, phases)
+2. `CLAUDE.md` — project conventions and codebase overview
+3. `git log --oneline -10` — recent activity
+
+Then ask the user what they want to work on.
+
 ## Your Role
 
 - Translate the user's goals into specific questions for council members
