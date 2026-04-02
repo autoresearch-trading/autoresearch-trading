@@ -64,14 +64,19 @@ Per order event (preliminary features computed during grouping):
 ```
 1. log_return:      log(vwap / prev_event_vwap)
 2. log_total_qty:   log(total_qty / rolling_median_event_qty)  — rolling 1000-event median, causal
-3. is_buy:          1 if buy side, 0 if sell
-4. is_open:         fraction of fills that are opens (0 to 1)
-5. time_delta:      log(ts - prev_event_ts + 1)
-6. num_fills:       log(number of fills in this event)
-7. book_walk:       abs(last_fill_price - first_fill_price) / max(spread, 1e-8 * mid) — unsigned, spread-normalized
+3. is_open:         fraction of fills that are opens (0 to 1)
+4. time_delta:      log(ts - prev_event_ts + 1)
+5. num_fills:       log(number of fills in this event)
+6. book_walk:       abs(last_fill_price - first_fill_price) / max(spread, 1e-8 * mid) — unsigned, spread-normalized
 ```
 
-**Validation required (Step 0):** The same-timestamp = same-order assumption must be empirically verified on Pacifica data before building the pipeline. Check for mixed-side fills at same timestamp and extreme fill counts. See Step 0 for details.
+**`is_buy` dropped (council round 5):** 59% of pre-April events have ambiguous direction (exchange reports both counterparties at same timestamp). `is_buy` had half-life of 1 event (no persistence). Directional info is already in `log_return` (signed price) and `trade_vs_mid` (execution location vs midpoint). Keeping it would create a pre/post-April distributional discontinuity. See `docs/council-reviews/2026-04-02-council-4-tape-viability.md`.
+
+**Dedup required before grouping (council round 5):** The exchange reports both counterparties of each fill as separate rows. 30-74% of raw rows are duplicated buyer/seller pairs. `trade_id` is always empty.
+- **Pre-April data:** `df.drop_duplicates(subset=['ts_ms', 'qty', 'price'], keep='first')` — dedup on `(ts_ms, qty, price)` WITHOUT `side` (buyer/seller pairs differ on `side`, so including it removes nothing). See `docs/council-reviews/2026-04-02-council-5-dedup-direction.md`.
+- **April+ data:** Filter to `event_type == 'fulfill_taker'` — handles both dedup and direction identification in one step. Verify `event_type` is non-null for >99% of rows before using this filter.
+
+**Validation required (Step 0):** The same-timestamp = same-order assumption must be empirically verified on Pacifica data before building the pipeline. Check for mixed-side fills at same timestamp and extreme fill counts. After dedup, 59% of events still contain both buy+sell fills (exchange mechanic, not data quality issue). See Step 0 for details.
 
 This reduces noise (one order = one event, not multiple rows) and captures order-level signals (an order that fills across 5 price levels is more aggressive than one that fills at a single price).
 
@@ -79,59 +84,65 @@ This reduces noise (one order = one event, not multiple rows) and captures order
 
 ## Input Representation
 
-Per order event, 18 features from 2 data sources (trades + orderbook):
+Per order event, 17 features from 2 data sources (trades + orderbook):
 
-**From trade events (10 features):**
+**From trade events (9 features):**
 ```
 1.  log_return:        log(vwap / prev_event_vwap)                — relative price change
 2.  log_total_qty:     log(total_qty / rolling_median_event_qty)   — relative order size (rolling 1000-event median, causal)
-3.  is_buy:            1 if buy, 0 if sell
-4.  is_open:           fraction of fills that are opens [0,1]      — position flow (Wyckoff's Composite Operator)
-5.  time_delta:        log(ts - prev_event_ts + 1)                 — urgency
-6.  num_fills:         log(fill count)                              — order complexity
-7.  book_walk:         abs(last_fill - first_fill) / max(spread, 1e-8 * mid) — how much the order walked the book (unsigned, spread-normalized; renamed from price_impact to avoid collision with the theoretical concept of permanent price impact — Kyle fix, round 4)
-8.  effort_vs_result:  clip(log_total_qty - log(abs(return) + 1e-6), -5, 5) — Wyckoff: high = absorption, low = breakout (uses median-normalized log_total_qty from feature 2, not raw log(qty) — practitioner fix, round 4)
-9.  climax_score:      clip(min(qty_zscore, return_zscore), 0, 5)  — Wyckoff: buying/selling climax intensity (rolling 1000-event σ)
-10. prev_seq_time_span: log(last_ts - first_ts + 1) for the PREVIOUS 200-event window — context: fast or slow tape (no lookahead)
+3.  is_open:           fraction of fills that are opens [0,1]      — position flow (Wyckoff's Composite Operator)
+4.  time_delta:        log(ts - prev_event_ts + 1)                 — urgency
+5.  num_fills:         log(fill count)                              — order complexity
+6.  book_walk:         abs(last_fill - first_fill) / max(spread, 1e-8 * mid) — how much the order walked the book (unsigned, spread-normalized; renamed from price_impact to avoid collision with the theoretical concept of permanent price impact — Kyle fix, round 4)
+7.  effort_vs_result:  clip(log_total_qty - log(abs(return) + 1e-6), -5, 5) — Wyckoff: high = absorption, low = breakout (uses median-normalized log_total_qty from feature 2, not raw log(qty) — practitioner fix, round 4)
+8.  climax_score:      clip(min(qty_zscore, return_zscore), 0, 5)  — Wyckoff: buying/selling climax intensity (rolling 1000-event σ)
+9.  prev_seq_time_span: log(last_ts - first_ts + 1) for the PREVIOUS 200-event window — context: fast or slow tape (no lookahead)
 ```
 
-**Notes on council fixes (rounds 1-3):**
+**Notes on council fixes (rounds 1-5):**
+- `is_buy` dropped (council round 5): 59% of pre-April events have ambiguous direction (exchange reports both counterparties). Half-life of 1 = no persistence. Info already in `log_return` + `trade_vs_mid`. See council-4 and council-5 reviews.
 - `log_total_qty` normalized by rolling 1000-event median (not global/daily — prevents lookahead). First 1000 events of each day pre-warmed from prior day or masked from training.
-- `book_walk` (renamed from `price_impact`, Kyle fix round 4) is unsigned (direction already in `is_buy`) and spread-normalized for cross-symbol comparability (Cont fix, round 3). Guard against zero spread with `max(spread, 1e-8 * mid)`.
+- `book_walk` (renamed from `price_impact`, Kyle fix round 4) is unsigned and spread-normalized for cross-symbol comparability (Cont fix, round 3). Guard against zero spread with `max(spread, 1e-8 * mid)`.
 - `effort_vs_result` clipped to [-5, 5]; epsilon tightened from 1e-4 to 1e-6 to preserve tick-level absorption detection (Wyckoff fix, round 3). At 1e-4, BTC absorption events below 6.8 points were masked.
 - `climax_score` replaced binary `is_climax` — continuous intensity score provides gradient signal for near-climax events and captures climax clustering (Kyle/Wyckoff fix, round 3). Uses rolling 1000-event σ (not global) to prevent lookahead bias.
 - `prev_seq_time_span` replaced `seq_time_span` — original used the 200th event's timestamp, which is hard lookahead when computing features for earlier events in the window (practitioner fix, round 3). Now uses the preceding window's time span, which is always available.
 
-**From orderbook (aligned by nearest prior snapshot, 8 features):**
+**From orderbook (aligned by nearest prior snapshot, ~24s cadence, 10 levels per side; 8 features):**
 ```
-11. log_spread:        log((best_ask - best_bid) / mid + 1e-10)           — relative spread (mid-normalized for cross-symbol comparability)
-12. imbalance_L1:      (bid_notional_L1 - ask_notional_L1) / (bid_notional_L1 + ask_notional_L1)  — top of book imbalance (notional, not raw qty)
-13. imbalance_L5:      weighted_sum(bid_notional_L1:5 - ask_notional_L1:5) / sum — near book imbalance (inverse-level weighted: 1.0, 0.5, 0.33, 0.25, 0.2)
-14. depth_ratio:       log(max(total_bid_notional, 1e-6) / max(total_ask_notional, 1e-6)) — deep book asymmetry in dollar terms (epsilon-guarded, Cont fix round 4: notional not raw qty for cross-symbol comparability)
-15. trade_vs_mid:      clip((event_vwap - mid) / max(spread, 1e-8 * mid), -5, 5) — where in spread this event executed (clipped, zero-spread guarded)
-16. delta_imbalance_L1: imbalance_L1 - prev_event_imbalance_L1            — book motion between events (carry-forward between snapshots; Cont fix)
-17. kyle_lambda:       Cov(Δmid, signed_notional) / Var(signed_notional) over rolling 50 events — market maker's price updating coefficient (information regime indicator)
-18. cum_ofi_20:        rolling sum of OFI (Cont 2014) over last 20 book snapshots, normalized by rolling 20-snapshot total notional volume, forward-filled to events — dimensionless rolling order flow imbalance (Cont fix, round 4: "sum of OFIs" not "sum of delta-OFIs" which telescopes to a two-point difference; normalized for cross-symbol comparability)
+10. log_spread:        log((best_ask - best_bid) / mid + 1e-10)           — relative spread (mid-normalized for cross-symbol comparability)
+11. imbalance_L1:      (bid_notional_L1 - ask_notional_L1) / (bid_notional_L1 + ask_notional_L1)  — top of book imbalance (notional, not raw qty)
+12. imbalance_L5:      weighted_sum(bid_notional_L1:5 - ask_notional_L1:5) / sum — near book imbalance (inverse-level weighted: 1.0, 0.5, 0.33, 0.25, 0.2; uses up to 5 of 10 available levels)
+13. depth_ratio:       log(max(total_bid_notional, 1e-6) / max(total_ask_notional, 1e-6)) — deep book asymmetry in dollar terms (epsilon-guarded, Cont fix round 4: notional not raw qty for cross-symbol comparability)
+14. trade_vs_mid:      clip((event_vwap - mid) / max(spread, 1e-8 * mid), -5, 5) — where in spread this event executed (clipped, zero-spread guarded). Also serves as continuous direction proxy (positive = executed at ask = buy-side; negative = at bid = sell-side)
+15. delta_imbalance_L1: imbalance_L1 - prev_event_imbalance_L1            — book motion between events (carry-forward between snapshots; ~90% zero at 24s cadence with ~10.6 events/snapshot — sparsity is informative; Cont fix)
+16. kyle_lambda:       Cov(Δmid_snapshot, cum_signed_notional_snapshot) / Var(cum_signed_notional_snapshot) over rolling 50 OB snapshots (~20 min), forward-filled to events — market maker's price updating coefficient (information regime indicator). Per-SNAPSHOT computation, not per-event (council round 5: event-level had ~2 effective observations per window)
+17. cum_ofi_5:         rolling sum of OFI (Cont 2014, piecewise formula) over last 5 book snapshots (~120s at 24s cadence), normalized by rolling 5-snapshot total notional volume, forward-filled to events — dimensionless rolling order flow imbalance. Sweep {3, 5, 10} after baseline.
 ```
 
-**Notes on orderbook features (round 3 fixes):**
+**Notes on orderbook features (rounds 3-5):**
+- **OB cadence is ~24 seconds** (measured), not ~3s. 10 levels per side (measured), not 25. ~10.6 order events per snapshot on BTC. (data-eng-13 fix, round 5)
 - `log_spread` normalized by mid price for cross-symbol/cross-regime comparability (Cont fix).
-- `imbalance_L1/L5` use notional (qty × price) not raw qty — a 1 BTC bid ≠ 100 SOL bid in dollar terms. L5 uses inverse-level weighting (L1 is 5-10x more predictive than L5).
-- `depth_ratio` epsilon-guarded — one-sided book during flash crashes produces log(0) = -inf (practitioner fix). **Round 4 fix:** uses notional (qty × price), not raw qty — a 1 BTC bid ≠ 100,000 FARTCOIN bid in dollar terms. BatchNorm cannot rescue cross-symbol scale contamination within the same feature channel (Cont fix).
-- `trade_vs_mid` clipped to [-5, 5] and zero-spread guarded (practitioner fix).
-- `delta_imbalance_L1` will be ~95% zero due to 3s snapshot cadence vs ~50ms event rate. Fix: carry forward the last non-zero delta value for all events between two snapshots. Day boundaries: pre-warm from prior day or mask first event (practitioner fix).
-- `kyle_lambda` (NEW, round 3): rolling estimate of market maker's price updating coefficient. High λ = informed flow regime, low λ = noise regime. Port from existing `prepare.py` lines 816-827. **Must use Δmid (LOB midpoint change between events), NOT Δvwap** — using Δvwap conflates intra-order book walk (already captured by feature 7) with the market maker's information-driven price update, biasing λ upward for large orders even under noise trading (Kyle fix, round 4). **Must use signed_notional = total_qty × vwap × (±1)**, not raw signed_qty, for cross-symbol dimensional consistency (Cont fix, round 4).
-- `cum_ofi_20` (NEW, round 3): rolling sum of OFI over 20 book snapshots. Single-step `delta_imbalance_L1` is too noisy; the rolling cumulative sum is substantially more predictive at 50-100 event horizons (Cont 2014 fix). **Round 4 clarifications:** (a) OFI at each snapshot = notional delta-bid minus notional delta-ask at L1 (Cont 2014 formulation); (b) "rolling sum of OFI" not "sum of OFI changes" — the latter telescopes to a two-point difference, losing intermediate information; (c) normalized by rolling 20-snapshot total notional to produce a dimensionless cross-symbol-comparable value; (d) updates only when a new snapshot arrives (same carry-forward cadence as delta_imbalance_L1).
+- `imbalance_L1/L5` use notional (qty × price) not raw qty — a 1 BTC bid ≠ 100 SOL bid in dollar terms. L5 uses inverse-level weighting (L1 is 5-10x more predictive than L5). Uses up to 5 of 10 available levels.
+- `depth_ratio` epsilon-guarded — one-sided book during flash crashes produces log(0) = -inf (practitioner fix). **Round 4 fix:** uses notional (qty × price), not raw qty (Cont fix).
+- `trade_vs_mid` clipped to [-5, 5] and zero-spread guarded (practitioner fix). **Round 5:** now serves double duty as continuous direction proxy (replaces dropped `is_buy`). Positive = executed above mid (buy-side), negative = below mid (sell-side). This is the Lee-Ready classification in continuous form.
+- `delta_imbalance_L1` will be ~90% zero due to 24s snapshot cadence vs ~2.3s event rate (~10.6 events/snapshot). Fix: carry forward the last non-zero delta value for all events between two snapshots. The block structure (10 identical non-zero deltas followed by zeros) is learnable by the CNN's dilated architecture. Day boundaries: pre-warm from prior day or mask first event (practitioner fix).
+- `kyle_lambda` **redesigned (council round 5):** switched from per-event to **per-snapshot** computation. Event-level had ~2 effective Δmid observations per 50-event window (24s cadence + 59% direction ambiguity = statistically meaningless). Per-snapshot uses `Cov(Δmid_snapshot, cum_signed_notional_snapshot) / Var(cum_signed_notional_snapshot)` over rolling 50 snapshots (~20 min). All 50 observations have potentially non-zero Δmid, giving full effective degrees of freedom. `cum_signed_notional_snapshot` = sum of signed notional across all events between consecutive snapshots (net long vs short sides per snapshot period). Forward-filled to events. Guard: `where(var > 1e-20, cov/var, 0)`. See `docs/council-reviews/2026-04-02-council-3-kyle-lambda.md`.
+- `cum_ofi_5` **reduced from 20 to 5 snapshots (council round 5):** at 24s cadence, 20 snapshots = 480s (~8 min), which exceeds the primary 100-event prediction horizon (~300s). 5 snapshots = ~120s, matching the Cont (2014) principle that OFI lookback should bracket the prediction horizon. Sweep {3, 5, 10} after baseline. **Must use piecewise Cont 2014 OFI formula** — at 24s cadence, best bid/ask price changes in 60-80% of snapshot pairs. The naive `delta_notional` formula has the **wrong sign during trending markets**. Correct formula:
+  - If `best_bid_price_t > best_bid_price_{t-1}`: `delta_bid = +bid_notional_L1_t`
+  - If `best_bid_price_t == best_bid_price_{t-1}`: `delta_bid = bid_notional_L1_t - bid_notional_L1_{t-1}`
+  - If `best_bid_price_t < best_bid_price_{t-1}`: `delta_bid = -bid_notional_L1_{t-1}`
+  - Mirror for ask side. `OFI_t = delta_bid - delta_ask`.
+  See `docs/council-reviews/2026-04-02-council-2-ob-cadence.md`.
 
-**Why these 18:**
-- Features 1-7 capture the order event itself (what happened, how aggressively — feature 7 `book_walk` measures intra-order execution range, NOT permanent price impact)
-- Feature 8 (effort_vs_result) is Wyckoff's core: volume/price divergence = absorption = reversal
-- Feature 9 (climax_score) measures climax intensity — continuous signal for phase transitions (rolling σ, no lookahead)
-- Feature 10 (prev_seq_time_span) tells the model the speed of the tape from recent past (no lookahead)
-- Features 11-15 capture the static market context (liquidity landscape when it happened)
-- Feature 16 (delta_imbalance_L1) captures book dynamics — the CHANGE in imbalance is more predictive than the level (Cont)
-- Feature 17 (kyle_lambda) captures the information regime — are market makers facing informed or noise flow? (Kyle)
-- Feature 18 (cum_ofi_20) captures the rolling pressure from order flow over multiple book updates (Cont 2014)
+**Why these 17:**
+- Features 1-6 capture the order event itself (what happened, how aggressively — feature 6 `book_walk` measures intra-order execution range, NOT permanent price impact)
+- Feature 7 (effort_vs_result) is Wyckoff's core: volume/price divergence = absorption = reversal
+- Feature 8 (climax_score) measures climax intensity — continuous signal for phase transitions (rolling σ, no lookahead)
+- Feature 9 (prev_seq_time_span) tells the model the speed of the tape from recent past (no lookahead)
+- Features 10-14 capture the static market context (liquidity landscape when it happened). Feature 14 (trade_vs_mid) doubles as continuous direction proxy.
+- Feature 15 (delta_imbalance_L1) captures book dynamics — the CHANGE in imbalance is more predictive than the level (Cont)
+- Feature 16 (kyle_lambda) captures the information regime — are market makers facing informed or noise flow? Per-snapshot, ~20 min window. (Kyle)
+- Feature 17 (cum_ofi_5) captures the rolling pressure from order flow over 5 book updates (~120s). (Cont 2014)
 
 ## Sequence Length
 
@@ -148,10 +159,10 @@ Sweep {100, 200, 500} once the pipeline works.
 ## Label
 
 **Multi-horizon direction** — predict simultaneously at multiple forward horizons:
-- 10 events forward (very short term, ~0.5-1 sec)
-- 50 events forward (short term, ~2-5 sec)
-- 100 events forward (medium term, ~5-10 sec)
-- 500 events forward (longer term, ~30-60 sec)
+- 10 events forward (very short term, ~30 sec at measured BTC event rate)
+- 50 events forward (short term, ~2.5 min)
+- 100 events forward (medium term, ~5 min) — **primary horizon**
+- 500 events forward (longer term, ~25 min)
 
 Binary per horizon: did price go up or down?
 
@@ -163,7 +174,7 @@ Binary per horizon: did price go up or down?
 
 **Before training ANY neural network, fit logistic regression on the same data.**
 
-Flatten the (200, 18) input to 3600 features, fit logistic regression per horizon. **Sweep regularization C ∈ {0.001, 0.01, 0.1, 1.0}** — at 3600 features, default C=1.0 will overfit. Report best C per horizon, and report both train AND test accuracy separately (if train >> test, the baseline itself is overfitting). (Lopez de Prado/practitioner fix, round 3)
+Flatten the (200, 17) input to 3400 features, fit logistic regression per horizon. **Sweep regularization C ∈ {0.001, 0.01, 0.1, 1.0}** — at 3400 features, default C=1.0 will overfit. Report best C per horizon, and report both train AND test accuracy separately (if train >> test, the baseline itself is overfitting). (Lopez de Prado/practitioner fix, round 3)
 
 **Per-symbol go/no-go gate at the primary horizon (100 events)** (Lopez de Prado fix, round 4):
 
@@ -180,10 +191,10 @@ Report both train AND test accuracy separately per symbol per horizon (if train 
 ### Option A: Dilated 1D CNN (simplest, try first)
 
 ```
-Input: (batch, seq_len=200, 18)       — 200 order events, 18 features each
+Input: (batch, seq_len=200, 17)       — 200 order events, 17 features each
 
-BatchNorm1d(18)                        — normalize input features (keeps running stats for eval)
-Conv1d(18 → 32, kernel=5, dilation=1)  — local patterns (RF=5)
+BatchNorm1d(17)                        — normalize input features (keeps running stats for eval)
+Conv1d(17 → 32, kernel=5, dilation=1)  — local patterns (RF=5)
 LayerNorm + ReLU + Dropout(0.1)
 Conv1d(32 → 64, kernel=5, dilation=2)  — RF=13 cumulative
 LayerNorm + ReLU + Dropout(0.1)
@@ -200,17 +211,18 @@ concat[GlobalAvgPool, last_position]    — (batch, 128): GAP preserves gradient
 Linear(128 → 64) + ReLU                — shared neck
 [Linear(64 → 1)] × 4, sigmoid          — per-horizon predictions
 
-~94K parameters
+~91K parameters (was ~94K with 18 features)
 ```
 
 **Round 3 architecture fixes:**
 - **6 dilated layers** (not 3): original spec had RF=29, only 14.5% of the 200-event window. The model literally could not see the full sequence. Dilations 1,2,4,8,16,32 give RF=253 ≥ 200. (DL Researcher fix)
-- **LayerNorm** replaces BatchNorm in conv body: BN accumulates running statistics during training; if market regime shifts between train and test, those statistics are stale → silent degradation. LayerNorm normalizes per-sample, making it regime-invariant. Input BatchNorm1d(18) is kept because it handles feature-scale heterogeneity. (DL Researcher fix)
+- **LayerNorm** replaces BatchNorm in conv body: BN accumulates running statistics during training; if market regime shifts between train and test, those statistics are stale → silent degradation. LayerNorm normalizes per-sample, making it regime-invariant. Input BatchNorm1d(17) is kept because it handles feature-scale heterogeneity. (DL Researcher fix)
 - **Dropout(0.1)** on first two conv layers: binary direction labels are noisy; without dropout the model memorizes noise. Only on first two layers — deep layers see more abstract features that need less regularization. (DL Researcher fix)
+- **17 input features** (round 5): `is_buy` dropped, reducing input dim from 18 to 17. ~91K parameters (was ~94K).
 
 **Round 4 architecture fixes (DL Researcher):**
 - **concat[GAP, last_position]** replaces pure GlobalAvgPool as the default (not upgrade path). The last position already has RF=253 (sees all 200 events) — it is the CNN's richest summary. GAP preserves gradient flow to all positions; last_position preserves recency. Cost: +256 params.
-- **Residual connections for layers 3-6** (same 64-channel): zero extra parameters, preserves local patterns from early layers through large-dilation layers. No residual for layers 1-2 (channel dimension is changing 18→32→64).
+- **Residual connections for layers 3-6** (same 64-channel): zero extra parameters, preserves local patterns from early layers through large-dilation layers. No residual for layers 1-2 (channel dimension is changing 17→32→64).
 - **Shared neck** `Linear(128→64) + ReLU` before per-horizon heads: adds non-linear feature combinations before projecting to each horizon. 4 independent `Linear(64→1)` heads replace single `Linear(64→4)`.
 - **Upgrade path:** Attention pooling in iteration 2.
 
@@ -219,9 +231,9 @@ Why dilated instead of strided: strided convolutions downsample and lose tempora
 ### Option B: Transformer (if CNN shows signal at > 51%)
 
 ```
-Input: (batch, seq_len=200, 18)
+Input: (batch, seq_len=200, 17)
 
-Linear(18 → 128)                      — project to model dim (64 was too small: 16 dim/head → noisy attention)
+Linear(17 → 128)                      — project to model dim (64 was too small: 16 dim/head → noisy attention)
 RoPE(128)                             — rotary positional embeddings (relative position > absolute for financial sequences)
 Pre-norm TransformerEncoder(128, 4 heads, 2 layers)  — pre-norm = LayerNorm before attention, better gradient flow
 CLS token pooling → Linear(128 → 4, sigmoid)
@@ -234,9 +246,9 @@ CLS token pooling → Linear(128 → 4, sigmoid)
 ### Option C: GRU (baseline sequential)
 
 ```
-Input: (batch, seq_len=200, 18)
+Input: (batch, seq_len=200, 17)
 
-GRU(18 → 64, 2 layers, bidirectional=False)
+GRU(17 → 64, 2 layers, bidirectional=False)
 Last hidden state → Linear(64 → 4, sigmoid)
 
 ~60K parameters
@@ -249,6 +261,7 @@ Last hidden state → Linear(64 → 4, sigmoid)
 ### Data Loading
 
 - Group raw trades into order events (same-timestamp trades = one event)
+- **Dedup raw trades** before grouping (see Order Event Grouping section)
 - Each training sample: 200 consecutive order events with aligned orderbook context
 - Label: direction at 4 forward horizons (10, 50, 100, 500 events)
 - Samples drawn from ALL symbols — no per-symbol distinction during training
@@ -258,11 +271,13 @@ Last hidden state → Linear(64 → 4, sigmoid)
 
 ### Scale
 
-Per symbol per day: ~140K trades → ~50-70K order events → ~300 non-overlapping samples of 200 events
-Total: 25 symbols × 160 days × 300 samples ≈ **1.2M training samples**
-Each sample: 200 events × 18 features = 3600 floats
+Per symbol per day: ~140K trades → ~28K order events (after dedup + grouping; 3.8-8.6x grouping ratio varies by symbol) → ~141 non-overlapping samples of 200 events (BTC measured)
+Total: 25 symbols × 160 days × ~140 samples ≈ **400-560K training samples** (measured, council round 5 — previous 1.2M estimate was pre-dedup)
+Each sample: 200 events × 17 features = 3400 floats
 
 This fits in memory on a single H100 (80GB). Can stream from disk if needed.
+
+**Note:** All 25 symbols produce ~74K raw trades/day regardless of liquidity (suggests Pacifica API per-day collection cap). The grouping ratio varies: BTC/ETH/SOL ~4x, DOGE/AVAX ~8x. Illiquid symbols have higher grouping ratios.
 
 ### Training Loop
 
@@ -271,10 +286,10 @@ This fits in memory on a single H100 (80GB). Can stream from disk if needed.
 - AdamW(weight_decay=1e-4), **OneCycleLR** with max_lr=3e-4, pct_start=0.3 (30% warmup), cosine annealing. Warmup is critical while input BatchNorm statistics stabilize in early training. Sweep only max_lr ∈ {1e-4, 3e-4}; 1e-3 is too large for AdamW at this scale. (DL Researcher fix, round 4)
 - Batch size: 256-1024 (GPU memory dependent)
 - Epochs: 10-50 (monitor val loss for overfitting)
-- **Training augmentation** (DL Researcher fix, round 4): (a) Additive Gaussian noise (σ = 0.05 × feature_std) on continuous features — not on is_buy (binary) or is_open (bounded). (b) Orderbook feature dropout: zero features 11-18 with p=0.15. Teaches the model to predict from trade features alone when book is stale.
+- **Training augmentation** (DL Researcher fix, round 4): (a) Additive Gaussian noise (σ = 0.05 × feature_std) on continuous features — not on is_open (bounded [0,1]). (b) Orderbook feature dropout: zero features 10-17 with p=0.15. Teaches the model to predict from trade features alone when book is stale.
 - No class weighting initially (check base rate first)
 - No recency weighting initially
-- Input BatchNorm handles feature scale differences; body uses LayerNorm for regime invariance. **Assert `model.eval()` for the entire test pass** — any call to `model.train()` mid-evaluation updates running stats with test data.
+- Input BatchNorm(17) handles feature scale differences; body uses LayerNorm for regime invariance. **Assert `model.eval()` for the entire test pass** — any call to `model.train()` mid-evaluation updates running stats with test data.
 
 ### Validation
 
@@ -295,7 +310,7 @@ This fits in memory on a single H100 (80GB). Can stream from disk if needed.
 - If label is noise: stop or redesign labels
 
 ### Phase 0.5: Linear Baseline
-- Logistic regression on flattened (200×18=3600) features, sweep C ∈ {0.001, 0.01, 0.1, 1.0}
+- Logistic regression on flattened (200×17=3400) features, sweep C ∈ {0.001, 0.01, 0.1, 1.0}
 - Report train vs test accuracy separately (watch for overfitting)
 - If < 50.5% on all horizons: stop
 - This is the floor the neural network must beat
@@ -322,17 +337,20 @@ Only after Phase 1 targets are met:
 
 ### Step 0: Label Validation + Data Validation (local, 15 min)
 - Compute base rate, mean absolute return, and conditional return distribution (top decile/quartile) at 10/50/100/500 event horizons
-- **Same-timestamp assumption validation:** compute distribution of (a) fill count per timestamp, (b) same-timestamp fills with mixed sides, (c) same-timestamp fills spanning > 3 price levels. If > 5% of "events" have mixed sides, the grouping heuristic needs revision. (Practitioner fix, round 3)
+- **Same-timestamp assumption validation:** compute distribution of (a) fill count per timestamp, (b) same-timestamp fills with mixed sides, (c) same-timestamp fills spanning > 3 price levels. **Expect 59% mixed-side events** (exchange mechanic, not grouping error — council round 5). The 5% threshold from round 3 is obsolete.
+- **Dedup validation:** assert dedup rate 40-60% per symbol-day. Validate residual same-`(qty,price)` duplicates < 5% on illiquid symbols. Check post-dedup side distribution ~50/50.
+- **OB cadence validation:** assert median snapshot interval in [15s, 35s]. Assert events before first snapshot are handled (zero-fill OB features).
 - Deliverable: `scripts/test_label_signal.py`, `scripts/validate_event_grouping.py`
 
 ### Step 1: Data Pipeline (local CPU)
 
 Build a PyTorch Dataset that:
 1. Loads raw trade parquet files per symbol per day
-2. Groups same-timestamp trades into order events (validated in Step 0)
-3. Aligns each event with nearest-prior orderbook snapshot — **vectorized `np.searchsorted` over all events at once**, not Python for-loop (practitioner fix: Python-level alignment is ~3-6x slower than estimated)
-4. Computes the 18 per-event features (10 trade + 8 book-context)
-5. Returns (sequence, label) tuples of shape (200, 18) and (4,)
+2. **Deduplicates:** pre-April `drop_duplicates(subset=['ts_ms', 'qty', 'price'])`, April+ filter to `event_type == 'fulfill_taker'`
+3. Groups same-timestamp trades into order events (validated in Step 0)
+4. Aligns each event with nearest-prior orderbook snapshot — **vectorized `np.searchsorted` over all events at once**, not Python for-loop. **Guard `ob_idx >= 0`** — events before first snapshot get zero-filled OB features (56s gap measured on BTC day 1).
+5. Computes the 17 per-event features (9 trade + 8 book-context)
+6. Returns (sequence, label) tuples of shape (200, 17) and (4,)
 6. Draws samples across all symbols and dates
 7. Precomputes aligned features per symbol-day and caches to disk (.npz) to avoid reprocessing
 8. **Pre-warms rolling windows** (median_event_qty, climax σ) from end of prior day. For the first calendar day per symbol (2025-10-16), mask the first 1000 events from training samples. **Do not mask other days** — masking loses 4M day-open events and systematically biases against day-open dynamics. Pre-warming is causally clean (past quantities, not future prices). All rolling windows (median, σ) must advance together in a single pass through the sorted event stream per symbol-day. (Practitioner fix, round 4)
@@ -341,7 +359,7 @@ Build a PyTorch Dataset that:
 Deliverable: `tape_dataset.py`
 
 ### Step 1.5: Linear Baseline (local, 10 min)
-- Flatten (200, 18) → 3600 features
+- Flatten (200, 17) → 3400 features
 - Logistic regression per horizon, per symbol, sweep C ∈ {0.001, 0.01, 0.1, 1.0}
 - Report train vs test accuracy separately
 - Deliverable: accuracy report, go/no-go decision
@@ -387,11 +405,11 @@ Deliverable: trained model + accuracy report
 
 2. **Order event grouping may lose information.** If two different market participants trade at the same millisecond, we group them as one event. This is rare but possible. Monitor the distribution of fills-per-event.
 
-3. **Orderbook staleness.** Orderbook snapshots every ~3 seconds means many events share the same book state. The book features will be step-wise constant, which is correct but means the model can't see within-snapshot book changes.
+3. **Orderbook staleness.** Orderbook snapshots every ~24 seconds (measured) means ~10.6 events share the same book state. The book features will be step-wise constant, which is correct but means the model can't see within-snapshot book changes. The 24s cadence may actually filter HF quote noise (council-2, round 5).
 
 4. **Overfitting to symbol-specific characteristics.** Even with relative features, different symbols have different volatility, spread, and depth distributions. The model might learn "this looks like a BTC event" rather than "this looks like aggressive buying." Monitor per-symbol accuracy variance.
 
-5. **1.2M samples may not be enough.** ImageNet has 1.2M images. We have 1.2M sequences. It's the same ballpark but financial data is noisier. Overfitting is a real risk — keep models small.
+5. **400-560K samples may not be enough.** After dedup + grouping, we have ~400-560K sequences (was 1.2M pre-dedup). Financial data is noisier than ImageNet. Overfitting is a real risk — keep models small (~91K params).
 
 ## What Success Looks Like
 
