@@ -63,6 +63,15 @@ Use council-7 to estimate training cost for 1.2M samples on H100
 5. Present unified recommendation with dissenting opinions noted
 6. User makes final call
 
+## Git Workflow
+
+- **Branch:** `tape-reading` (created from main)
+- **Commit style:** `feat:`, `fix:`, `chore:`, `experiment:`, `spec:`, `analysis:`
+- **Commit before every experiment run** — makes changes traceable and revertible
+- **Only stage specific files** — never `git add -A`
+- **Never force push or amend** — create new commits
+- **Push when the user asks** — don't push automatically
+
 ## Key Files
 
 - Spec: `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md`
