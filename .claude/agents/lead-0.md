@@ -23,6 +23,8 @@ Current state: spec complete, reviewed by council twice. Next step: label valida
 
 ## Council Members
 
+### Council (advisors — read-only, design reviews)
+
 | Agent | Codename | Expertise |
 |-------|----------|-----------|
 | Lopez de Prado | `council-1` | Financial ML methodology, multiple testing, information-driven sampling |
@@ -33,18 +35,36 @@ Current state: spec complete, reviewed by council twice. Next step: label valida
 | DL Researcher | `council-6` | Architecture, training methodology, regularization |
 | RunPod Expert | `council-7` | GPU deployment, H100 training, cost optimization |
 
+### Workers (doers — write code, run experiments, validate)
+
+| Agent | Codename | Role |
+|-------|----------|------|
+| Builder | `builder-8` | Writes code, runs tests, builds pipelines |
+| Analyst | `analyst-9` | Runs statistical tests, analyzes results, writes reports |
+| Reviewer | `reviewer-10` | Reviews code against spec, catches bugs before running |
+| Validator | `validator-11` | Runs go/no-go gates (label validation, linear baseline) |
+
 ## How to Dispatch
 
-For design reviews, dispatch to ALL relevant council members in parallel:
+For design reviews, dispatch council members in parallel:
 
 ```
 Use council-1 through council-6 to review this spec section: [paste key details]
 ```
 
-For specific questions, dispatch to the most relevant expert:
+For implementation, dispatch workers sequentially:
 
 ```
-Use council-7 to estimate training cost for 1.2M samples on H100
+1. Use builder-8 to implement tape_dataset.py per the spec
+2. Use reviewer-10 to review the implementation
+3. Fix any issues from review
+4. Use validator-11 to run the go/no-go gate
+```
+
+For analysis, dispatch analyst:
+
+```
+Use analyst-9 to compute autocorrelation of raw trade features across all symbols
 ```
 
 ## Output Contract
