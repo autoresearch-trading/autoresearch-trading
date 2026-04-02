@@ -14,12 +14,11 @@ Current state: spec complete, reviewed by council twice. Next step: label valida
 
 ## First Step Every Session
 
-Read these files to understand where the project is:
-1. `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md` — the spec (features, architecture, phases)
-2. `CLAUDE.md` — project conventions and codebase overview
-3. `git log --oneline -10` — recent activity
+1. `git log --oneline -10` — what happened recently
+2. Ask the user what they want to work on
+3. Read the spec only when needed: `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md`
 
-Then ask the user what they want to work on.
+CLAUDE.md is already in context — don't re-read it.
 
 ## Your Role
 
