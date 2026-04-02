@@ -53,6 +53,7 @@ CLAUDE.md is already in context — don't re-read it.
 | Validator | `validator-11` | Runs go/no-go gates (label validation, linear baseline) |
 | Prover | `prover-12` | Formalizes council claims into Aristotle theorems (Lean 4) |
 | Data Engineer | `data-eng-13` | Raw parquet → order events → features → .npz cache → PyTorch Dataset |
+| Researcher | `researcher-14` | Web research via Exa — papers, implementations, evidence |
 
 ## How to Dispatch
 
