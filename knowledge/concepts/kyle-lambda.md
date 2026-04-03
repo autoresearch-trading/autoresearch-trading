@@ -54,5 +54,6 @@ Estimator: `lambda = Cov(delta_mid, cum_signed_notional) / Var(cum_signed_notion
 
 - [Order Event Grouping](order-event-grouping.md) — source of signed flow data
 - [Effort vs Result](effort-vs-result.md) — Wyckoff pattern that works without direction
-- Orderbook Alignment — 24s cadence determines effective observations
+- [Orderbook Alignment](orderbook-alignment.md) — 24s cadence determines effective observations
+- [Cum OFI](cum-ofi.md) — complementary: cum_ofi measures net pressure, lambda measures price response
 - Depth Ratio — also uses notional, also per-snapshot

@@ -57,4 +57,4 @@ This makes effort_vs_result robust to the 59% direction ambiguity in pre-April d
 
 - [Order Event Grouping](order-event-grouping.md) — source of total_qty
 - [Kyle Lambda](kyle-lambda.md) — different price impact measure, requires direction
-- Climax Score — complementary Wyckoff signal (volume + return extremes)
+- [Climax Score](climax-score.md) — complementary Wyckoff signal (volume + return extremes)
