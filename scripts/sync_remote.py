@@ -3,7 +3,9 @@
 import os
 import pathlib
 import subprocess
+import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 
@@ -18,17 +20,40 @@ s3 = boto3.client(
 )
 
 cutoff = time.time() - 86400  # last 24h
-uploaded = 0
-for f in data_dir.rglob("*.parquet"):
-    if f.stat().st_mtime < cutoff:
-        continue
+files = [f for f in data_dir.rglob("*.parquet") if f.stat().st_mtime >= cutoff]
+print(f"Found {len(files)} files to upload", flush=True)
+
+
+def upload(f):
     key = str(f.relative_to(data_dir))
     s3.upload_file(str(f), bucket, key)
-    uploaded += 1
+    return key
 
-print(f"Uploaded {uploaded} files to s3://{bucket}")
 
-print("Purging files older than 2 days...")
+uploaded = 0
+failed = 0
+t0 = time.time()
+with ThreadPoolExecutor(max_workers=16) as pool:
+    futures = {pool.submit(upload, f): f for f in files}
+    for fut in as_completed(futures):
+        try:
+            fut.result()
+            uploaded += 1
+        except Exception as e:
+            failed += 1
+            print(f"FAIL {futures[fut]}: {e}", file=sys.stderr, flush=True)
+        if uploaded % 500 == 0 and uploaded > 0:
+            elapsed = time.time() - t0
+            print(f"  {uploaded}/{len(files)} uploaded ({elapsed:.0f}s)", flush=True)
+
+elapsed = time.time() - t0
+print(f"Uploaded {uploaded} files to s3://{bucket} in {elapsed:.0f}s", flush=True)
+if failed:
+    print(f"WARNING: {failed} uploads failed", flush=True)
+
+s3._endpoint.http_session.close()
+
+print("Purging files older than 2 days...", flush=True)
 result = subprocess.run(
     [
         "find",
@@ -46,5 +71,5 @@ result = subprocess.run(
     text=True,
 )
 if result.stdout.strip():
-    print(result.stdout)
-print("Purge complete.")
+    print(result.stdout, flush=True)
+print("Purge complete.", flush=True)
