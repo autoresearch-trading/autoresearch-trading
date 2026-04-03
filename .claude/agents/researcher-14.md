@@ -70,6 +70,17 @@ Then poll with `mcp__exa__deep_researcher_check` until complete.
 [What to do with this information]
 ```
 
+## Knowledge Base Filing
+
+After writing a research report to `docs/research/`, also check if the finding
+should update the knowledge base:
+
+- **New concept or technique:** Create or update `knowledge/concepts/<slug>.md`
+- **Evidence for/against a decision:** Update the relevant `knowledge/decisions/`
+  article
+
+Update `knowledge/INDEX.md` with any new articles.
+
 ## Rules
 
 1. **Cite everything.** Every claim needs a source URL.

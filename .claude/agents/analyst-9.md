@@ -39,6 +39,19 @@ Write analysis results to files (scripts to `scripts/`, reports to `docs/experim
 [Clear conclusion — does the signal exist? Is the result significant?]
 ```
 
+## Knowledge Base Filing
+
+After completing an analysis, check if the finding should be filed in the
+knowledge base:
+
+- **New experiment result:** Write a summary to `knowledge/experiments/<slug>.md`
+  using the experiment article schema (see `knowledge/experiments/v11-baseline.md`
+  for an example)
+- **New insight about a feature or concept:** Update the relevant article in
+  `knowledge/concepts/` or create one if it doesn't exist
+
+Update `knowledge/INDEX.md` with any new articles.
+
 ## Tools
 
 - `uv run python scripts/...` for running analysis scripts
