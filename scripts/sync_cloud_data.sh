@@ -1,95 +1,50 @@
 #!/bin/bash
-# Syncs data from Fly.io to cloud object storage, then purges old data on Fly.
+# Triggers data sync + purge on the Fly.io instance.
+# The heavy lifting (S3 upload) runs server-side — GHA is just the trigger.
 #
-# ARCHITECTURE: Streams tar directly from Fly.io to local machine to avoid
-# filling up limited /tmp space on the remote instance.
-#
-# NOTE: flyctl v0.4.29+ does exec-style arg splitting for -C (no shell),
-# so pipes and quoted globs break. We use "-C sh" + heredoc stdin instead.
+# R2 credentials are stored as Fly secrets, not GHA secrets.
+# boto3 must be installed on the Fly container.
 
 set -euo pipefail
 
-# --- Configuration ---
 APP_NAME="pacifica-collector"
-LOCAL_TEMP_DIR="/tmp/fly-sync-data"
 REMOTE_DATA_PATH="/app/data"
-DAYS_TO_KEEP_ON_FLY=2 # Keep today's and yesterday's data
+DAYS_TO_KEEP=2
 
-# --- S3/R2 Configuration (from environment) ---
-S3_BUCKET="${S3_BUCKET_NAME}"
-# S3_ENDPOINT_URL is only needed for S3-compatible services like Cloudflare R2
-S3_ARGS=""
-if [ -n "${S3_ENDPOINT_URL-}" ]; then
-  S3_ARGS="--endpoint-url ${S3_ENDPOINT_URL}"
-fi
+echo "▶️ Triggering sync on Fly.io app: $APP_NAME"
 
-# --- Main Logic ---
-MAX_RETRIES=3
-RETRY_DELAY=30
-PURGE_MTIME="+$((DAYS_TO_KEEP_ON_FLY - 1))"
+flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_SCRIPT
+set -e
 
-echo "▶️ Starting data sync for Fly.io app: $APP_NAME"
+echo "📦 Syncing today's parquet files to R2..."
+python3 - <<'PYTHON'
+import os, boto3, pathlib, time
 
-# 1. Create local temporary directory
-rm -rf "$LOCAL_TEMP_DIR"
-mkdir -p "$LOCAL_TEMP_DIR/extracted"
-echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
+data_dir = pathlib.Path("${REMOTE_DATA_PATH}")
+bucket = os.environ["S3_BUCKET_NAME"]
+endpoint = os.environ["S3_ENDPOINT_URL"]
 
-# 2. Stream only today's data from Fly.io (last 24h).
-# R2 already has historical data from prior runs; no need to re-transfer.
-SYNC_DAYS=1
-echo "📦 Streaming last ${SYNC_DAYS} day of data from Fly.io instance..."
-for attempt in $(seq 1 $MAX_RETRIES); do
-  if flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_TAR | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
-find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -
-REMOTE_TAR
-    echo "✅ Data streamed and extracted locally."
-    break
-  fi
-  if [ "$attempt" -eq "$MAX_RETRIES" ]; then
-    echo "❌ Failed to stream data after $MAX_RETRIES attempts"
-    exit 1
-  fi
-  echo "⚠️ Attempt $attempt/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
-  rm -rf "${LOCAL_TEMP_DIR}/extracted"
-  mkdir -p "${LOCAL_TEMP_DIR}/extracted"
-  sleep "$RETRY_DELAY"
-done
+s3 = boto3.client("s3",
+    endpoint_url=endpoint,
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+)
 
-# 3. Count files to upload
-FILE_COUNT=$(find "${LOCAL_TEMP_DIR}/extracted" -type f -name "*.parquet" | wc -l)
-echo "📊 Found ${FILE_COUNT} parquet files to upload"
+cutoff = time.time() - 86400  # last 24h
+uploaded = 0
+for f in data_dir.rglob("*.parquet"):
+    if f.stat().st_mtime < cutoff:
+        continue
+    key = str(f.relative_to(data_dir))
+    s3.upload_file(str(f), bucket, key)
+    uploaded += 1
 
-# 4. Upload to cloud storage, preserving structure
-echo "☁️ Uploading data to bucket: s3://${S3_BUCKET}"
-# The `aws s3 sync` command is smart and efficient (only uploads changed files)
-aws s3 sync "${LOCAL_TEMP_DIR}/extracted" "s3://${S3_BUCKET}" ${S3_ARGS} --only-show-errors
-echo "✅ Upload complete."
+print(f"✅ Uploaded {uploaded} files to s3://{bucket}")
+PYTHON
 
-# 5. Purge old data on the Fly.io instance
-echo "🗑️ Purging data older than ${DAYS_TO_KEEP_ON_FLY} days on Fly.io volume..."
-# IMPORTANT: The `find` command deletes files. `-mtime +1` means older than 2 days ago (48h).
+echo "🗑️ Purging files older than ${DAYS_TO_KEEP} days..."
+find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime +$((${DAYS_TO_KEEP} - 1)) -print -delete
+echo "✅ Purge complete."
+REMOTE_SCRIPT
 
-# First, run a dry-run to see what would be deleted
-echo "🔍 Dry run of purge command:"
-flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_DRY || true
-find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime ${PURGE_MTIME} -print
-REMOTE_DRY
-
-# Then, execute the actual purge
-flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_PURGE || true
-find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime ${PURGE_MTIME} -print -delete
-REMOTE_PURGE
-echo "✅ Purge command executed."
-
-# 6. Cleanup remote /tmp (in case previous runs left partial archives)
-echo "🧹 Cleaning up remote /tmp..."
-flyctl ssh console -q -a "$APP_NAME" -C sh <<'REMOTE_CLEAN' || true
-rm -f /tmp/data-backup-*.tar.gz
-REMOTE_CLEAN
-
-# 7. Cleanup local files
-rm -rf "$LOCAL_TEMP_DIR"
-echo "🧹 Local cleanup complete."
-
-echo "🎉 Sync & Purge process finished successfully!"
+echo "🎉 Sync & Purge finished."
