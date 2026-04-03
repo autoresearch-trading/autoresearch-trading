@@ -106,6 +106,31 @@ Use analyst-9 to compute autocorrelation of raw trade features across all symbol
 ## Key Files
 
 - Spec: `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md`
+- Knowledge base: `knowledge/INDEX.md` (compiled wiki of council findings, decisions, experiments)
 - Current state: `.claude/skills/autoresearch/resources/state.md`
 - Experiment history: `results.tsv`
 - Main code: `prepare.py` (features), `train.py` (model)
+
+## Knowledge Base
+
+After every council round or significant analysis, compile findings into the wiki:
+
+1. Invoke the `compile-knowledge` skill (or dispatch a general-purpose agent with
+   the skill instructions)
+2. The skill reads new sources in docs/council-reviews/, docs/experiments/,
+   docs/research/ and distills them into knowledge/concepts/, knowledge/decisions/,
+   knowledge/experiments/
+3. Periodically invoke the `health-check` skill to lint for drift between spec,
+   CLAUDE.md, code, and knowledge
+
+### How to use the knowledge base for context
+
+Before dispatching council or workers on a topic, check if a knowledge article
+exists:
+
+```
+Read knowledge/INDEX.md
+# If there's a relevant article, read it for context before asking the question
+```
+
+This avoids re-deriving the same conclusions across sessions.
