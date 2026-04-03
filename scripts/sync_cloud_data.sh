@@ -13,7 +13,7 @@ DAYS_TO_KEEP=2
 
 echo "▶️ Triggering sync on Fly.io app: $APP_NAME"
 
-flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_SCRIPT
+flyctl ssh console -q --pty=false -a "$APP_NAME" -C sh <<REMOTE_SCRIPT
 set -e
 
 echo "📦 Syncing today's parquet files to R2..."
