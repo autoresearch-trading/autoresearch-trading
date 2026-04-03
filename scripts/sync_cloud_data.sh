@@ -45,6 +45,7 @@ PYTHON
 echo "🗑️ Purging files older than ${DAYS_TO_KEEP} days..."
 find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime +$((${DAYS_TO_KEEP} - 1)) -print -delete
 echo "✅ Purge complete."
+exit 0
 REMOTE_SCRIPT
 
 echo "🎉 Sync & Purge finished."
