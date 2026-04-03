@@ -3,6 +3,9 @@
 #
 # ARCHITECTURE: Streams tar directly from Fly.io to local machine to avoid
 # filling up limited /tmp space on the remote instance.
+#
+# NOTE: flyctl v0.4.29+ does exec-style arg splitting for -C (no shell),
+# so pipes and quoted globs break. We use "-C sh" + heredoc stdin instead.
 
 set -euo pipefail
 
@@ -23,6 +26,7 @@ fi
 # --- Main Logic ---
 MAX_RETRIES=3
 RETRY_DELAY=30
+PURGE_MTIME="+$((DAYS_TO_KEEP_ON_FLY - 1))"
 
 echo "▶️ Starting data sync for Fly.io app: $APP_NAME"
 
@@ -37,7 +41,9 @@ echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
 SYNC_DAYS=3
 echo "📦 Streaming last ${SYNC_DAYS} days of data from Fly.io instance..."
 for attempt in $(seq 1 $MAX_RETRIES); do
-  if flyctl ssh console -q -a "$APP_NAME" -C "find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -" | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
+  if flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_TAR | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
+find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -
+REMOTE_TAR
     echo "✅ Data streamed and extracted locally."
     break
   fi
@@ -64,19 +70,24 @@ echo "✅ Upload complete."
 # 5. Purge old data on the Fly.io instance
 echo "🗑️ Purging data older than ${DAYS_TO_KEEP_ON_FLY} days on Fly.io volume..."
 # IMPORTANT: The `find` command deletes files. `-mtime +1` means older than 2 days ago (48h).
-PURGE_CMD="find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime +$((DAYS_TO_KEEP_ON_FLY - 1)) -print -delete"
 
 # First, run a dry-run to see what would be deleted
 echo "🔍 Dry run of purge command:"
-flyctl ssh console -q -a "$APP_NAME" -C "find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime +$((DAYS_TO_KEEP_ON_FLY - 1)) -print" || true
+flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_DRY || true
+find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime ${PURGE_MTIME} -print
+REMOTE_DRY
 
 # Then, execute the actual purge
-flyctl ssh console -q -a "$APP_NAME" -C "${PURGE_CMD}" || true
+flyctl ssh console -q -a "$APP_NAME" -C sh <<REMOTE_PURGE || true
+find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime ${PURGE_MTIME} -print -delete
+REMOTE_PURGE
 echo "✅ Purge command executed."
 
 # 6. Cleanup remote /tmp (in case previous runs left partial archives)
 echo "🧹 Cleaning up remote /tmp..."
-flyctl ssh console -q -a "$APP_NAME" -C "sh -c 'rm -f /tmp/data-backup-*.tar.gz'" || true
+flyctl ssh console -q -a "$APP_NAME" -C sh <<'REMOTE_CLEAN' || true
+rm -f /tmp/data-backup-*.tar.gz
+REMOTE_CLEAN
 
 # 7. Cleanup local files
 rm -rf "$LOCAL_TEMP_DIR"
