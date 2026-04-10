@@ -8,7 +8,7 @@ on:
 jobs:
   sync-and-purge:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
     - name: Checkout repository

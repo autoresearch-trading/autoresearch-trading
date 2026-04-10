@@ -17,6 +17,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
+from botocore.config import Config
+
+UPLOAD_WORKERS = 16
 
 data_dir = pathlib.Path("/app/data")
 bucket = os.environ["S3_BUCKET_NAME"]
@@ -94,7 +97,7 @@ def sync_date(s3, target_date):
     uploaded = 0
     failed = 0
     t0 = time.time()
-    with ThreadPoolExecutor(max_workers=16) as pool:
+    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
         futures = {pool.submit(upload, f): f for f in files}
         for fut in as_completed(futures):
             try:
@@ -156,6 +159,10 @@ if __name__ == "__main__":
         endpoint_url=os.environ["S3_ENDPOINT_URL"],
         aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        config=Config(
+            max_pool_connections=UPLOAD_WORKERS,
+            retries={"max_attempts": 3, "mode": "adaptive"},
+        ),
     )
 
     uploaded, failed = sync_date(s3, arg)
