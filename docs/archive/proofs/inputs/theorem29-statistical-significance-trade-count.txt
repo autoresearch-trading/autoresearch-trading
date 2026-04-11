@@ -1,0 +1,64 @@
+# Theorem 29: Statistical Significance of Win Rate with Finite Trade Count
+
+## Definitions
+
+A trading strategy produces T trades, each independently a win (probability w) or loss (probability 1-w). Let W = number of wins. Then W ~ Binomial(T, w).
+
+The observed win rate is w_hat = W / T.
+
+## Claims
+
+### Part A: Confidence Intervals
+
+1. The standard 95% confidence interval for the true win rate w, given observed w_hat and T trades, is:
+
+     w_hat ± 1.96 * sqrt(w_hat * (1 - w_hat) / T)
+
+   (Normal approximation to the binomial, valid when T*w_hat > 5 and T*(1-w_hat) > 5.)
+
+   Prove that this interval has width:
+
+     width = 2 * 1.96 * sqrt(w_hat * (1 - w_hat) / T)
+
+   and that width decreases as O(1/sqrt(T)).
+
+2. Numerical claims for w_hat = 0.597:
+   - T = 36 (our per-symbol count): width = 2 * 1.96 * sqrt(0.597 * 0.403 / 36). Verify width > 0.31. The 95% CI is approximately [0.437, 0.757]. This interval includes 0.50 (random), so we CANNOT reject H0: w = 0.50.
+   - T = 100: width ≈ 0.192. CI = [0.501, 0.693]. Barely excludes 0.50.
+   - T = 200: width ≈ 0.136. CI = [0.529, 0.665]. Clearly excludes 0.50.
+   - T = 500: width ≈ 0.086. CI = [0.554, 0.640]. Tight.
+   - T = 900 (our total): width ≈ 0.064. CI = [0.565, 0.629]. Reasonably tight.
+
+   Verify each numerical bound.
+
+### Part B: Minimum Trades for Significance
+
+3. To reject H0: w = 0.50 at the 95% level given true w, we need the CI lower bound to exceed 0.50:
+
+     w_hat - 1.96 * sqrt(w_hat * (1 - w_hat) / T) > 0.50
+
+   Solving for T:
+
+     T > (1.96)^2 * w_hat * (1 - w_hat) / (w_hat - 0.50)^2
+
+4. Numerical claim. For w_hat = 0.597:
+
+     T_min > (1.96)^2 * 0.597 * 0.403 / (0.097)^2
+
+   Verify that T_min > 98 and T_min < 100. So approximately 99 trades are needed to establish statistical significance of a 59.7% win rate at the 95% level.
+
+5. For w_hat = 0.55 (weaker edge): T_min > (1.96)^2 * 0.55 * 0.45 / (0.05)^2. Verify T_min > 380.
+
+   For w_hat = 0.52 (thin edge): T_min > (1.96)^2 * 0.52 * 0.48 / (0.02)^2. Verify T_min > 2396.
+
+### Part C: Per-Symbol vs Portfolio Significance
+
+6. With 25 symbols and 36 trades per symbol, the per-symbol significance is weak (Part A shows CI includes 0.50). But with 900 total trades pooled, the significance is strong (CI = [0.565, 0.629]).
+
+   However, pooling is only valid if the true win rate is constant across symbols. If symbols have heterogeneous win rates, prove that:
+
+   - The pooled CI is narrower than any individual CI (always true by sqrt(T) scaling)
+   - But the pooled w_hat estimates a weighted average of per-symbol win rates, not the individual rates
+   - A strategy with 5 symbols at w=0.70 and 20 symbols at w=0.50 has pooled w_hat ≈ 0.54, which looks significant in aggregate but has 80% of symbols with no edge
+
+7. Therefore, per-symbol significance requires per-symbol trade counts above T_min. With w_hat ≈ 0.60, each symbol needs ~100 trades for significance. At 36 trades/symbol over 20 days, we need at least 56 test days (~3 months) to reach per-symbol significance.

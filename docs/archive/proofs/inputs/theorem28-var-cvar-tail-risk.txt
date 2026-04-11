@@ -1,0 +1,53 @@
+# Theorem 28: VaR, CVaR, and Tail Risk Bounds for Trading Strategies
+
+## Definitions
+
+Let R = (R_1, ..., R_N) be a return sequence. Define:
+
+- **Value at Risk at level alpha**: VaR_alpha = -Q_alpha(R), where Q_alpha is the alpha-quantile of R. VaR_alpha is the loss that is exceeded with probability alpha.
+
+- **Conditional Value at Risk (Expected Shortfall)**: CVaR_alpha = -E[R | R <= Q_alpha(R)] = -(1/alpha) * integral from 0 to alpha of Q_u(R) du.
+
+- For a discrete sample: CVaR_alpha = -(1/k) * sum of the k smallest returns, where k = floor(alpha * N).
+
+## Claims
+
+### Part A: VaR-CVaR Ordering
+
+1. CVaR_alpha >= VaR_alpha always (CVaR is at least as severe as VaR). Prove this from the definition: CVaR averages the tail beyond VaR, which includes VaR itself plus worse outcomes.
+
+2. CVaR_alpha = VaR_alpha if and only if the distribution has no mass beyond the alpha-quantile (degenerate case). For any continuous distribution with support on the reals, CVaR > VaR strictly.
+
+### Part B: CVaR as Coherent Risk Measure
+
+3. CVaR satisfies the four axioms of coherent risk measures (Artzner et al., 1999):
+   - Monotonicity: if R_1 >= R_2 pointwise, then CVaR(R_1) <= CVaR(R_2)
+   - Translation invariance: CVaR(R + c) = CVaR(R) - c
+   - Positive homogeneity: CVaR(lambda * R) = lambda * CVaR(R) for lambda > 0
+   - Subadditivity: CVaR(R_1 + R_2) <= CVaR(R_1) + CVaR(R_2)
+
+   VaR satisfies the first three but NOT subadditivity. Prove the subadditivity failure of VaR with a concrete counterexample: two binary random variables whose sum has higher VaR than the sum of individual VaRs.
+
+### Part C: Gaussian Bounds
+
+4. Under normality R ~ N(mu, sigma^2):
+   - VaR_alpha = -(mu + sigma * Phi_inv(alpha)) where Phi_inv is the standard normal inverse CDF
+   - CVaR_alpha = -(mu - sigma * phi(Phi_inv(alpha)) / alpha) where phi is the standard normal PDF
+
+   Prove these closed-form expressions.
+
+5. Numerical claim. With alpha = 0.05 (95% VaR/CVaR), mu = 0.0001 (per-step mean return), sigma = 0.002 (per-step std):
+   - VaR_0.05 = -(0.0001 + 0.002 * Phi_inv(0.05)) = -(0.0001 - 0.002 * 1.645) = 0.003189
+   - CVaR_0.05 = -(0.0001 - 0.002 * phi(1.645) / 0.05)
+
+   Compute CVaR_0.05 and verify CVaR > VaR.
+
+### Part D: Portfolio CVaR
+
+6. For an equal-weighted portfolio of N independent assets each with returns R_j ~ N(mu_j, sigma_j^2):
+
+   Portfolio CVaR_alpha = -(mu_P - sigma_P * phi(Phi_inv(alpha)) / alpha)
+
+   where mu_P = (1/N) * sum mu_j and sigma_P = (1/N) * sqrt(sum sigma_j^2).
+
+   Prove that portfolio CVaR decreases with N (diversification reduces tail risk), with the rate sqrt(N) under identical distributions.

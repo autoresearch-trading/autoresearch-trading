@@ -1,0 +1,63 @@
+# Theorem 44: Correlated Drawdown and Effective Diversification
+
+## Definitions
+
+Let N >= 2 be the number of assets in an equally-weighted portfolio.
+Let sigma > 0 be the common volatility of each asset.
+Let rho ∈ (-1/(N-1), 1) be the common pairwise correlation coefficient.
+
+The portfolio variance with equal weights w_i = 1/N is:
+  sigma_p^2 = sum_{i=1}^N w_i^2 * sigma_i^2 + sum_{i≠j} w_i * w_j * rho_{ij} * sigma_i * sigma_j
+
+For the equicorrelated case (all sigma_i = sigma, all rho_{ij} = rho for i ≠ j):
+  sigma_p^2 = sigma^2 * [1/N + (1 - 1/N) * rho]
+            = sigma^2 * [1 + (N-1)*rho] / N
+
+Define the effective number of independent bets (Meucci 2009):
+  N_eff = N / (1 + (N-1) * rho)
+
+## Claims
+
+1. **Portfolio variance formula.** For N assets with equal weight 1/N, common variance sigma^2, and common pairwise correlation rho, prove:
+     sigma_p^2 = sigma^2 * (1 + (N-1)*rho) / N
+
+   by expanding the double sum and collecting terms.
+
+2. **Diversification ratio.** The ratio of portfolio volatility to individual volatility is:
+     sigma_p / sigma = sqrt((1 + (N-1)*rho) / N)
+
+   Prove that:
+   a) When rho = 0: sigma_p / sigma = 1/sqrt(N) (perfect diversification)
+   b) When rho = 1: sigma_p / sigma = 1 (no diversification)
+   c) sigma_p / sigma is strictly increasing in rho for N >= 2
+
+3. **Effective independent bets.** The effective number of independent bets is:
+     N_eff = N / (1 + (N-1)*rho)
+
+   Prove:
+   a) N_eff = N when rho = 0
+   b) N_eff = 1 when rho = 1
+   c) N_eff is strictly decreasing in rho for fixed N >= 2
+   d) N_eff > 0 for all rho in the valid range (-1/(N-1), 1)
+
+4. **Portfolio Sortino scaling.** If each asset has Sortino ratio S (same for all), the portfolio Sortino is:
+     S_portfolio = S * sqrt(N_eff)
+
+   Prove this follows from S_portfolio = mu_p / sigma_d_p * sqrt(m), where mu_p = mu (same mean, equal weight) and sigma_d_p scales as sigma_p.
+
+5. **Drawdown scaling.** If drawdown scales proportionally to volatility (DD ∝ sigma), then:
+     DD_portfolio / DD_single = sigma_p / sigma = sqrt((1 + (N-1)*rho) / N)
+
+   Verify numerically for our parameters:
+   a) N = 23, rho = 0.282 (our empirical normal): DD ratio = sqrt((1 + 22*0.282)/23)
+      Verify DD ratio is between 0.55 and 0.57.
+   b) N = 23, rho = 0.198 (our empirical stress): DD ratio = sqrt((1 + 22*0.198)/23)
+      Verify DD ratio is between 0.47 and 0.49.
+   c) N = 23, rho = 0.55 (literature estimate for daily returns):
+      Verify DD ratio is between 0.74 and 0.76.
+
+6. **Timescale dependence of correlation.** Pairwise return correlation measured at different timescales satisfies:
+   - rho(delta_t) → 0 as delta_t → 0 (at very short timescales, idiosyncratic noise dominates)
+   - rho(delta_t) → rho_fundamental as delta_t → infinity (at long timescales, common factors dominate)
+
+   This is the Epps effect (Epps 1979). Our empirical finding (rho = 0.28 at ~1 second timescale vs rho = 0.55 at daily timescale from literature) is consistent with this effect. State that the effective diversification at the trading timescale (tick-level) is BETTER than the diversification at the risk management timescale (daily), and that both are relevant for different purposes.

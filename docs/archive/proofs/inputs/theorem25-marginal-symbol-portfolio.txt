@@ -1,0 +1,63 @@
+# Theorem 25: Marginal Symbol Portfolio Effect
+
+We formalize when adding a marginal symbol to a portfolio improves or hurts the portfolio-level Sortino ratio.
+
+## Definitions
+
+Consider a portfolio of N symbols. For symbol j = 1, ..., N, let:
+- mu_j = mean step return (positive if symbol is profitable)
+- sigma_j^- = downside standard deviation of step returns
+
+The portfolio is equal-weighted: portfolio return per step = (1/N) * sum_{j=1}^N r_j.
+
+Define portfolio Sortino as:
+
+  S_portfolio = mean(portfolio returns) / downside_std(portfolio returns) * sqrt(m)
+
+where m = steps_per_day for annualization.
+
+Under the simplifying assumption that symbols are independent (cross-correlations ignored for tractability), the portfolio mean return is
+
+  mu_P = (1/N) * sum_{j=1}^N mu_j
+
+and the portfolio downside variance is
+
+  sigma_P^{-2} = (1/N^2) * sum_{j=1}^N (sigma_j^-)^2.
+
+NOTE: In the actual codebase, portfolio Sortino is computed differently — it is the mean of per-symbol Sortino ratios across passing symbols:
+
+  S_code = (1/|P|) * sum_{j in P} S_j
+
+where P = {j : trades_j >= 10 and drawdown_j <= 0.20} and S_j is the per-symbol Sortino. We formalize both definitions.
+
+## Claims
+
+### Part A: Mean-of-Sortinos formulation (as implemented in code)
+
+1. Adding symbol N+1 with Sortino S_{N+1} to a portfolio of N passing symbols with mean Sortino S_N improves the portfolio iff
+
+     S_{N+1} > S_N - S_N / (N+1) = S_N * N / (N+1).
+
+   Equivalently, the new symbol must have Sortino above a threshold that is strictly less than the current mean. Prove this.
+
+2. Corollary: a symbol with Sortino > 0 always improves a portfolio with mean Sortino > 0 when N >= 1.
+
+3. A symbol with negative Sortino hurts the portfolio iff |S_{N+1}| > S_N / (N+1). For large N, even a slightly negative Sortino hurts.
+
+4. Numerical claim: with N=16 passing symbols and mean Sortino S_N = 0.161 (our v10 result), a new symbol improves the portfolio iff its Sortino exceeds 0.161 * 16/17 = 0.1514. A symbol with Sortino = 0.05 (weakly positive) would lower portfolio Sortino to (16*0.161 + 0.05)/17 = 0.1545.
+
+### Part B: True portfolio Sortino formulation (equal-weight, independent)
+
+5. Under independence, portfolio Sortino with N symbols is
+
+     S_P(N) = (sum mu_j) / sqrt(sum (sigma_j^-)^2) * sqrt(m).
+
+   Adding symbol N+1 improves S_P iff
+
+     mu_{N+1} / sigma_{N+1}^- > (sum_{j=1}^N mu_j) * sigma_{N+1}^- / (sum_{j=1}^N (sigma_j^-)^2 + (sigma_{N+1}^-)^2) * (correction_term).
+
+   Derive the exact condition and show it depends on both the new symbol's Sortino AND its risk magnitude relative to existing symbols.
+
+6. Diversification benefit: if all symbols have identical mu and sigma^-, then S_P(N) = S_1 * sqrt(N). Adding any identical symbol always helps. Prove this (this is a special case of Theorem 15).
+
+7. Heterogeneous case: when symbols have different qualities, prove there exists a quality threshold below which adding a symbol hurts S_P even though it has positive individual Sortino. This threshold depends on the existing portfolio composition.

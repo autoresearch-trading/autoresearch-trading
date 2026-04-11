@@ -27,7 +27,7 @@
 | 3 | AVAX (held out) > 51.4% | Not started |
 | 4 | Temporal stability < 3pp drop | Not started |
 
-## Prior Work (main branch, for reference)
-- v11 MLP: Sortino=0.353, 9/23 symbols, walk-forward mean=0.261
-- Every incremental change regressed — model at local optimum
-- Motivated the pivot to representation learning
+## Key Context
+- Prior supervised MLP on main branch hit a local optimum — motivated the pivot to representation learning
+- 100-trade batching destroyed tape signals — this branch works with raw order events
+- `is_open` has autocorrelation half-life of 20 trades (strongest persistent signal)

@@ -1,6 +1,6 @@
 # Autoresearch Trading
 
-DEX perpetual futures trading research. Supervised classification models trained on ~40GB of Hive-partitioned Parquet data (trades, orderbook, funding) for 25 crypto symbols from Pacifica API.
+Self-supervised representation learning on DEX perpetual futures tape data. A dilated CNN encoder (~400K params) trained on ~40GB of raw order events (160 days, 25 crypto symbols from Pacifica API) to learn meaningful tape representations — the way a human tape reader develops intuition from watching order flow. Direction prediction is a downstream probing task, not the primary objective.
 
 ## Quick Start
 
@@ -10,82 +10,95 @@ uv sync
 
 # Sync data from Cloudflare R2
 rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only
-
-# Run tests
-uv run pytest tests/
-
-# Train with current best config
-uv run python train.py
-
-# Optuna hyperparameter search
-uv run python train.py --search
 ```
 
 ## Architecture
 
-Flat MLP classifier on 13 microstructure features, trained with focal loss and Triple Barrier labeling.
+Self-supervised encoder with MEM (Masked Event Modeling) + SimCLR contrastive pretraining:
 
 ```
-Raw Parquet (trades + orderbook)
-  -> compute_features_v9()     # 100-trade batches -> 13 features
-  -> normalize_features_v9()   # rolling z-score/IQR, clip +/-5
-  -> TradingEnv                # Gymnasium: obs=(50,13), actions={flat,long,short}
-  -> make_labeled_dataset()    # Triple Barrier: 300-step horizon, cost-adjusted
-  -> DirectionClassifier       # 676 -> 64 -> 64 -> 64 -> 3, ~52K params
-  -> 5-seed ensemble           # sum logits -> argmax
-  -> evaluate()                # Sortino ratio on full test set
+Raw Parquet (trades + orderbook + funding)
+  -> dedup + group same-timestamp trades into order events
+  -> align nearest prior OB snapshot (10 levels, ~24s cadence)
+  -> compute 17 features per event (9 trade + 8 orderbook)
+  -> (batch, 200, 17) windows at stride=50
+  -> BatchNorm -> 6x [Conv1d + LayerNorm + ReLU] dilated 1..32
+  -> concat[GlobalAvgPool, last_position] -> 256-dim embedding
+  -> MEM reconstruction (weight 0.70) + NT-Xent contrastive (weight 0.30)
+  -> frozen encoder -> linear probes for direction at 10/50/100/500 event horizons
 ```
 
-**Current best (v11b):** Sortino=0.353, 9/23 symbols passing, 1269 trades, WR=55%, PF=1.71
+## Features (17 per order event)
 
-## Features (13, v11b)
+| # | Feature | Source | Notes |
+|---|---------|--------|-------|
+| 1 | log_return | trade | log(vwap / prev_vwap) |
+| 2 | log_total_qty | trade | rolling 1000-event median normalized |
+| 3 | is_open | trade | fraction of fills that are opens — DEX-specific |
+| 4 | time_delta | trade | log(ts - prev_ts + 1) |
+| 5 | num_fills | trade | log(fill count) |
+| 6 | book_walk | trade | spread-normalized price levels consumed |
+| 7 | effort_vs_result | trade | **Wyckoff master signal** — absorption detection |
+| 8 | climax_score | trade | **Wyckoff phase transitions** |
+| 9 | prev_seq_time_span | trade | prior window duration (no lookahead) |
+| 10 | log_spread | orderbook | mid-normalized spread |
+| 11 | imbalance_L1 | orderbook | notional imbalance at best bid/ask |
+| 12 | imbalance_L5 | orderbook | harmonic-weighted L1:5 imbalance |
+| 13 | depth_ratio | orderbook | log bid/ask notional ratio |
+| 14 | trade_vs_mid | orderbook | VWAP position relative to mid |
+| 15 | delta_imbalance_L1 | orderbook | change since prior snapshot |
+| 16 | kyle_lambda | orderbook | per-snapshot price impact coefficient |
+| 17 | cum_ofi_5 | orderbook | piecewise Cont 2014 OFI over 5 snapshots |
 
-| # | Feature | Source |
-|---|---------|--------|
-| 0 | lambda_ofi | trade+orderbook |
-| 1 | directional_conviction | trade |
-| 2 | vpin | trade |
-| 3 | hawkes_branching | trade |
-| 4 | reservation_price_dev | orderbook |
-| 5 | vol_of_vol | trade |
-| 6 | utc_hour_linear | time |
-| 7 | microprice_dev | orderbook |
-| 8 | delta_tfi | trade |
-| 9 | multi_level_ofi | orderbook |
-| 10 | buy_vwap_dev | trade |
-| 11 | trade_arrival_rate | trade |
-| 12 | r_20 | trade |
+## Evaluation Gates (pre-registered)
 
-## Project Structure
-
-```
-prepare.py              — Data loading, feature engineering, TradingEnv, evaluate()
-train.py                — DirectionClassifier, focal loss training, Optuna search
-tests/                  — 100 tests across 10 files
-scripts/                — Data sync + analysis scripts (walk-forward, ablation, T42-T47)
-data/                   — ~40GB Hive-partitioned Parquet (gitignored)
-.cache/                 — Cached v11b .npz feature files (gitignored)
-docs/experiments/       — Experiment plans, reports, results
-docs/superpowers/       — Design specs and implementation plans
-proofs/                 — Aristotle Lean 4 formal proofs (T0-T47)
-```
+| Gate | Test | Threshold |
+|------|------|-----------|
+| 0 | PCA + logistic regression baseline | Reference |
+| 1 | Linear probe on frozen embeddings (100-event) | > 51.4% on 15+/25 symbols |
+| 2 | Fine-tuned CNN vs logistic regression | Exceed by >= 0.5pp on 15+ symbols |
+| 3 | Held-out symbol (AVAX) | > 51.4% at primary horizon |
+| 4 | Temporal stability (months 1-4 vs 5-6) | < 3pp drop on 10+ symbols |
 
 ## Data
 
 - **25 symbols**: 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
 - **Date range**: 2025-10-16 to 2026-03-25 (~160 days)
-- **Splits**: Train (99d) / Val (25d) / Test (36d)
+- **Held-out symbol**: AVAX (excluded from pretraining)
+- **Test set**: April 1-13 for probes, April 14+ untouched
 - **Pipeline**: Fly.io collector -> GitHub Actions daily sync -> Cloudflare R2 -> local
 
-## Evaluation
+## Agent System
 
-- **Metric**: Sortino ratio (annualized, downside deviation only)
-- **Guardrails**: >= 10 trades, <= 20% max drawdown per symbol
-- **Portfolio score**: mean Sortino across passing symbols
-- **Walk-forward validated**: 4-fold rolling, all positive, mean=0.261
+The project uses a multi-agent system orchestrated by `lead-0`:
+
+```
+claude --agent lead-0
+├── Council (parallel, advisory)
+│   council-1 (eval methodology), council-2 (microstructure),
+│   council-3 (information regimes), council-4 (tape reading),
+│   council-5 (skeptic), council-6 (DL architecture)
+└── Workers (sequential, execution)
+    runpod-7, builder-8, analyst-9, reviewer-10,
+    validator-11, prover-12, data-eng-13, researcher-14
+```
+
+## Project Structure
+
+```
+CLAUDE.md                  — Working context for all agents
+docs/superpowers/specs/    — Master spec (2026-04-10)
+docs/knowledge/            — Compiled wiki (concepts, decisions, experiments)
+docs/council-reviews/      — Agent review outputs
+docs/research/             — Literature surveys
+docs/archive/              — Historical artifacts (old supervised pipeline)
+scripts/                   — Data sync scripts
+data/                      — ~40GB Hive-partitioned Parquet (gitignored)
+.cache/                    — Preprocessed .npz feature files (gitignored)
+```
 
 ## Stack
 
-Python 3.12+, PyTorch, Gymnasium, NumPy, Pandas, DuckDB, Optuna
+Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 
 See [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md) for detailed architecture documentation.

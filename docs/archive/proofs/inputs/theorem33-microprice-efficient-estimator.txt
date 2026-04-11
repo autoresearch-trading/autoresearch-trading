@@ -1,0 +1,51 @@
+# Theorem 33: Microprice as Optimal Efficient Price Estimator
+
+Based on Gatheral & Oomen (2010), "Zero-intelligence realized variance estimation."
+
+## Definitions
+
+Consider a limit order book with best bid price B, best ask price A, best bid quantity q_B, best ask quantity q_A.
+
+Define:
+- Midprice: M = (A + B) / 2
+- Spread: S = A - B > 0
+- Microprice: P_micro = (B * q_A + A * q_B) / (q_B + q_A)
+
+Let the true efficient price be P* (unobservable), satisfying E[P*] = E[next trade price | current book state].
+
+Define the imbalance ratio: I = q_B / (q_B + q_A), so I ∈ (0, 1).
+
+## Claims
+
+1. **Microprice as weighted midprice.** Prove that:
+
+     P_micro = M + (I - 1/2) * S
+
+   That is, the microprice equals the midprice plus an adjustment proportional to the imbalance and the spread. When q_B = q_A (balanced book), I = 1/2 and P_micro = M. When q_B > q_A (more bids), I > 1/2 and P_micro > M (price is pushed up).
+
+2. **Microprice deviation identity.** The deviation from midprice is:
+
+     P_micro - M = (q_B - q_A) / (2 * (q_B + q_A)) * S = (2*I - 1) * S / 2
+
+   This is exactly our feature `microprice_dev`. Prove this is equivalent to half the spread times the normalized imbalance.
+
+3. **Optimality under uniform fill probability.** Under the "zero-intelligence" model where the next trade hits the ask with probability q_B / (q_B + q_A) and hits the bid with probability q_A / (q_B + q_A) (larger bid queue means more likely to trade at the ask):
+
+     E[next_trade_price | book] = A * q_B/(q_B + q_A) + B * q_A/(q_B + q_A) = P_micro
+
+   Prove that the microprice is the minimum-variance unbiased estimator of the next trade price under this model.
+
+4. **Microprice strictly dominates midprice as estimator.** Define:
+   - MSE_mid = E[(M - P*)^2]
+   - MSE_micro = E[(P_micro - P*)^2]
+
+   Under the zero-intelligence model where P* = P_micro:
+
+     MSE_micro = 0
+     MSE_mid = ((I - 1/2) * S)^2 = (microprice_dev)^2
+
+   So MSE_mid >= MSE_micro with equality iff I = 1/2 (balanced book). Prove this.
+
+5. **Information content of microprice_dev.** The squared microprice deviation E[(P_micro - M)^2] = Var(I) * S^2 / 4. This variance is maximized when I is uniformly distributed (maximum uncertainty about imbalance) and zero when I is constant (always balanced). Prove that microprice_dev has higher variance (and thus more potential predictive power) when:
+   - Spread is wider (more room for the microprice to deviate)
+   - Imbalance is more variable (more directional pressure changes)

@@ -1,0 +1,83 @@
+# Theorem 46: Variance Bound for Sortino Ratio Estimator
+
+## Definitions
+
+Let R = (R_1, R_2, ..., R_N) be a finite sequence of i.i.d. returns with N >= 1.
+
+Define:
+  mu = E[R_i]                         (true mean return)
+  sigma^2 = Var(R_i)                   (total variance)
+  sigma_d = sqrt(E[min(R_i, 0)^2])    (downside deviation)
+  m > 0                                (annualization factor, e.g. steps_per_day)
+
+The Sortino ratio is:
+  S = (mu / sigma_d) * sqrt(m)
+
+The sample Sortino estimator from N observations is:
+  S_hat = (mu_hat / sigma_d_hat) * sqrt(m)
+
+where:
+  mu_hat = (1/N) * sum_{i=1}^N R_i
+  sigma_d_hat = sqrt((1/N) * sum_{i=1}^N min(R_i, 0)^2)
+
+## Claims
+
+1. **Variance of sample mean.** For i.i.d. returns:
+     Var(mu_hat) = sigma^2 / N
+
+2. **Delta method for ratio estimator.** Define g(a, b) = (a/b) * sqrt(m) for b > 0. The Sortino estimator S_hat = g(mu_hat, sigma_d_hat). By the delta method (first-order Taylor expansion around (mu, sigma_d)):
+
+     Var(S_hat) ≈ (dg/da)^2 * Var(mu_hat) + (dg/db)^2 * Var(sigma_d_hat)
+
+   where:
+     dg/da = sqrt(m) / sigma_d
+     dg/db = -mu * sqrt(m) / sigma_d^2
+
+   Prove that:
+     Var(S_hat) ≈ (m / sigma_d^2) * (sigma^2 / N) + (S^2 / (2*N*m)) * m
+
+   Simplifying:
+     Var(S_hat) ≈ (m * sigma^2) / (sigma_d^2 * N) + S^2 / (2*N)
+
+3. **Standard error.** Taking square roots:
+     SE(S_hat) ≈ sqrt(m * sigma^2 / (sigma_d^2 * N) + S^2 / (2*N))
+
+4. **Dominant term when S is small.** When S < 1 (which holds for our application where S ≈ 0.26), the second term S^2/(2N) is small relative to the first term. In this regime:
+     SE(S_hat) ≈ sqrt(m) * sigma / (sigma_d * sqrt(N))
+
+   Prove that when S < 1, the first term exceeds the second term, i.e.:
+     m * sigma^2 / (sigma_d^2 * N) > S^2 / (2*N)
+
+   which simplifies to: 2 * m * sigma^2 / sigma_d^2 > S^2 = m * mu^2 / sigma_d^2,
+   hence: 2 * sigma^2 > mu^2, which is equivalent to CV^2 = sigma^2/mu^2 > 1/2.
+
+5. **Portfolio with correlated assets.** For K assets with pairwise correlation rho and equal weight, the effective independent sample size is:
+     N_eff = K / (1 + (K-1) * rho)
+
+   The portfolio Sortino SE becomes:
+     SE(S_portfolio) ≈ sqrt(m) * sigma / (sigma_d * sqrt(N * N_eff))
+
+   Prove that N_eff < K for rho > 0 and N_eff = K for rho = 0.
+
+6. **Numerical verification.** With parameters:
+   - N = 28108 (steps per symbol per 20-day fold)
+   - K = 9 (passing symbols)
+   - rho = 0.28
+   - sigma = 0.001024
+   - sigma_d = 0.000712
+   - m = 1405 (steps per day)
+   - S = 0.261 (observed mean)
+
+   Compute:
+   a) N_eff = 9 / (1 + 8 * 0.28) = 9 / 3.24 ≈ 2.778
+   b) N_portfolio = 28108 * 2.778 ≈ 78,084
+   c) SE ≈ sqrt(1405 * 0.001024^2 / (0.000712^2 * 78084) + 0.261^2 / (2 * 78084))
+   d) Verify SE is between 0.18 and 0.20
+
+7. **Fold variance interpretation.** If the observed standard deviation across K_folds independent fold estimates is sigma_obs, and the predicted SE is SE_predicted, then under the null hypothesis of a stable edge:
+     sigma_obs / SE_predicted should be close to 1.
+
+   Our observed ratio is 0.220 / 0.193 ≈ 1.14. With only 4 folds, the sampling distribution of the sample standard deviation is highly variable (chi-squared with 3 degrees of freedom). Prove that for 4 i.i.d. samples from N(0, SE^2), the sample standard deviation has:
+     E[s] = SE * sqrt(2/3) * Gamma(2) / Gamma(3/2) = SE * c_4(4)
+
+   where c_4(n) is the bias correction factor. Compute c_4(4) and show that the expected sample std underestimates the true std by a factor of approximately 0.92.
