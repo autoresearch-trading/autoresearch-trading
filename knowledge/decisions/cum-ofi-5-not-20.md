@@ -4,9 +4,8 @@ date: 2026-04-02
 status: accepted
 decided_by: Council-2 (Rama Cont)
 sources:
-  - docs/council-reviews/2026-04-02-council-2-ob-cadence.md
-  - docs/council-reviews/2026-04-02-spec-review-data-eng-13.md
-last_updated: 2026-04-03
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
+last_updated: 2026-04-10
 ---
 
 # Decision: cum_ofi Window Is 5 Snapshots Not 20

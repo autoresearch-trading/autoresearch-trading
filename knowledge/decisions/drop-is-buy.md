@@ -4,8 +4,8 @@ date: 2026-04-02
 status: accepted
 decided_by: Council round 5 (council-4 primary, council-5 concurred)
 sources:
-  - docs/council-reviews/2026-04-02-council-4-tape-viability.md
-last_updated: 2026-04-03
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
+last_updated: 2026-04-10
 ---
 
 # Decision: Drop is_buy Feature

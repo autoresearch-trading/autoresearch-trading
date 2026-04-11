@@ -4,6 +4,7 @@ date: 2026-04-10
 status: accepted
 decided_by: user + council (unanimous)
 sources:
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
   - docs/council-reviews/repr-learning-synthesis.md
   - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
 last_updated: 2026-04-10

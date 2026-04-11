@@ -2,9 +2,8 @@
 title: Effort vs Result
 topics: [wyckoff, features, tape-reading]
 sources:
-  - docs/council-reviews/2026-04-02-council-4-tape-viability.md
-  - docs/council-reviews/round3-synthesis.md (M7)
-last_updated: 2026-04-03
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
+last_updated: 2026-04-10
 ---
 
 # Effort vs Result

@@ -2,11 +2,8 @@
 title: Cumulative Order Flow Imbalance (cum_ofi)
 topics: [microstructure, orderbook, features, cont-2014]
 sources:
-  - docs/council-reviews/2026-04-02-council-2-ob-cadence.md
-  - docs/council-reviews/2026-04-01-spec-review-council-2.md
-  - docs/council-reviews/2026-04-02-spec-review-data-eng-13.md
-  - docs/council-reviews/round3-synthesis.md (H3)
-last_updated: 2026-04-03
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
+last_updated: 2026-04-10
 ---
 
 # Cumulative Order Flow Imbalance (cum_ofi)
@@ -62,7 +59,6 @@ most predictive value." This is a correctness-level error, not a precision issue
 |------|----------|-----------|--------|
 | 2026-04-02 | 5 snapshots, not 20 | 20 snapshots = ~480s at 24s cadence, longer than the primary 100-event prediction horizon (~300s). Cont 2014: OFI lookback should roughly match prediction horizon. | council-2-ob-cadence |
 | 2026-04-02 | Piecewise Cont 2014, not naive | Price levels change 60-80% of the time at 24s; naive has wrong sign during trends | council-2-ob-cadence, data-eng-13 |
-| 2026-04-02 | Notional, not raw qty | Cross-symbol comparability (BTC lots != FARTCOIN lots) | round3-synthesis H1 |
 | 2026-04-02 | Normalize by rolling notional volume | Prevents magnitude from dominating cross-symbol | data-eng-13 |
 
 ## Gotchas
@@ -76,6 +72,12 @@ most predictive value." This is a correctness-level error, not a precision issue
    pattern as delta_imbalance_L1.
 5. First 5 snapshots of first calendar day have incomplete window -- use partial
    sum with available snapshots.
+6. **BLOCKING validation (Round 5, Council-2/5):** Before caching, verify sign-
+   correlation with subsequent mid-price movement on 5 days of BTC trending data.
+   If correlation is negative during trends, formula is wrong. This 2-hour check
+   blocks all feature caching.
+7. Boundary: if prior_notional=0 (level appeared from nothing), treat as
+   delta = +current_notional regardless of price direction (Round 5, Council-2).
 
 ## Related Concepts
 

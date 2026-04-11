@@ -4,9 +4,8 @@ date: 2026-04-02
 status: accepted
 decided_by: Council-3 (Albert Kyle), confirmed by data-eng-13
 sources:
-  - docs/council-reviews/2026-04-02-council-3-kyle-lambda.md
-  - docs/council-reviews/2026-04-02-spec-review-data-eng-13.md
-last_updated: 2026-04-03
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
+last_updated: 2026-04-10
 ---
 
 # Decision: Kyle Lambda Per-Snapshot Not Per-Event

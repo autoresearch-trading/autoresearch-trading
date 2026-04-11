@@ -2,9 +2,9 @@
 title: Order Event Grouping
 topics: [data-pipeline, dedup, preprocessing]
 sources:
-  - docs/council-reviews/2026-04-02-council-5-dedup-direction.md
+  - docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md
   - docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md
-last_updated: 2026-04-03
+last_updated: 2026-04-10
 ---
 
 # Order Event Grouping
