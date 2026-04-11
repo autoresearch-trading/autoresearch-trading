@@ -1,85 +1,42 @@
 #!/bin/bash
-# Syncs data from Fly.io to cloud object storage, then purges old data on Fly.
+# Triggers data sync + purge on the Fly.io instance.
+# GHA is just the trigger — all heavy lifting runs server-side.
 #
-# ARCHITECTURE: Streams tar directly from Fly.io to local machine to avoid
-# filling up limited /tmp space on the remote instance.
+# Syncs one date at a time to keep each SSH session under ~20min
+# (flyctl SSH drops after ~35min, and each date has ~30K files).
+#
+# R2 credentials are stored as Fly secrets, not GHA secrets.
+# boto3 must be installed on the Fly container.
 
 set -euo pipefail
 
-# --- Configuration ---
 APP_NAME="pacifica-collector"
-LOCAL_TEMP_DIR="/tmp/fly-sync-data"
-REMOTE_DATA_PATH="/app/data"
-DAYS_TO_KEEP_ON_FLY=2 # Keep today's and yesterday's data
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SYNC_DAYS=2
 
-# --- S3/R2 Configuration (from environment) ---
-S3_BUCKET="${S3_BUCKET_NAME}"
-# S3_ENDPOINT_URL is only needed for S3-compatible services like Cloudflare R2
-S3_ARGS=""
-if [ -n "${S3_ENDPOINT_URL-}" ]; then
-  S3_ARGS="--endpoint-url ${S3_ENDPOINT_URL}"
-fi
+echo "▶️ Ensuring boto3 is installed on Fly.io..."
+flyctl ssh console -q --pty=false -a "$APP_NAME" -C "pip install -q boto3"
 
-# --- Main Logic ---
-MAX_RETRIES=3
-RETRY_DELAY=30
+echo "▶️ Uploading sync script to Fly.io..."
+flyctl ssh console -q --pty=false -a "$APP_NAME" -C "rm -f /tmp/sync.py"
+flyctl ssh sftp put -q -a "$APP_NAME" "$SCRIPT_DIR/sync_remote.py" /tmp/sync.py
 
-echo "▶️ Starting data sync for Fly.io app: $APP_NAME"
+# Purge FIRST — cleans accumulated old data (already synced in
+# previous successful runs), keeping the volume lean for sync.
+echo "▶️ Running purge..."
+flyctl ssh console -q --pty=false -a "$APP_NAME" -C "python3 /tmp/sync.py --purge-only"
 
-# 1. Create local temporary directory
-rm -rf "$LOCAL_TEMP_DIR"
-mkdir -p "$LOCAL_TEMP_DIR/extracted"
-echo "✅ Created temporary directory: $LOCAL_TEMP_DIR"
+# Generate recent dates (today, yesterday)
+DATES=$(python3 -c "
+import datetime
+for i in range($SYNC_DAYS):
+    print((datetime.date.today() - datetime.timedelta(days=i)).isoformat())
+")
 
-# 2. Stream ONLY recent data from Fly.io (last 3 days, not entire history)
-# This avoids transferring ~40GB of unchanged historical data every run.
-# The aws s3 sync in step 4 handles dedup, but tar transfer is the bottleneck.
-SYNC_DAYS=3
-echo "📦 Streaming last ${SYNC_DAYS} days of data from Fly.io instance..."
-for attempt in $(seq 1 $MAX_RETRIES); do
-  if flyctl ssh console -q -a "$APP_NAME" -C "find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime -${SYNC_DAYS} -print0 | tar --ignore-failed-read --null -cf - -C ${REMOTE_DATA_PATH} -T -" | tar -xf - -C "${LOCAL_TEMP_DIR}/extracted"; then
-    echo "✅ Data streamed and extracted locally."
-    break
-  fi
-  if [ "$attempt" -eq "$MAX_RETRIES" ]; then
-    echo "❌ Failed to stream data after $MAX_RETRIES attempts"
-    exit 1
-  fi
-  echo "⚠️ Attempt $attempt/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
-  rm -rf "${LOCAL_TEMP_DIR}/extracted"
-  mkdir -p "${LOCAL_TEMP_DIR}/extracted"
-  sleep "$RETRY_DELAY"
+# Sync each date in a separate SSH session to avoid timeout
+for date in $DATES; do
+  echo "▶️ Syncing date=$date ..."
+  flyctl ssh console -q --pty=false -a "$APP_NAME" -C "python3 /tmp/sync.py $date"
 done
 
-# 3. Count files to upload
-FILE_COUNT=$(find "${LOCAL_TEMP_DIR}/extracted" -type f -name "*.parquet" | wc -l)
-echo "📊 Found ${FILE_COUNT} parquet files to upload"
-
-# 4. Upload to cloud storage, preserving structure
-echo "☁️ Uploading data to bucket: s3://${S3_BUCKET}"
-# The `aws s3 sync` command is smart and efficient (only uploads changed files)
-aws s3 sync "${LOCAL_TEMP_DIR}/extracted" "s3://${S3_BUCKET}" ${S3_ARGS} --only-show-errors
-echo "✅ Upload complete."
-
-# 5. Purge old data on the Fly.io instance
-echo "🗑️ Purging data older than ${DAYS_TO_KEEP_ON_FLY} days on Fly.io volume..."
-# IMPORTANT: The `find` command deletes files. `-mtime +1` means older than 2 days ago (48h).
-PURGE_CMD="find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime +$((DAYS_TO_KEEP_ON_FLY - 1)) -print -delete"
-
-# First, run a dry-run to see what would be deleted
-echo "🔍 Dry run of purge command:"
-flyctl ssh console -q -a "$APP_NAME" -C "find ${REMOTE_DATA_PATH} -type f -name '*.parquet' -mtime +$((DAYS_TO_KEEP_ON_FLY - 1)) -print" || true
-
-# Then, execute the actual purge
-flyctl ssh console -q -a "$APP_NAME" -C "${PURGE_CMD}" || true
-echo "✅ Purge command executed."
-
-# 6. Cleanup remote /tmp (in case previous runs left partial archives)
-echo "🧹 Cleaning up remote /tmp..."
-flyctl ssh console -q -a "$APP_NAME" -C "sh -c 'rm -f /tmp/data-backup-*.tar.gz'" || true
-
-# 7. Cleanup local files
-rm -rf "$LOCAL_TEMP_DIR"
-echo "🧹 Local cleanup complete."
-
-echo "🎉 Sync & Purge process finished successfully!"
+echo "🎉 Sync & Purge finished."

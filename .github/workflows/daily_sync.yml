@@ -1,14 +1,15 @@
 name: Daily Data Sync & Purge
 
 on:
-  workflow_dispatch: # Allows manual triggering from the GitHub UI
+  workflow_dispatch:
   schedule:
-    - cron: '0 2 * * *' # Runs every day at 2:00 AM UTC
+    - cron: '0 2 * * *'
 
 jobs:
   sync-and-purge:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 180
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -16,14 +17,9 @@ jobs:
     - name: Install Fly.io CLI
       uses: superfly/flyctl-actions/setup-flyctl@master
 
-    - name: Run Sync and Purge Script
+    - name: Run Sync on Fly.io
       env:
         FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-        S3_ENDPOINT_URL: ${{ secrets.STORAGE_ENDPOINT_URL }}
-        AWS_ACCESS_KEY_ID: ${{ secrets.STORAGE_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.STORAGE_SECRET_ACCESS_KEY }}
       run: |
-        aws --version
         chmod +x ./scripts/sync_cloud_data.sh
         ./scripts/sync_cloud_data.sh
