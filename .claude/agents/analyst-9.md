@@ -44,13 +44,11 @@ Write analysis results to files (scripts to `scripts/`, reports to `docs/experim
 After completing an analysis, check if the finding should be filed in the
 knowledge base:
 
-- **New experiment result:** Write a summary to `knowledge/experiments/<slug>.md`
-  using the experiment article schema (see `knowledge/experiments/v11-baseline.md`
-  for an example)
+- **New experiment result:** Write a summary to `docs/knowledge/experiments/<slug>.md`
 - **New insight about a feature or concept:** Update the relevant article in
-  `knowledge/concepts/` or create one if it doesn't exist
+  `docs/knowledge/concepts/` or create one if it doesn't exist
 
-Update `knowledge/INDEX.md` with any new articles.
+Update `docs/knowledge/INDEX.md` with any new articles.
 
 ## Tools
 

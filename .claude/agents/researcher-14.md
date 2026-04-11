@@ -75,11 +75,11 @@ Then poll with `mcp__exa__deep_researcher_check` until complete.
 After writing a research report to `docs/research/`, also check if the finding
 should update the knowledge base:
 
-- **New concept or technique:** Create or update `knowledge/concepts/<slug>.md`
-- **Evidence for/against a decision:** Update the relevant `knowledge/decisions/`
+- **New concept or technique:** Create or update `docs/knowledge/concepts/<slug>.md`
+- **Evidence for/against a decision:** Update the relevant `docs/knowledge/decisions/`
   article
 
-Update `knowledge/INDEX.md` with any new articles.
+Update `docs/knowledge/INDEX.md` with any new articles.
 
 ## Rules
 

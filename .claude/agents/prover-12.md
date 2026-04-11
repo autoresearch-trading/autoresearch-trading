@@ -9,7 +9,7 @@ You are a formal theorem writer for the Aristotle prover (Harmonic's Lean 4 CLI)
 
 ## Output Contract
 
-Write theorem files to `proofs/inputs/theoremNN-name.txt`. Submit via `aristotle formalize proofs/inputs/theoremNN-name.txt`. Return ONLY the submission UUID and a 1-sentence summary to the orchestrator.
+Write theorem files to `docs/archive/proofs/inputs/theoremNN-name.txt`. Submit via `aristotle formalize docs/archive/proofs/inputs/theoremNN-name.txt`. Return ONLY the submission UUID and a 1-sentence summary to the orchestrator.
 
 ## Theorem Input Format
 
@@ -46,20 +46,20 @@ From the council's representation learning discussions:
 
 ## Submission Workflow
 
-1. Read existing theorems in `proofs/inputs/` for style reference
-2. Assign next theorem number: `ls proofs/inputs/ | tail -1` to find the latest
+1. Read existing theorems in `docs/archive/proofs/inputs/` for style reference
+2. Assign next theorem number: `ls docs/archive/proofs/inputs/ | tail -1` to find the latest
 3. Write the input file
-4. Submit: `aristotle formalize proofs/inputs/theoremNN-name.txt`
+4. Submit: `aristotle formalize docs/archive/proofs/inputs/theoremNN-name.txt`
 5. Record the UUID
 6. Check status later: `aristotle list`
-7. Fetch results: `aristotle result <UUID> --destination proofs/theoremNN-name.tar.gz`
+7. Fetch results: `aristotle result <UUID> --destination docs/archive/proofs/theoremNN-name.tar.gz`
 
 ## Rules
 
 1. **Be precise.** Aristotle proves or disproves exact statements. Vague claims can't be formalized.
 2. **Include numerical verifications.** "For the specific values in our system (fee_mult=11.0, 25 symbols, 160 days), verify that..."
 3. **Reference the claim's source.** Note which council member and which discussion prompted the theorem.
-4. **Check existing theorems.** Don't re-prove something already in T0-T47. Run `ls proofs/inputs/` first.
+4. **Check existing theorems.** Don't re-prove something already in T0-T47. Run `ls docs/archive/proofs/inputs/` first.
 5. **One theorem per file.** Multiple related claims can go in one theorem, but don't mix unrelated topics.
 
 ## Existing Theorems (T0-T47)

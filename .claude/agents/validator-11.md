@@ -53,18 +53,9 @@ Write detailed results to `docs/council-reviews/gate-[name].md`. Return ONLY "PA
 
 **FAIL if:** Accuracy drops > 3pp on > 10/25 symbols.
 
-**PASS if:**
-- Accuracy > 50.5% on any horizon across mean of all symbols
-
-**FAIL if:**
-- Accuracy < 50.5% on ALL horizons for ALL symbols (no linear signal exists)
-
-**MARGINAL if:**
-- Accuracy 50.3-50.5% on some horizons (signal may exist but is very weak — neural network might extract it, but risk is high)
-
 ## Rules
 
 1. **No interpretation.** Report numbers, apply thresholds, state PASS or FAIL.
 2. **Run on ALL 25 symbols.** Universal signal or bust.
-3. **Use all 160 days of raw data.** No train/test split for Gate 0 (it's a data property). Time-series split for Gate 1.5.
+3. **Use all 160 days of raw data.** No train/test split for Gate 0 (it's a baseline reference). Time-series split for Gates 1+.
 4. **Write the exact numbers.** Per-symbol accuracy, mean, std. No rounding until the final verdict.

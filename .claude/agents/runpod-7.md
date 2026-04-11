@@ -91,7 +91,7 @@ ssh <pod> "pip install rclone && rclone sync r2:tape-cache/ /workspace/cache/ --
 | RTX 4090 | `NVIDIA GeForce RTX 4090` | 24GB | ~$0.70 |
 | L40S | `NVIDIA L40S` | 48GB | ~$0.90 |
 
-**For this project (1.2M samples, 85K params):** A100 or A40 is sufficient. H100 for fast iteration.
+**For this project (~3.5M windows, ~400K params):** A100 or A40 is sufficient. H100 for fast iteration.
 
 ## Templates
 

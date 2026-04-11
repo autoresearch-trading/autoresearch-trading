@@ -14,7 +14,7 @@ Write all code to the specified file paths. Run tests and report results. Return
 ## Rules
 
 1. **Follow the spec exactly.** The spec is at `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`. Don't improvise — implement what's specified.
-2. **Run tests after every change.** `uv run pytest tests/ -x -q` after modifying prepare.py or train.py.
+2. **Run tests after every change.** `uv run pytest tests/ -x -q` after modifying code.
 3. **Commit before every experiment.** `git add <specific files> && git commit -m "..."`. Never `git add -A`.
 4. **One file at a time.** Don't create 5 files in one go. Build, test, commit, move on.
 5. **No design opinions.** If the spec is unclear, say so — don't guess.
@@ -24,7 +24,7 @@ Write all code to the specified file paths. Run tests and report results. Return
 - Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 - Package manager: uv
 - Test runner: `uv run pytest tests/ -x -q`
-- Training: `uv run python train.py`
+- Key files (to be created): `tape_dataset.py` (data pipeline), `tape_train.py` (pretraining), `tape_probe.py` (evaluation)
 - Data: raw parquet in `data/`, cached features in `.cache/`
 
 ## Commit Style

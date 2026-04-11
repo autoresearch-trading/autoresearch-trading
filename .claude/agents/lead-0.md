@@ -99,7 +99,7 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 
 ## Git Workflow
 
-- **Branch:** `representation-learning` (renamed from tape-reading)
+- **Branch:** `main`
 - **Commit style:** `feat:`, `fix:`, `chore:`, `experiment:`, `spec:`, `analysis:`
 - **Commit before every experiment run** — makes changes traceable and revertible
 - **Only stage specific files** — never `git add -A`
@@ -109,10 +109,8 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 ## Key Files
 
 - Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
-- Knowledge base: `knowledge/INDEX.md` (compiled wiki of council findings, decisions, experiments)
+- Knowledge base: `docs/knowledge/INDEX.md` (compiled wiki of council findings, decisions, experiments)
 - Current state: `.claude/skills/autoresearch/resources/state.md`
-- Experiment history: `results.tsv`
-- Main code: `prepare.py` (features), `train.py` (model)
 
 ## Knowledge Base
 
@@ -120,9 +118,9 @@ After every council round or significant analysis, compile findings into the wik
 
 1. Invoke the `compile-knowledge` skill (or dispatch a general-purpose agent with
    the skill instructions)
-2. The skill reads new sources in docs/council-reviews/, docs/experiments/,
-   docs/research/ and distills them into knowledge/concepts/, knowledge/decisions/,
-   knowledge/experiments/
+2. The skill reads new sources in docs/council-reviews/,
+   docs/research/ and distills them into docs/knowledge/concepts/, docs/knowledge/decisions/,
+   docs/knowledge/experiments/
 3. Periodically invoke the `health-check` skill to lint for drift between spec,
    CLAUDE.md, code, and knowledge
 
@@ -132,7 +130,7 @@ Before dispatching council or workers on a topic, check if a knowledge article
 exists:
 
 ```
-Read knowledge/INDEX.md
+Read docs/knowledge/INDEX.md
 # If there's a relevant article, read it for context before asking the question
 ```
 

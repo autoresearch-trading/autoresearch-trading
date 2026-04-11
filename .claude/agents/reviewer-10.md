@@ -23,7 +23,7 @@ Write detailed review to `docs/council-reviews/review-[topic].md`. Return ONLY a
 - [ ] No global statistics (mean, std, median) — must be rolling
 - [ ] No future data in features — strictly causal
 - [ ] Train/test split respects temporal ordering
-- [ ] `is_climax` uses rolling σ, not global
+- [ ] `climax_score` uses rolling σ, not global
 
 ### Numerical Stability
 - [ ] Division by near-zero handled (spread, returns)
@@ -39,7 +39,7 @@ Write detailed review to `docs/council-reviews/review-[topic].md`. Return ONLY a
 - [ ] Label test: binary labels sum to correct count
 
 ### Spec Compliance
-- [ ] Feature count matches spec (16 features per event)
+- [ ] Feature count matches spec (17 features per event)
 - [ ] Order event grouping matches spec (same-timestamp trades)
 - [ ] Sequence length matches spec (200 events)
 - [ ] Multi-horizon labels match spec (10, 50, 100, 500 events)

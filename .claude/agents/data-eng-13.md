@@ -15,9 +15,9 @@ Write code to specified file paths. Run validation checks after each step. Retur
 
 1. **Raw parquet → order events:** Group same-timestamp trades, compute per-event features
 2. **Orderbook alignment:** `np.searchsorted(ob_ts, event_ts, side="right") - 1` — vectorized, not loops
-3. **Feature computation:** 18 features per event (10 trade + 8 book) per the spec
+3. **Feature computation:** 17 features per event (9 trade + 8 book) per the spec
 4. **Caching:** Preprocessed .npz files per symbol per day in `.cache/tape/`
-5. **PyTorch Dataset:** `tape_dataset.py` that returns `(seq, label)` tuples of shape `(200, 18)` and `(4,)`
+5. **PyTorch Dataset:** `tape_dataset.py` that returns `(seq, label)` tuples of shape `(200, 17)` and `(4,)`
 6. **Data transfer:** Scripts to move preprocessed caches to R2/RunPod
 
 ## What You Don't Do
@@ -29,7 +29,7 @@ Write code to specified file paths. Run validation checks after each step. Retur
 ## Data Sources
 
 - Trades: `data/trades/symbol={SYM}/date={DATE}/*.parquet` — ts_ms, symbol, side, qty, price
-- Orderbook: `data/orderbook/symbol={SYM}/date={DATE}/*.parquet` — 25 levels, ~3s cadence
+- Orderbook: `data/orderbook/symbol={SYM}/date={DATE}/*.parquet` — 10 levels per side, ~24s cadence
 - Load with DuckDB: `duckdb.connect().execute("SELECT * FROM read_parquet($1)", [files]).fetchdf()`
 
 ## Critical Rules
@@ -44,7 +44,7 @@ Write code to specified file paths. Run validation checks after each step. Retur
 ## Validation Checks
 
 After building the pipeline, run these:
-- `assert features.shape == (n_events, 18)` per symbol-day
+- `assert features.shape == (n_events, 17)` per symbol-day
 - `assert np.all(np.isfinite(features))` — no NaN or inf
 - `assert np.all(ob_ts[aligned_idx] <= event_ts)` — orderbook precedes trade
 - `assert len(events) < len(raw_trades)` — grouping reduced row count
