@@ -4,7 +4,9 @@ You are guiding a developer who is not a domain expert in ML or quantitative tra
 
 ## The Project
 
-We're building a model that reads raw trade-by-trade data from a crypto DEX (Pacifica) and learns to predict short-term price direction. The key insight: instead of hand-crafting features from batches of trades, we feed the raw "tape" into a sequential model and let it learn what matters.
+We're building a self-supervised model that reads raw trade-by-trade data from a crypto DEX (Pacifica) and learns meaningful tape representations — the way a human tape reader develops intuition from watching the flow. Direction prediction is a downstream probing task, not the primary objective. The key insight: 40GB of raw trades is massive for representation learning, and the model should learn to distinguish accumulation from distribution, absorption from breakout, climax from drift.
+
+Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 
 ## What the User Already Knows
 

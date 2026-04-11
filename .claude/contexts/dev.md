@@ -5,16 +5,15 @@ Focus: One change at a time, test before and after
 
 ## Behavior
 - Make the smallest possible change that tests the hypothesis
-- Run `uv run pytest tests/ -x -q` after any prepare.py change
-- Run `uv run python train.py` for the actual experiment
+- Run `uv run pytest tests/ -x -q` after any code changes
 - Commit before every experiment run
-- Parse output with `.claude/skills/autoresearch/resources/parse_summary.sh`
+- Verify representation quality metrics after changes
 
 ## Priorities
 1. Don't break existing tests
 2. Make the change
 3. Run the experiment
-4. Record results in results.tsv
+4. Evaluate against the relevant gate (Gates 0-4)
 
 ## Tools to favor
 - Edit for targeted code changes

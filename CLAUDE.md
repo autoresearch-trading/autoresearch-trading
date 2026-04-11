@@ -1,19 +1,20 @@
-# Repository Guidelines — tape-reading branch
+# Repository Guidelines — representation-learning branch
 
 ## Project Overview
 
-**DEX perpetual futures tape reading research.** Training a sequential model directly on raw trade data (40GB, 160 days, 25 crypto symbols from Pacifica API) to learn universal microstructure patterns. No handcrafted features — the model learns its own representations from the tape.
+**DEX perpetual futures tape representation learning.** Self-supervised model trained on 40GB of raw trade data (160 days, 25 crypto symbols from Pacifica API) to learn meaningful tape representations — the way a human tape reader develops intuition from watching millions of order events. Direction prediction is a downstream probing task, not the primary objective.
 
-**Spec:** `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md`
+**Spec:** `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 
 **Stack**: Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 
-**Agent system:** Start with `claude --agent lead-0`. Lead-0 orchestrates council (council-1 through council-7) and workers (builder-8, analyst-9, reviewer-10, validator-11).
+**Agent system:** Start with `claude --agent lead-0`. Lead-0 orchestrates council (council-1 through council-6) and workers (builder-8 through researcher-14).
 
 ## Data
 
 - **25 symbols**: 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
 - **Date range**: 2025-10-16 to 2026-03-25 (~160 days)
+- **Held-out symbol**: AVAX (pre-designated, excluded from pretraining)
 - **Sync**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only`
 
 ### Raw data schema
@@ -58,51 +59,83 @@
 16. `kyle_lambda` — per-SNAPSHOT Cov(Δmid, cum_signed_notional)/Var(cum_signed_notional) over 50 snapshots (~20 min), forward-filled
 17. `cum_ofi_5` — rolling sum of OFI (piecewise Cont 2014) over last 5 book snapshots (~120s), normalized by rolling notional volume
 
+**Three load-bearing features (Wyckoff):**
+- `effort_vs_result` — the master signal: absorption (high) vs ease-of-movement (low)
+- `climax_score` — phase transition markers (buying/selling climax)
+- `is_open` — DEX-specific Composite Operator footprint (no equivalent in traditional markets)
+
 ## Architecture
 
-Dilated 1D CNN (~91K params, 6 layers, RF=253):
+Self-supervised encoder (~400K params, 7 layers, RF=253):
 ```
 Input: (batch, 200, 17) — 200 order events, 17 features
 BatchNorm(17) → [Conv1d + LayerNorm + ReLU + Dropout(0.1)] × 2 → [Conv1d + LayerNorm + ReLU + residual] × 4
-Dilations: 1, 2, 4, 8, 16, 32 — receptive field covers full 200-event window
-concat[GlobalAvgPool, last_position] → Linear(128→64) + ReLU → [Linear(64→1)] × 4
-Output: 4 sigmoid heads (direction at 10/50/100/500 events forward)
-Loss: BCEWithLogits + label smoothing (ε=0.10/0.08/0.05/0.05), weights 0.10/0.20/0.35/0.35
-Optimizer: AdamW + OneCycleLR(max_lr=3e-4, 30% warmup)
+Channels: 17→64→128→128→128→128→128, kernel=5, dilations: 1, 2, 4, 8, 16, 32
+Global embedding: concat[GlobalAvgPool(128), last_position(128)] → 256-dim
+
+Pretraining heads (discarded after):
+  MEM decoder: Linear(128→17) at masked positions → MSE (14 of 17 features)
+  Projection: Linear(256→256) + ReLU + Linear(256→128) → L2-norm → NT-Xent
+
+Fine-tuning heads (added after):
+  Linear(256→64) + ReLU → [Linear(64→1)] × 4, sigmoid — per-horizon direction
 ```
 
-## Evaluation
+## Training
 
-- **Primary metric:** accuracy at **primary horizon (100 events)** on ALL 25 symbols
-- **Target:** > 52% accuracy, < 2% std across symbols, > 20/25 symbols above 51%
-- **Hold-out symbol test:** 1 symbol excluded from training, tested for universality
-- **Multiple testing:** Holm-Bonferroni correction across all trials (~1,600 including sweeps); maintain trial_log.csv
-- **Mandatory linear baseline:** logistic regression (C sweep) — 15+/25 symbols must exceed 51.4% at primary horizon
-- **April hold-out:** April 14+ designated untouched (2026-04-02). April 1-13 for dev validation.
-- **Embargo:** 600-event gap between train/test folds
+**Self-supervised pretraining** (primary):
+- Masked Event Modeling (block masking, 5-event blocks, 15% of events) — weight 0.70
+- SimCLR contrastive on global embeddings — weight 0.30
+- Direction labels NOT used during pretraining
+- Stride=50 (4× data), equal-symbol sampling per epoch
+- Exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 from MEM reconstruction (trivial copy)
+- AdamW + OneCycleLR(max_lr=1e-3, 20% warmup)
+- Compute cap: 1 H100-day before evaluation gates
+
+**Fine-tuning** (after Gate 1 passes):
+- Freeze encoder 5 epochs → unfreeze at lr=5e-5
+- Loss weights: 0.10/0.20/0.50/0.20 for 10/50/100/500 event horizons
+- Walk-forward validation with 600-event embargo
+
+## Evaluation Gates (pre-registered, sequential)
+
+| Gate | Test | Threshold |
+|------|------|-----------|
+| **0** | PCA + logistic regression baseline | Reference (CNN probe must exceed) |
+| **1** | Linear probe on frozen embeddings, 100-event direction | > 51.4% on 15+/25 symbols (April 1-13) |
+| **2** | Fine-tuned CNN vs logistic regression on flat features | Exceed by ≥ 0.5pp on 15+ symbols |
+| **3** | Held-out symbol (AVAX) accuracy | > 51.4% at primary horizon |
+| **4** | Temporal stability (months 1-4 vs 5-6) | < 3pp drop on 10+ symbols |
+
+**Representation quality diagnostics:**
+- Symbol identity probe < 20% accuracy (embeddings must NOT encode symbol)
+- CKA > 0.7 between seed-varied runs
+- Wyckoff label probes (absorption, climax, informed flow, stress)
 
 ## Implementation Steps
 
-0. Label + data validation — compute base rate, validate same-timestamp grouping (go/no-go gate)
-1. Data pipeline — `tape_dataset.py` (order event grouping + OB alignment + caching)
-1.5. Linear baseline — logistic regression with C sweep (go/no-go gate)
-2. Prototype — 1D CNN on 1 symbol, 1 day (verify pipeline)
-3. Full training — RunPod H100, all symbols, all days
-4. Analysis — per-symbol accuracy, feature attribution, DSR
+0. Label + data validation — base rate, same-timestamp grouping, dedup validation
+1. Data pipeline — `tape_dataset.py` (order events + OB alignment + caching + stride=50)
+2. Baselines — Gate 0: PCA + logistic regression, random encoder
+3. Pretraining — MEM + contrastive on RunPod H100
+4. Evaluation — Gates 1-4, symbol probe, cluster analysis, Wyckoff probes
+5. Fine-tuning — conditional on Gate 1 pass
+6. Interpretation — feature attribution, embedding trajectories, market state vocabulary
 
 ## Key Findings from Previous Work
 
 - `is_open` has autocorrelation half-life of 20 trades — the strongest persistent signal in raw trades
-- `is_buy` has half-life of 1 — no persistence, essentially random. **Dropped in council round 5** (59% direction ambiguity + no persistence = useless feature)
+- `is_buy` has half-life of 1 — no persistence, essentially random. **Dropped in council round 5**
 - Shuffling trades within batches reduces feature-return correlations by 37.6% — sequence order matters
 - The flat MLP classifier (main branch) hit Sortino 0.353 on 9/23 symbols — every incremental change made it worse
 - 100-trade batching destroys tape signals — this branch works with raw trades
+- Council data sufficiency review: 40GB is massive for representation learning, marginal for proving a 2% trading edge
 
 ## Conventions
 
 - **Commit style**: `feat:`, `fix:`, `chore:`, `experiment:`, `spec:`, `analysis:`
 - **Git safety**: Only stage specific files, never `git add -A`
-- **Branch**: `tape-reading` (from main)
+- **Branch**: `representation-learning` (from main)
 
 ## Gotchas
 
@@ -121,9 +154,15 @@ Optimizer: AdamW + OneCycleLR(max_lr=3e-4, 30% warmup)
 13. **kyle_lambda is per-SNAPSHOT, not per-event**: event-level had ~2 effective observations per 50-event window at 24s OB cadence. Per-snapshot over 50 snapshots (~20 min), forward-filled. Uses Δmid, not Δvwap.
 14. **depth_ratio, kyle_lambda, cum_ofi_5**: must use notional (qty × price) for cross-symbol comparability
 15. **cum_ofi_5 uses piecewise Cont 2014 OFI**: naive delta-notional has wrong sign when best bid/ask price changes between snapshots (60-80% of the time at 24s cadence). Must check price level changes.
-16. **Stride=200**: non-overlapping input windows. First window offset randomized per epoch.
+16. **Stride**: 50 for pretraining, 200 for evaluation probes. First window offset randomized per epoch.
 17. **April hold-out**: April 14+ is untouched — do not view, even for data quality checks
 18. **BatchNorm at inference**: must use `model.eval()` for entire test pass — otherwise running stats contaminated. Single-sample = NaN.
 19. **Dedup key must NOT include `side`**: buyer/seller pairs differ on `side`, so including it in dedup removes nothing. Use `(ts_ms, qty, price)` only.
 20. **OB has 10 levels, not 25**: all symbols measured at 10 bid + 10 ask levels. ~24s cadence, not ~3s.
-21. **Training samples ~400-560K, not 1.2M**: after dedup + grouping. ~28K events/day on BTC (was 140K raw trades).
+21. **Training samples ~3.5M at stride=50**: after dedup + grouping. ~28K events/day on BTC (was 140K raw trades).
+22. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivially copyable from neighbors)
+23. **MEM loss space**: compute in BatchNorm-normalized space, not raw feature space
+24. **Embedding collapse**: monitor per-batch embedding std. If → 0, pretraining has collapsed.
+25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, AVAX, LINK). Do NOT force invariance with memecoins.
+26. **Day boundaries**: do not construct windows crossing day boundaries
+27. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance

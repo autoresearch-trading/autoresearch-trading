@@ -14,8 +14,8 @@ Before implementing any new feature, loss function, architecture change, or trai
 
 ## When to Use
 
-- Before adding a new feature to prepare.py
-- Before changing the loss function or training loop in train.py
+- Before adding a new feature or changing the feature pipeline
+- Before changing pretraining objectives (MEM, contrastive) or fine-tuning strategy
 - Before proposing an architecture modification
 - Whenever someone says "what about X?" or "should we try Y?"
 
@@ -24,24 +24,24 @@ Before implementing any new feature, loss function, architecture change, or trai
 ### Step 1: Check Internal History (mandatory)
 
 ```bash
-# Was this feature/approach already in the v6 39-feature set?
-grep -n "FEATURE_NAME\|feature_name" prepare.py
+# Check the knowledge base first
+grep -ri "KEYWORD" knowledge/
 
-# Was it tested and ablated?
-grep -rn "FEATURE_NAME\|feature_name" prepare.py train.py | grep -i "drop\|ablat\|hurt\|remove"
-
-# Is it in the swept variables table?
-grep "VARIABLE_NAME" .claude/skills/autoresearch/resources/state.md
+# Was this approach discussed in council reviews?
+grep -ri "KEYWORD" docs/council-reviews/
 
 # Any prior experiment?
-grep -ri "KEYWORD" docs/experiments/ results.tsv
+grep -ri "KEYWORD" docs/experiments/
+
+# Is it in the spec?
+grep -ri "KEYWORD" docs/superpowers/specs/
 ```
 
 ### Step 2: Check Research Docs
 
 ```bash
 # Do we have research on this topic?
-grep -ri "KEYWORD" docs/research/ docs/superpowers/specs/
+grep -ri "KEYWORD" docs/research/ outputs/
 ```
 
 If a research doc exists, read it before proceeding. It may contain findings that inform or invalidate the idea.
@@ -49,9 +49,9 @@ If a research doc exists, read it before proceeding. It may contain findings tha
 ### Step 3: Check Literature (if novel idea)
 
 If steps 1-2 found nothing, search for academic evidence:
-- arXiv for recent papers on the method
+- arXiv for recent papers on the method (MEM, contrastive learning, microstructure)
 - Practitioner blogs for implementation experience
-- The outputs/ directory for any prior deep research
+- Reference implementations (DeepLOB, etc.)
 
 ### Step 4: Decision
 
@@ -67,7 +67,8 @@ If steps 1-2 found nothing, search for academic evidence:
 
 ## Anti-Patterns
 
-- **Implementing without checking:** Writing code for a feature that was already ablated
+- **Implementing without checking:** Writing code for an approach that was already discussed and rejected by the council
 - **Ignoring negative results:** Re-testing a failed approach without a new reason
-- **Literature without context:** Adopting a method from equity markets without checking if it applies to DEX perps at 100-trade batches
+- **Literature without context:** Adopting a method from equity markets without checking if it applies to DEX perps with 24s OB cadence
 - **Over-researching:** Spending hours on literature when a 10-minute experiment would answer the question
+- **Skipping the knowledge base:** The wiki at `knowledge/` has distilled council findings — check it before going to raw sources

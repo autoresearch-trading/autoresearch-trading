@@ -1,6 +1,6 @@
 ---
 name: council-1
-description: Financial ML methodology advisor. Consult on evaluation methodology, multiple testing, information-driven sampling, cross-validation for time series, and statistical rigor.
+description: Financial ML methodology advisor. Consult on evaluation methodology, probing task design, cross-validation for time series, and statistical rigor for representation quality assessment.
 tools: Read, Grep, Glob
 model: sonnet
 ---

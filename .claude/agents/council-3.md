@@ -1,6 +1,6 @@
 ---
 name: council-3
-description: Market microstructure theory advisor. Consult on price impact theory, informed vs uninformed trading, Kyle's lambda, and theoretical grounding of microstructure signals.
+description: Market microstructure theory advisor. Consult on price impact theory, informed vs uninformed trading, Kyle's lambda, and information regime detection in learned representations.
 tools: Read, Grep, Glob
 model: sonnet
 ---

@@ -1,6 +1,6 @@
 ---
 name: council-2
-description: Order flow and LOB microstructure advisor. Consult on order flow imbalance features, orderbook representation, price impact modeling, and short-term return predictability.
+description: Order flow and LOB microstructure advisor. Consult on order flow imbalance features, microstructure regime definitions, cross-symbol universality, and ground truth labels for representation evaluation.
 tools: Read, Grep, Glob
 model: sonnet
 ---

@@ -4,21 +4,22 @@ Mode: Experiment analysis, result interpretation
 Focus: Did the experiment answer the question?
 
 ## Behavior
-- Compare against the control run (baseline in state.md)
-- Check all metrics: Sortino, passing symbols, trades, drawdown, win rate, profit factor
-- Look for red flags: ensemble alpha < 0.5, fewer passing symbols, higher drawdown
+- Compare against the relevant baseline (PCA, random encoder, or logistic regression)
+- Check representation quality metrics: accuracy, symbol coverage, CKA, effective rank
+- Look for red flags: embedding collapse, symbol identity leakage, temporal instability
 - Update state.md with the result
 - Write experiment report to docs/experiments/ if significant
 
 ## Analysis Checklist
-- [ ] Sortino vs baseline (0.353)
-- [ ] Passing symbols vs baseline (9/23)
-- [ ] Ensemble alpha > 0.5?
+- [ ] Accuracy vs baseline (PCA / random encoder / logistic regression)
+- [ ] Symbol coverage: how many symbols > 51.4%?
+- [ ] CKA across seeds > 0.7? (representation stability)
+- [ ] Effective rank > 10? (no embedding collapse)
+- [ ] Symbol identity probe < 20%? (learning microstructure, not symbol identity)
+- [ ] Temporal stability: < 3pp drop across time periods?
 - [ ] Any symbols that flipped (pass->fail or fail->pass)?
-- [ ] Trade count reasonable (not degenerate)?
-- [ ] Max drawdown acceptable (< 20% per symbol)?
 
 ## Decision
-- KEEP: improvement on primary metric without regression on guardrails
-- DISCARD: regression or no improvement — revert and document why
+- KEEP: improvement on representation quality without gate violations
+- DISCARD: regression or gate failure — revert and document why
 - INVESTIGATE: ambiguous result — needs more runs or different config

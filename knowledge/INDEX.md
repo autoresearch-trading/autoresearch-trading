@@ -2,7 +2,7 @@
 
 Auto-maintained by the compile-knowledge skill. Do not edit manually.
 
-Last compiled: 2026-04-03
+Last compiled: 2026-04-10
 
 ## Concepts
 
@@ -25,6 +25,7 @@ Last compiled: 2026-04-03
 - [Notional Not Raw Qty](decisions/notional-not-raw-qty.md) — depth_ratio, kyle_lambda, cum_ofi use qty*price for cross-symbol comparability
 - [OB Cadence 24s](decisions/ob-cadence-24s.md) — measured ~24s not ~3s; cascading impact on kyle_lambda, cum_ofi window sizes
 - [Per-Snapshot Kyle Lambda](decisions/per-snapshot-kyle-lambda.md) — 50 snapshots (~20 min) not 50 events; fixes 10x variance inflation
+- [Pivot to Representation Learning](decisions/pivot-to-representation-learning.md) — from supervised Sortino to self-supervised MEM+contrastive; MLP ceiling reached
 
 ## Experiments
 

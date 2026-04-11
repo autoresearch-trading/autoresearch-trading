@@ -13,7 +13,7 @@ and knowledge base. The goal is to find drift, contradictions, and gaps.
 ### 1. Load the three sources of truth
 
 Read these files:
-- `docs/superpowers/specs/2026-04-01-tape-reading-direct-spec.md` (spec)
+- `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md` (spec)
 - `CLAUDE.md` (conventions and gotchas)
 - `knowledge/INDEX.md` → then read each linked article
 
