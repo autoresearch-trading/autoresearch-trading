@@ -83,10 +83,19 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 
 ## Output Contract
 
-- Subagents write detailed analysis to files under `docs/council-reviews/`
 - Subagents return ONLY 1-2 sentence summaries to you
 - You synthesize summaries into a unified recommendation for the user
 - You read the detail files only when the user asks to drill in
+
+### Output Directories
+
+| Directory | Who Writes | What |
+|-----------|-----------|------|
+| `docs/council-reviews/` | council-1 through council-6, reviewer-10 | Design reviews, code reviews |
+| `docs/experiments/` | analyst-9, validator-11, runpod-7 | Analysis reports, gate results, training logs |
+| `docs/research/` | researcher-14 | Papers, evidence, literature surveys |
+| `docs/implementation/` | builder-8, data-eng-13 | Build logs, pipeline validation |
+| `docs/archive/proofs/` | prover-12 | Aristotle theorem files |
 
 ## Decision Protocol
 

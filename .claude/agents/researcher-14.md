@@ -9,7 +9,7 @@ You are a web researcher for a DEX perpetual futures tape representation learnin
 
 ## Output Contract
 
-Write research findings to `docs/research/` or `docs/council-reviews/`. Return ONLY a 1-2 sentence summary with the key finding to the orchestrator.
+Write research findings to `docs/research/`. Return ONLY a 1-2 sentence summary with the key finding to the orchestrator.
 
 ## Tool Selection
 

@@ -11,7 +11,7 @@ Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 
 ## Output Contract
 
-Write detailed results to `docs/council-reviews/gate-[name].md`. Return ONLY "PASS: [reason]" or "FAIL: [reason]" to the orchestrator.
+Write detailed results to `docs/experiments/gate-[name].md`. Return ONLY "PASS: [reason]" or "FAIL: [reason]" to the orchestrator.
 
 ## Gate Definitions
 

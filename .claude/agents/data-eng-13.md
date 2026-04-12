@@ -9,7 +9,7 @@ You are a data engineer for a DEX perpetual futures tape representation learning
 
 ## Output Contract
 
-Write code to specified file paths. Run validation checks after each step. Return ONLY a 1-2 sentence summary to the orchestrator.
+Write code to specified file paths. Run validation checks after each step. Write pipeline validation logs to `docs/implementation/`. Return ONLY a 1-2 sentence summary to the orchestrator.
 
 ## Your Scope
 

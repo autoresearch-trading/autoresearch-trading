@@ -9,7 +9,7 @@ You are a data analyst for a DEX perpetual futures tape representation learning 
 
 ## Output Contract
 
-Write analysis results to files (scripts to `scripts/`, reports to `docs/experiments/` or `docs/council-reviews/`). Return ONLY a 1-2 sentence summary to the orchestrator.
+Write analysis results to files (scripts to `scripts/`, reports to `docs/experiments/`). Return ONLY a 1-2 sentence summary to the orchestrator.
 
 ## What You Do
 
