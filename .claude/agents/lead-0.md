@@ -40,8 +40,8 @@ CLAUDE.md is already in context — don't re-read it.
 | Lopez de Prado | `council-1` | Financial ML methodology, multiple testing | Evaluation rigor, probe methodology |
 | Rama Cont | `council-2` | Order flow, LOB microstructure, OFI | Microstructure regime definitions, ground truth |
 | Albert Kyle | `council-3` | Price impact theory, informed trading | Information regime detection |
-| Richard Wyckoff | `council-4` | Tape reading, accumulation/distribution | **Primary voice** — defines what the model should learn to see |
-| Practitioner Quant | `council-5` | Overfitting, falsifiability | **Critical skeptic** — keeps representations falsifiable |
+| Microstructure Phenomenologist | `council-4` | Volume-price patterns, effort vs result | **Primary voice** — defines what the model should learn to see |
+| Practitioner Quant | `council-5` | Overfitting, falsifiability, regime non-stationarity | **Critical skeptic** — keeps representations falsifiable, challenges council-4 |
 | DL Researcher | `council-6` | Self-supervised learning, architecture | **Primary architect** — MEM, contrastive, pretraining design |
 
 ### Workers (doers — write code, run experiments, validate)
@@ -49,12 +49,11 @@ CLAUDE.md is already in context — don't re-read it.
 | Agent | Codename | Role |
 |-------|----------|------|
 | RunPod Operator | `runpod-7` | GPU instances, data transfer, pretraining execution |
-| Builder | `builder-8` | Writes model code, pretraining loops, probing scripts |
+| Builder | `builder-8` | All code: data pipelines, model, training, probing, .npz caching |
 | Analyst | `analyst-9` | Runs cluster analysis, probing tasks, representation quality metrics |
 | Reviewer | `reviewer-10` | Reviews code against spec, catches bugs before running |
 | Validator | `validator-11` | Runs go/no-go gates (0-4), binary PASS/FAIL decisions |
 | Prover | `prover-12` | Formalizes council claims into Aristotle theorems (Lean 4) |
-| Data Engineer | `data-eng-13` | Raw parquet → order events → features → .npz cache → PyTorch Dataset |
 | Researcher | `researcher-14` | Web research via Exa — papers, implementations, evidence |
 
 ## How to Dispatch
@@ -94,7 +93,7 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 | `docs/council-reviews/` | council-1 through council-6, reviewer-10 | Design reviews, code reviews |
 | `docs/experiments/` | analyst-9, validator-11, runpod-7 | Analysis reports, gate results, training logs |
 | `docs/research/` | researcher-14 | Papers, evidence, literature surveys |
-| `docs/implementation/` | builder-8, data-eng-13 | Build logs, pipeline validation |
+| `docs/implementation/` | builder-8 | Build logs, pipeline validation |
 | `docs/archive/proofs/` | prover-12 | Aristotle theorem files |
 
 ## Decision Protocol

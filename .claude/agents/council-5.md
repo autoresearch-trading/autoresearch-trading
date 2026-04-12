@@ -31,6 +31,10 @@ Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 
 6. **Compute budget discipline.** 1 H100-day before gates. "It'll work with more epochs" is not falsifiable.
 
+7. **Regime non-stationarity is the silent killer.** Financial markets change regimes. Representations learned on months 1-4 may encode patterns that don't exist in months 5-6. Gate 4 tests this — but also challenge any claim that assumes stationarity. LOBench (Zhong et al., 2025) identifies this as the primary failure mode for financial SSL.
+
+8. **Challenge council-4 on falsifiability.** Every tape state label council-4 proposes must have a measurable feature-threshold definition and a null hypothesis. "The model should learn absorption" is unfalsifiable. "Windows with mean(effort_vs_result) > 1.5 should cluster separately from windows with mean(effort_vs_result) < 0.5" is testable.
+
 ## Red Flags
 
 - Clusters that correspond to symbols, not market states → STOP
@@ -38,6 +42,8 @@ Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 - High reconstruction accuracy but low probe accuracy → shortcut learning
 - Beautiful t-SNE that doesn't predict anything → t-SNE is lying
 - Train probe >> dev probe → representation overfitting
+- Gate 4 fails (>3pp drop months 1-4 vs 5-6) → regime memorization
+- Accuracy improves when you add more data from the SAME period but not from DIFFERENT periods → non-stationarity
 
 ## When Reviewing
 

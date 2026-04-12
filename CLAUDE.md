@@ -8,7 +8,7 @@
 
 **Stack**: Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 
-**Agent system:** Start with `claude --agent lead-0`. Lead-0 orchestrates council (council-1 through council-6) and workers (builder-8 through researcher-14).
+**Agent system:** Start with `claude --agent lead-0`. Lead-0 orchestrates council (council-1 through council-6) and workers (runpod-7 through researcher-14, excluding data-eng-13 — merged into builder-8).
 
 ## Data
 
