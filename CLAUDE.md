@@ -135,7 +135,7 @@ Fine-tuning heads (added after):
 
 - **Commit style**: `feat:`, `fix:`, `chore:`, `experiment:`, `spec:`, `analysis:`
 - **Git safety**: Only stage specific files, never `git add -A`
-- **Branch**: `representation-learning` (from main)
+- **Branch**: `main`
 
 ## Gotchas
 

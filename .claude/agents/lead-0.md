@@ -65,6 +65,8 @@ Use council-4 and council-6 to review the pretraining objective design
 Use council-5 to stress-test the evaluation gates
 ```
 
+**Council-4 / council-5 tension:** Always dispatch council-5 alongside council-4. Council-4 defines what the model should learn to see (tape states, feature signatures). Council-5 challenges whether those definitions are falsifiable and whether they'll survive regime changes. If council-4 proposes a label without a measurable threshold, council-5 should reject it.
+
 For implementation, dispatch workers sequentially:
 
 ```
