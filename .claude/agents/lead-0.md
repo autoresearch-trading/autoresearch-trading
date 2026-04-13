@@ -97,7 +97,8 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 | `docs/research/` | researcher-14 | Papers, evidence, literature surveys |
 | `docs/implementation/` | builder-8 | Build logs, pipeline validation |
 | `docs/implementation/reviews/` | reviewer-10 | Code reviews against spec |
-| `docs/archive/proofs/` | prover-12 | Aristotle theorem files |
+| `docs/proofs/` | prover-12 | Active Aristotle theorem inputs + results (T48+) |
+| `docs/archive/proofs/` | — | Archived supervised-era theorems (T0-T47), read-only |
 
 ## Decision Protocol
 
