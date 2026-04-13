@@ -45,16 +45,19 @@ runpodctl user           # balance check
 10. **Download results:** `rsync -avz root@<ip>:/workspace/checkpoints/ ./models/`
 11. **Stop billing:** `runpodctl pod stop <pod-id>`
 
-## For This Project
+## GPU Selection — Discover, Don't Prescribe
 
-**Workload:** ~3.5M windows, ~400K params, 1 H100-day compute cap before eval gates.
+Do NOT assume which GPU to use. Discover it per experiment based on what's needed:
 
-**GPU choice:**
-- H100 — fast iteration (~12h pretraining)
-- A100 — budget alternative (~18-20h)
-- A40 — slow but cheap (not recommended for iteration)
+1. **Read the experiment parameters** — model size, dataset size, batch size, target wall-time, compute budget.
+2. **Check current state:** `runpodctl gpu list` for availability and pricing at this moment.
+3. **Profile:** If uncertain, run 1 epoch on the cheapest candidate, measure wall-time, extrapolate total cost.
+4. **Decide** using three axes: VRAM fits the batch, total cost ≤ budget, wall-time ≤ iteration target.
+5. **Record the choice and reasoning** in the experiment log.
 
-Always use `runpodctl gpu list` to check current availability and pricing — do NOT rely on hardcoded rates.
+Never carry GPU choices between experiments — availability, pricing, and experiment shape all change.
+
+The only invariant from the spec: **1 H100-day (24 GPU-hours) compute cap before eval gates are run.** Translate this to any GPU by comparing FLOPs/$.
 
 ## Browser Access (Claude-in-Chrome)
 
