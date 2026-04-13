@@ -68,6 +68,17 @@ Raw Parquet (trades + orderbook + funding)
 - **Test set**: April 1-13 for probes, April 14+ untouched
 - **Pipeline**: Fly.io collector -> GitHub Actions daily sync -> Cloudflare R2 -> local
 
+### Schema change (2026-04-01)
+
+Collector was extended on April 1 to capture additional fields and a new dataset:
+
+- **Trades**: added `cause` (`normal` / `market_liquidation` / `backstop_liquidation`) and `event_type` (`fulfill_taker` / `fulfill_maker`).
+- **Prices** (new): per-symbol snapshots of `open_interest`, `volume_24h`, `mark`, `oracle`, `funding`, `next_funding`.
+
+Order-event dedup rule depends on the date:
+- Pre-April: `drop_duplicates(subset=['ts_ms', 'qty', 'price'])` — `side` deliberately excluded (buyer/seller fragments differ on `side`).
+- April onward: filter to `event_type == 'fulfill_taker'`.
+
 ## Agent System
 
 The project uses a multi-agent system orchestrated by `lead-0`:
