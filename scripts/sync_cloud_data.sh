@@ -33,10 +33,24 @@ for i in range($SYNC_DAYS):
     print((datetime.date.today() - datetime.timedelta(days=i)).isoformat())
 ")
 
-# Sync each date in a separate SSH session to avoid timeout
+# Sync each date in a separate SSH session to avoid timeout.
+# Retry on SSH disconnects (flyctl ssh occasionally exits with -1
+# mid-session). sync_remote.py is idempotent — files already in R2
+# are skipped by key+size — so retries are safe.
 for date in $DATES; do
   echo "▶️ Syncing date=$date ..."
-  flyctl ssh console -q --pty=false -a "$APP_NAME" -C "python3 /tmp/sync.py $date"
+  for attempt in 1 2 3; do
+    if flyctl ssh console -q --pty=false -a "$APP_NAME" -C "python3 /tmp/sync.py $date"; then
+      break
+    fi
+    if [ "$attempt" = "3" ]; then
+      echo "❌ Failed after 3 attempts for date=$date"
+      exit 1
+    fi
+    backoff=$((attempt * 30))
+    echo "⚠️  attempt $attempt failed (likely SSH drop), retrying in ${backoff}s..."
+    sleep "$backoff"
+  done
 done
 
 echo "🎉 Sync & Purge finished."
