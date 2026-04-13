@@ -120,7 +120,7 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 
 - Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 - Knowledge base: `docs/knowledge/INDEX.md` (compiled wiki of council findings, decisions, experiments)
-- Current state: `.claude/skills/autoresearch/resources/state.md`
+- Current state: `.claude/skills/autoresearch/state.md`
 
 ## Knowledge Base
 
