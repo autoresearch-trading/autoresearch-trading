@@ -18,18 +18,24 @@ Hard constraints:
 """
 
 import json
-import os
-import sys
 import time
 import traceback
 import warnings
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import duckdb
 import numpy as np
 import pandas as pd
+
+
+def _scalar(row: Optional[tuple]) -> Any:
+    """Unwrap DuckDB .fetchone() for aggregate queries that always return one row."""
+    if row is None:
+        raise RuntimeError("DuckDB aggregate query returned no row")
+    return row[0]
+
 
 warnings.filterwarnings("ignore")
 
@@ -253,7 +259,7 @@ def compute_base_rates(symbol: str, sample_dates: list[str]) -> dict:
     if len(df) < max(HORIZONS) + 1:
         return {"error": "insufficient_events", "n_events": len(df)}
 
-    vwap = df["vwap"].values
+    vwap: np.ndarray = np.array(df["vwap"], dtype=float)
     n = len(vwap)
     result = {}
     for h in HORIZONS:
@@ -307,29 +313,33 @@ def compute_grouping_stats(symbol: str, date_str: str) -> dict:
         has_event_type = "event_type" in col_names
 
         # Raw row count
-        raw_count = con.execute(
-            f"SELECT count(*) FROM read_parquet([{file_list}])"
-        ).fetchone()[0]
+        raw_count = _scalar(
+            con.execute(f"SELECT count(*) FROM read_parquet([{file_list}])").fetchone()
+        )
 
         # Dedup WITHOUT side
-        dedup_no_side = con.execute(
-            f"""
+        dedup_no_side = _scalar(
+            con.execute(
+                f"""
             SELECT count(*) FROM (
                 SELECT DISTINCT ts_ms, qty, price
                 FROM read_parquet([{file_list}])
             )
         """
-        ).fetchone()[0]
+            ).fetchone()
+        )
 
         # Dedup WITH side (should equal without-side per gotcha #19 on pre-April)
-        dedup_with_side = con.execute(
-            f"""
+        dedup_with_side = _scalar(
+            con.execute(
+                f"""
             SELECT count(*) FROM (
                 SELECT DISTINCT ts_ms, qty, price, side
                 FROM read_parquet([{file_list}])
             )
         """
-        ).fetchone()[0]
+            ).fetchone()
+        )
 
         # Group by ts_ms after dedup-no-side: mixed side rate
         grouping_df = (
@@ -397,18 +407,22 @@ def compute_grouping_stats(symbol: str, date_str: str) -> dict:
 
         # April mode: count fulfill_taker rows
         if has_event_type:
-            taker_count = con.execute(
-                f"""
+            taker_count = _scalar(
+                con.execute(
+                    f"""
                 SELECT count(*) FROM read_parquet([{file_list}])
                 WHERE event_type = 'fulfill_taker'
             """
-            ).fetchone()[0]
-            maker_count = con.execute(
-                f"""
+                ).fetchone()
+            )
+            maker_count = _scalar(
+                con.execute(
+                    f"""
                 SELECT count(*) FROM read_parquet([{file_list}])
                 WHERE event_type = 'fulfill_maker'
             """
-            ).fetchone()[0]
+                ).fetchone()
+            )
             result["fulfill_taker_rows"] = int(taker_count)
             result["fulfill_maker_rows"] = int(maker_count)
             result["fulfill_taker_pct"] = (
@@ -530,17 +544,20 @@ def compute_events_per_day(symbol: str, date_str: str) -> Optional[int]:
             pass
 
         if is_april and has_event_type:
-            count = con.execute(
-                f"""
+            count = _scalar(
+                con.execute(
+                    f"""
                 SELECT count(DISTINCT ts_ms) FROM (
                     SELECT ts_ms FROM read_parquet([{file_list}])
                     WHERE event_type = 'fulfill_taker'
                 )
             """
-            ).fetchone()[0]
+                ).fetchone()
+            )
         else:
-            count = con.execute(
-                f"""
+            count = _scalar(
+                con.execute(
+                    f"""
                 WITH deduped AS (
                     SELECT ts_ms, qty, price,
                            ROW_NUMBER() OVER (PARTITION BY ts_ms, qty, price ORDER BY recv_ms) as rn
@@ -548,7 +565,8 @@ def compute_events_per_day(symbol: str, date_str: str) -> Optional[int]:
                 )
                 SELECT count(DISTINCT ts_ms) FROM deduped WHERE rn = 1
             """
-            ).fetchone()[0]
+                ).fetchone()
+            )
         return int(count)
     except Exception:
         return None
@@ -618,7 +636,7 @@ def compute_wyckoff_labels(symbol: str, sample_dates: list[str]) -> dict:
             """
             ).fetchdf()
             dfs.append(df)
-        except Exception as e:
+        except Exception:
             pass
         finally:
             con.close()
@@ -659,7 +677,7 @@ def compute_wyckoff_labels(symbol: str, sample_dates: list[str]) -> dict:
             """
             ).fetchdf()
             dfs.append(df)
-        except Exception as e:
+        except Exception:
             pass
         finally:
             con.close()
@@ -707,7 +725,6 @@ def compute_wyckoff_labels(symbol: str, sample_dates: list[str]) -> dict:
         window_qty = log_total_qty_raw[w_start:i]
         window_ret = log_return[w_start:i]
         window_evr = evr_raw[w_start:i]
-        window_is_open = is_open[w_start:i]
 
         med_qty = np.median(window_qty) if len(window_qty) > 0 else 0
         log_total_qty_norm[i] = log_total_qty_raw[i] - med_qty
