@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tape.constants import WINDOW_LEN
 from tape.features_trade import compute_trade_features
 
 
@@ -43,8 +44,11 @@ def test_compute_trade_features_returns_9_columns():
         "climax_score",
         "prev_seq_time_span",
     }
-    assert expected_cols.issubset(set(out.columns))
+    # Exact equality — no extra columns allowed
+    assert set(out.columns) == expected_cols
     assert len(out) == len(ev)
+    # Global finiteness check
+    assert np.isfinite(out.values).all(), "Output contains NaN or inf"
 
 
 def test_log_return_first_event_is_zero():
@@ -83,16 +87,80 @@ def test_book_walk_zero_spread_guard():
     assert np.isfinite(out["book_walk"]).all()
 
 
-def test_prev_seq_time_span_no_lookahead():
-    # Gotcha #8: prev_seq_time_span is the PRIOR 200-event window's span, not
-    # the current one's (which would be a hard lookahead).
-    ev = _fake_events(500)
-    out = compute_trade_features(ev, spread=np.full(500, 0.1), mid=np.full(500, 100.0))
-    # First 200 events must have prev_seq_time_span = 0 (no prior window yet).
-    assert (out["prev_seq_time_span"].iloc[:200] == 0.0).all()
-    # From event 200 onward, prev_seq_time_span equals log(last_ts[0:200] - first_ts[0:200] + 1) for 200:400
-    span = float(ev["ts_ms"].iloc[199] - ev["ts_ms"].iloc[0])
-    expected = float(np.log(span + 1.0))
+def test_prev_seq_time_span_sliding_window():
+    """Sliding-window semantics for prev_seq_time_span (Fix 1).
+
+    For event i >= WINDOW_LEN:
+        prev_seq_time_span[i] = log(ts_ms[i-1] - ts_ms[i-WINDOW_LEN] + 1)
+
+    Key assertions:
+    - First WINDOW_LEN events are exactly 0.0 (no prior window).
+    - Event WINDOW_LEN value equals log(ts_ms[WINDOW_LEN-1] - ts_ms[0] + 1).
+    - Each subsequent event uses its own shifted 200-event window (not a block).
+    - Strict causality: event i only sees ts_ms[i-WINDOW_LEN .. i-1].
+    """
+    n = 500
+    ev = _fake_events(n)
+    out = compute_trade_features(ev, spread=np.full(n, 0.1), mid=np.full(n, 100.0))
+    ts = ev["ts_ms"].to_numpy(dtype=np.int64)
+
+    # First WINDOW_LEN events must be 0.0
+    assert (out["prev_seq_time_span"].iloc[:WINDOW_LEN] == 0.0).all()
+
+    # Event exactly at WINDOW_LEN: sees span of events [0, WINDOW_LEN-1]
+    expected_at_200 = float(np.log(ts[WINDOW_LEN - 1] - ts[0] + 1))
     np.testing.assert_allclose(
-        out["prev_seq_time_span"].iloc[200:400], expected, rtol=0, atol=0
+        out["prev_seq_time_span"].iloc[WINDOW_LEN],
+        expected_at_200,
+        rtol=1e-10,
+        atol=0,
     )
+
+    # Spot-check several later events: each must reference its own window
+    for i in [201, 250, 300, 350, 400, 499]:
+        expected_i = float(np.log(ts[i - 1] - ts[i - WINDOW_LEN] + 1))
+        np.testing.assert_allclose(
+            out["prev_seq_time_span"].iloc[i],
+            expected_i,
+            rtol=1e-10,
+            atol=0,
+            err_msg=f"Mismatch at event i={i}",
+        )
+
+    # Events 201-399 must NOT all share the same value (old block behaviour)
+    vals_201_399 = out["prev_seq_time_span"].iloc[201:400].to_numpy()
+    assert (
+        vals_201_399.std() > 0.0
+    ), "prev_seq_time_span is a step-function — sliding window not implemented"
+
+
+def test_no_day_start_saturation():
+    """Fix 2: cold-start sigma floor + event-0 effort_vs_result guard.
+
+    Two distinct cold-start problems:
+
+    1. climax_score: with min_periods=10 and fillna(1e-10), z = qty/1e-10 → 5.0
+       for events 1-9.  Fix: min_periods=1 + sigma floor (_SIGMA_FLOOR=0.1).
+       The first 20 events must not saturate.
+
+    2. effort_vs_result event 0: log_return[0] = 0 → log(0 + 1e-6) = -13.8 →
+       evr = log_total_qty - (-13.8) → clips to +5.  Fix: zero out event 0.
+       Events 1+ may legitimately clip to ±5 with tiny real price moves (the
+       formula log(qty/med) - log(|ret|+1e-6) is designed to be near the clip
+       boundary for small-return, normal-volume events — that is correct
+       behaviour, not a bug).
+    """
+    ev = _fake_events(2_000)
+    out = compute_trade_features(
+        ev, spread=np.full(2_000, 0.1), mid=np.full(2_000, 100.0)
+    )
+    # climax_score: must not saturate for the first 20 events (cold-start fix)
+    assert (
+        out["climax_score"].iloc[:20] < 4.5
+    ).all(), "climax_score saturates to 5.0 at day start — cold-start spike present"
+    # effort_vs_result event 0: log_return[0]=0 is undefined — must be zeroed
+    assert (
+        out["effort_vs_result"].iloc[0] == 0.0
+    ), "effort_vs_result[0] must be 0.0 (log_return[0] is undefined)"
+    # Global finiteness
+    assert np.isfinite(out.values).all(), "Output contains NaN or inf"

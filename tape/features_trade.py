@@ -20,6 +20,15 @@ from tape.constants import ROLLING_WINDOW, WINDOW_LEN
 _EPS_RETURN: float = 1e-6  # gotcha #5 — was 1e-4, too coarse for BTC
 _EPS_SPREAD_MID: float = 1e-8  # gotcha #10
 
+# Sigma floor for rolling-std normalisers (Fix 2 — cold-start spike guard).
+# We use a fixed value of 0.1 because:
+#   - log(qty) for gamma(2,1)-distributed qty has std ~0.7 in practice.
+#   - A floor of 0.1 keeps |z| < 10 in the worst realistic early-event case
+#     while still letting genuine climax events (|z| > 2) score high once the
+#     rolling window is warm (≥ ~10 events), without producing the ~qty/1e-10
+#     blow-up that min_periods=10 + fillna(1e-10) causes for events 1-9.
+_SIGMA_FLOOR: float = 0.1
+
 
 def compute_trade_features(
     events: pd.DataFrame, *, spread: np.ndarray, mid: np.ndarray
@@ -69,51 +78,51 @@ def compute_trade_features(
     book_walk = book_walk_abs / eps_spread
 
     # 7. effort_vs_result — clip(log_total_qty - log(|return|+eps), -5, 5)  (gotcha #5)
+    #    Event 0: log_return[0] = 0 (undefined — no prior vwap), which gives
+    #    log(0 + 1e-6) = -13.8 → clips to +5.  Zero it out (option (a) from spec).
     abs_ret = np.abs(log_return)
     effort_vs_result = np.clip(log_total_qty - np.log(abs_ret + _EPS_RETURN), -5.0, 5.0)
+    effort_vs_result[0] = 0.0
 
     # 8. climax_score — rolling-1000 σ, clipped [0, 5]  (gotcha #6)
-    _ssq: Any = pd.Series(total_qty).rolling(ROLLING_WINDOW, min_periods=10).std()
+    #
+    #    Fix 2: use min_periods=1 (accept noisy early estimates) and apply a
+    #    sigma floor (_SIGMA_FLOOR = 0.1) so that the first few events with
+    #    near-zero rolling std do not produce z-scores of ~qty/1e-10 → 5.0.
+    #    std() returns NaN for n=1; fillna(0.0) then the floor picks up.
+    _ssq: Any = pd.Series(total_qty).rolling(ROLLING_WINDOW, min_periods=1).std()
     roll_std_qty: np.ndarray = np.maximum(
-        _ssq.fillna(1e-10).to_numpy(dtype=float), 1e-10
+        _ssq.fillna(0.0).to_numpy(dtype=float), _SIGMA_FLOOR
     )
-    _ssr: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=10).std()
+    _ssr: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=1).std()
     roll_std_ret: np.ndarray = np.maximum(
-        _ssr.fillna(1e-10).to_numpy(dtype=float), 1e-10
+        _ssr.fillna(0.0).to_numpy(dtype=float), _SIGMA_FLOOR
     )
-    _smq: Any = pd.Series(total_qty).rolling(ROLLING_WINDOW, min_periods=10).mean()
+    _smq: Any = pd.Series(total_qty).rolling(ROLLING_WINDOW, min_periods=1).mean()
     roll_mean_qty: np.ndarray = _smq.fillna(0.0).to_numpy(dtype=float)
-    _smr: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=10).mean()
+    _smr: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=1).mean()
     roll_mean_ret: np.ndarray = _smr.fillna(0.0).to_numpy(dtype=float)
     z_qty = (total_qty - roll_mean_qty) / roll_std_qty
     z_ret = (abs_ret - roll_mean_ret) / roll_std_ret
     climax_score = np.clip(np.minimum(z_qty, z_ret), 0.0, 5.0)
 
-    # 9. prev_seq_time_span — log(last_ts - first_ts + 1) of the PRIOR 200-event
-    #    window (gotcha #8). Zero for the first 200 events (no prior window).
+    # 9. prev_seq_time_span — log(ts_ms[i-1] - ts_ms[i-WINDOW_LEN] + 1) for
+    #    each event i >= WINDOW_LEN (gotcha #8).  Zero for the first WINDOW_LEN
+    #    events (no prior window exists).
     #
-    #    The "prior window" is the non-overlapping block that precedes the
-    #    current block. Events [0, 200) have no prior block → 0. Events
-    #    [200, 400) share the same prior block [0, 200) → constant value.
-    #    Events [400, 600) share prior block [200, 400), etc.
-    #    This is a step function over WINDOW_LEN-sized blocks, not a per-event
-    #    sliding window (which would be a lookahead into the current window).
-    prev_seq_time_span = np.zeros(n, dtype=float)
+    #    Fix 1: sliding window (not block-averaged).  For event i the feature
+    #    captures the time span of the 200 events immediately preceding it:
+    #      span[i] = ts_ms[i-1] - ts_ms[i-WINDOW_LEN]
+    #    which equals ts_ms[WINDOW_LEN-1..n-2] - ts_ms[0..n-WINDOW_LEN-1].
+    #
+    #    Causality: event i references ts_ms[i-WINDOW_LEN] through ts_ms[i-1]
+    #    — no self-reference and no future data.
+    prev_seq_time_span = np.zeros(n, dtype=np.float64)
     if n > WINDOW_LEN:
-        # Number of complete prior blocks we can reference
-        n_blocks = n // WINDOW_LEN
-        for block_idx in range(1, n_blocks + 1):
-            # Prior block: [prev_start, prev_end)
-            prev_start = (block_idx - 1) * WINDOW_LEN
-            prev_end = block_idx * WINDOW_LEN  # exclusive
-            # Current block: [prev_end, next_end)
-            curr_start = prev_end
-            curr_end = min((block_idx + 1) * WINDOW_LEN, n)
-            if curr_start >= n:
-                break
-            span_val = float(ts_ms[prev_end - 1] - ts_ms[prev_start])
-            log_span = float(np.log(span_val + 1.0))
-            prev_seq_time_span[curr_start:curr_end] = log_span
+        # ts_ms[WINDOW_LEN-1 : n-1]  →  last timestamp of the prior window for each i
+        # ts_ms[0 : n-WINDOW_LEN]    →  first timestamp of the prior window for each i
+        span = ts_ms[WINDOW_LEN - 1 : n - 1] - ts_ms[: n - WINDOW_LEN]
+        prev_seq_time_span[WINDOW_LEN:] = np.log(span.astype(np.float64) + 1.0)
 
     return pd.DataFrame(
         {
