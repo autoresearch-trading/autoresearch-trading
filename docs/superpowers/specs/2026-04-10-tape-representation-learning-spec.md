@@ -150,7 +150,13 @@ All thresholds are rolling per-symbol (causal, no lookahead).
 
 ## Sequence Length
 
-**200 order events** (not raw trades). Covers ~10 minutes on BTC.
+**200 order events** (not raw trades).
+
+Measured window duration at stride-50 event rate (Step 0, pre-April data):
+- BTC: ~5 min (median inter-event gap 1.5s; earlier "~10 min" spec figure was off by 2×)
+- ETH: ~6 min
+- SOL/HYPE: ~10 min
+- Illiquid alts (2Z, CRV, LDO, UNI): 56–68 min per 200-event window
 
 Sufficient for local tape patterns (springs, climaxes, absorption episodes). NOT sufficient for full Wyckoff cycles (accumulation → markup requires 10K+ events). Phase-level inference is future work via a hierarchical architecture (sequence of local embeddings).
 
@@ -196,7 +202,7 @@ Linear(256 → 64) + ReLU → [Linear(64 → 1)] × 4, sigmoid  — per-horizon 
 
 ### Why 400K (up from 91K)
 
-The constraint that capped the supervised model at 91K was overfitting to noisy binary labels. Self-supervised pretraining on 40GB does not have this constraint — the reconstruction and contrastive objectives are self-consistent. At ~3.5M training windows (stride=50) and 400K params, the ratio is ~1:8.75 — well-balanced for self-supervised sequence learning.
+The constraint that capped the supervised model at 91K was overfitting to noisy binary labels. Self-supervised pretraining on 40GB does not have this constraint — the reconstruction and contrastive objectives are self-consistent. Measured total windows (stride=50, pre-April, 25 symbols, 161 days): **627K** — not the ~3.5M figure earlier in this spec, which assumed ~28K events/day across all symbols and did not account for much lower event rates on illiquid alts. BTC alone contributes ~133K windows; all other symbols average ~2K/symbol. At 627K windows and 400K params, the data-to-params ratio is **~1:1.6** — still workable for self-supervised learning but tight enough that model size is a live question for the Step 3 pretraining plan (council-6 review pending).
 
 **Hard cap: do not exceed 500K params** without clearing all evaluation gates first.
 
@@ -223,7 +229,7 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
   - Time reversal (breaks causality)
   - Event shuffling (destroys sequence order)
   - Large noise > 0.1 std
-- **Cross-symbol positive pairs:** same-date, same-hour windows from different liquid symbols (BTC, ETH, SOL, BNB, LINK) as soft positives (weight 0.5). **AVAX is the held-out symbol for Gate 3 and MUST NOT appear in contrastive pairs during pretraining** — its inclusion in an earlier draft was a spec bug that would have contaminated Gate 3.
+- **Cross-symbol positive pairs:** same-date, same-hour windows from different liquid symbols (BTC, ETH, SOL, BNB, LINK, LTC) as soft positives (weight 0.5). **AVAX is the held-out symbol for Gate 3 and MUST NOT appear in contrastive pairs during pretraining** — its inclusion in an earlier draft was a spec bug that would have contaminated Gate 3. LTC substitutes for AVAX in the 6-symbol anchor set (liquid, non-held-out, distinct regime from memecoins).
 - Batch: 256 windows → 512 augmented views → 256 positive pairs, 65K negative pairs
 
 **Direction labels: NOT used during pretraining.** Pure self-supervised.
@@ -310,6 +316,10 @@ AVAX excluded entirely from pretraining. After fine-tuning, evaluate on AVAX.
 Evaluate probe accuracy on training months 1-4 vs months 5-6 separately.
 
 **STOP if accuracy drops > 3pp between periods on > 10/25 symbols.** Representations memorized regime-specific noise.
+
+**Metric selection by horizon (from Step 0 base-rate stationarity measurement):**
+- **H500:** MUST use balanced accuracy / F1 (not raw accuracy). Measured 30-day rolling H500 base rates show 3.8pp–11.4pp intra-period swings on all 8 focus symbols (BTC, ETH, SOL, CRV, 2Z, AVAX, UNI, LDO). Under raw accuracy, label distribution shift at H500 is indistinguishable from representation degradation.
+- **H100 and H50:** raw accuracy is fine (base rates stay within ±2pp on liquid symbols at these horizons).
 
 ### Representation Quality Metrics (not go/no-go, but diagnostic)
 
@@ -422,7 +432,7 @@ April+ data has `cause` field (market_liquidation, backstop_liquidation). A spec
 7. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivial copy from neighbors)
 8. **MEM reconstruction space**: compute loss in BatchNorm-normalized space, not raw feature space
 9. **Embedding collapse**: monitor per-batch embedding std. If → 0, training has collapsed.
-10. **Cross-symbol contrastive pairs**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK). **AVAX excluded — it is the Gate 3 held-out symbol.** Do NOT force invariance with memecoins.
+10. **Cross-symbol contrastive pairs**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK, LTC). **AVAX excluded — it is the Gate 3 held-out symbol.** Do NOT force invariance with memecoins.
 11. **Day boundaries**: do not construct windows crossing day boundaries
 12. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance
 13. **April hold-out**: April 14+ untouched — do not view, even informally

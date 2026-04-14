@@ -159,10 +159,10 @@ Fine-tuning heads (added after):
 18. **BatchNorm at inference**: must use `model.eval()` for entire test pass — otherwise running stats contaminated. Single-sample = NaN.
 19. **Dedup key must NOT include `side`**: buyer/seller pairs share identical `(ts_ms, qty, price)` but differ on `side` — including `side` in the dedup key PRESERVES both counterparty records (doubling event counts); excluding `side` collapses them to one record per fill (correct). Use `(ts_ms, qty, price)` only.
 20. **OB has 10 levels, not 25**: all symbols measured at 10 bid + 10 ask levels. ~24s cadence, not ~3s.
-21. **Training samples ~3.5M at stride=50**: after dedup + grouping. ~28K events/day on BTC (was 140K raw trades).
+21. **Training windows ~627K at stride=50** (Step 0 measurement): pre-April, 25 symbols, 161 days. BTC alone contributes ~133K; all other symbols average ~2K/symbol. BTC events/day median is ~20,563 (not ~28K). 200-event window on BTC is ~5.1 min (not ~10 min). Data-to-400K-params ratio is ~1:1.6 — tight; model size is a live question for Step 3 (council-6 review pending).
 22. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivially copyable from neighbors)
 23. **MEM loss space**: compute in BatchNorm-normalized space, not raw feature space
 24. **Embedding collapse**: monitor per-batch embedding std. If → 0, pretraining has collapsed.
-25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK). **AVAX is the Gate 3 held-out symbol and must NOT appear in contrastive pairs.** Do NOT force invariance with memecoins.
+25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK, LTC). **AVAX is the Gate 3 held-out symbol and must NOT appear in contrastive pairs.** LTC substitutes for AVAX in the 6-symbol anchor set. Do NOT force invariance with memecoins.
 26. **Day boundaries**: do not construct windows crossing day boundaries
 27. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance
