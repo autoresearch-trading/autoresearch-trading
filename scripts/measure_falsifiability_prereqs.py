@@ -31,7 +31,7 @@ import time
 import warnings
 from datetime import date
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import duckdb
 import numpy as np
@@ -45,11 +45,16 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------------------------
 
 
-def _scalar(row: Optional[tuple]) -> Any:
+def _scalar(
+    row: Optional[tuple],
+) -> Any:  # noqa: F841 — kept for pattern parity with sibling scripts
     """Unwrap DuckDB .fetchone() for aggregate queries that always return one row."""
     if row is None:
         raise RuntimeError("DuckDB aggregate query returned no row")
     return row[0]
+
+
+__all__ = ["_scalar"]
 
 
 ROOT = Path(__file__).parent.parent
@@ -255,7 +260,6 @@ def compute_ob_features(ob: pd.DataFrame) -> pd.DataFrame:
 
     mid = (bid1_p + ask1_p) / 2.0
     spread = ask1_p - bid1_p
-    eps_spread = np.maximum(spread, 1e-8 * mid)
 
     log_spread = np.log((spread / mid) + 1e-10)
 
@@ -578,15 +582,13 @@ def compute_climax_date_diversity() -> dict:
         roll_mean_qty: np.ndarray = np.asarray(
             s_qty.rolling(ROLLING_WINDOW, min_periods=10).mean()
         )
-        roll_std_qty: np.ndarray = np.asarray(
-            s_qty.rolling(ROLLING_WINDOW, min_periods=10).std().fillna(1e-10)
-        )
+        _sq: Any = s_qty.rolling(ROLLING_WINDOW, min_periods=10).std()
+        roll_std_qty: np.ndarray = np.asarray(_sq.fillna(1e-10))
         roll_mean_ret: np.ndarray = np.asarray(
             s_ret.rolling(ROLLING_WINDOW, min_periods=10).mean()
         )
-        roll_std_ret: np.ndarray = np.asarray(
-            s_ret.rolling(ROLLING_WINDOW, min_periods=10).std().fillna(1e-10)
-        )
+        _sr: Any = s_ret.rolling(ROLLING_WINDOW, min_periods=10).std()
+        roll_std_ret: np.ndarray = np.asarray(_sr.fillna(1e-10))
 
         z_qty = (qty_arr - roll_mean_qty) / np.maximum(roll_std_qty, 1e-10)
         z_ret = (ret_arr - roll_mean_ret) / np.maximum(roll_std_ret, 1e-10)
@@ -646,13 +648,8 @@ def compute_spring_rate(
     log_total_qty = np.log(total_qty / np.maximum(med_qty, 1e-10))
 
     # Rolling std of log_return (causal)
-    roll_std = (
-        pd.Series(log_returns)
-        .rolling(ROLLING_WINDOW, min_periods=10)
-        .std()
-        .fillna(1e-6)
-        .to_numpy()
-    )
+    _rs: Any = pd.Series(log_returns).rolling(ROLLING_WINDOW, min_periods=10).std()
+    roll_std = _rs.fillna(1e-6).to_numpy()
 
     # EVR approximation
     evr = np.clip(
@@ -1054,7 +1051,6 @@ def measure_autocorrelation(n_windows: int = 1000) -> dict:
 
         ac_arr = np.array(autocorrs)  # shape (n_windows, 17)
         mean_ac = ac_arr.mean(axis=0)  # shape (17,)
-        std_ac = ac_arr.std(axis=0)
 
         feat_results: dict[str, float] = {}
         for fi, fname in enumerate(FEATURE_NAMES):
@@ -1164,7 +1160,6 @@ def verdict_stress(stress_results: dict) -> tuple[str, str]:
     if not rates:
         return "ERROR", "No data"
     min_rate = min(rates)
-    max_rate = max(rates)
     mean_rate = sum(rates) / len(rates)
 
     if min_rate < 0.1:
@@ -1197,7 +1192,6 @@ def verdict_informed(informed_results: dict) -> tuple[str, str]:
         return "ERROR", "No data"
     min_rate = min(rates)
     max_rate = max(rates)
-    mean_rate = sum(rates) / len(rates)
 
     if min_rate < 1.0:
         return (
