@@ -23,15 +23,23 @@ Hard constraints enforced here:
 import json
 import time
 import warnings
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import duckdb
 import numpy as np
 import pandas as pd
 
 warnings.filterwarnings("ignore")
+
+
+def _scalar(row: Optional[tuple]) -> Any:
+    """Unwrap DuckDB .fetchone() for aggregate queries that always return one row."""
+    if row is None:
+        raise RuntimeError("DuckDB aggregate query returned no row")
+    return row[0]
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -147,7 +155,7 @@ def load_day_events(symbol: str, date_str: str) -> Optional[pd.DataFrame]:
             SELECT ts_ms, vwap, total_qty, n_fills FROM events
         """
         ).fetchdf()
-    except Exception as e:
+    except Exception:
         return None
     finally:
         con.close()
@@ -190,7 +198,8 @@ def compute_events_per_day_all_symbols() -> dict:
                     )
                     SELECT COUNT(DISTINCT ts_ms) FROM deduped WHERE rn = 1
                 """
-                ).fetchone()[0]
+                )
+                count = _scalar(count.fetchone())
                 counts.append(int(count))
             except Exception:
                 pass
@@ -247,8 +256,9 @@ def compute_total_window_count(events_per_day: dict) -> dict:
             file_list = "[" + ", ".join(f"'{f}'" for f in files) + "]"
             con = get_con()
             try:
-                count = con.execute(
-                    f"""
+                count = _scalar(
+                    con.execute(
+                        f"""
                     WITH deduped AS (
                         SELECT ts_ms,
                                ROW_NUMBER() OVER (PARTITION BY ts_ms, qty, price ORDER BY recv_ms) as rn
@@ -256,7 +266,8 @@ def compute_total_window_count(events_per_day: dict) -> dict:
                     )
                     SELECT COUNT(DISTINCT ts_ms) FROM deduped WHERE rn = 1
                 """
-                ).fetchone()[0]
+                    ).fetchone()
+                )
                 n = int(count)
                 if n >= WINDOW_SIZE:
                     windows = (n - WINDOW_SIZE) // STRIDE + 1
@@ -319,7 +330,7 @@ def compute_window_duration(events_per_day: dict) -> dict:
             file_list = "[" + ", ".join(f"'{f}'" for f in files) + "]"
             con = get_con()
             try:
-                ts_arr = (
+                ts_arr: np.ndarray = np.array(
                     con.execute(
                         f"""
                     WITH deduped AS (
@@ -330,9 +341,8 @@ def compute_window_duration(events_per_day: dict) -> dict:
                     SELECT ts_ms FROM deduped WHERE rn = 1
                     GROUP BY ts_ms ORDER BY ts_ms
                 """
-                    )
-                    .fetchdf()["ts_ms"]
-                    .values
+                    ).fetchdf()["ts_ms"],
+                    dtype=float,
                 )
                 if len(ts_arr) > 1:
                     gaps = np.diff(ts_arr.astype(float))
@@ -438,14 +448,14 @@ def compute_symbol_per_day_stats(symbol: str) -> list[dict]:
             )
             continue
 
-        vwap = df["vwap"].values
+        vwap: np.ndarray = np.array(df["vwap"], dtype=float)
         n = len(vwap)
         up = down = 0
         if n > H500:
-            up = int((vwap[H500:] > vwap[: n - H500]).sum())
-            down = int((vwap[H500:] < vwap[: n - H500]).sum())
+            up = int((vwap[H500:] > vwap[: n - H500]).sum())  # type: ignore[operator]
+            down = int((vwap[H500:] < vwap[: n - H500]).sum())  # type: ignore[operator]
 
-        vwap_pos = vwap[(vwap > 0) & np.isfinite(vwap)]
+        vwap_pos = vwap[(vwap > 0) & np.isfinite(vwap)]  # type: ignore[operator]
         first_vwap = float(vwap_pos[0]) if len(vwap_pos) > 0 else None
         last_vwap = float(vwap_pos[-1]) if len(vwap_pos) > 0 else None
         log_ret_std = None
@@ -501,13 +511,15 @@ def compute_rolling_h500_from_per_day(
 
     records = []
     for idx in df.index:
-        up = roll_up.get(idx, 0)
-        down = roll_down.get(idx, 0)
-        n_days = roll_n_days.get(idx, 0)
-        total = up + down
-        if pd.isna(up) or pd.isna(down) or total == 0:
+        up = roll_up.get(idx, 0)  # type: ignore[attr-defined]
+        down = roll_down.get(idx, 0)  # type: ignore[attr-defined]
+        n_days = roll_n_days.get(idx, 0)  # type: ignore[attr-defined]
+        if up is None or down is None or pd.isna(up) or pd.isna(down):
             continue
-        if n_days < min_days_in_window:
+        total = up + down
+        if total == 0:
+            continue
+        if n_days is None or n_days < min_days_in_window:
             continue  # skip warm-up period
         base_rate = float(up) / float(total)
 
@@ -639,7 +651,7 @@ def analyze_focus_symbol(symbol: str) -> dict:
     )
     rolling_result = {}
     if not rolling_df.empty:
-        rates = rolling_df["base_rate"].values
+        rates: np.ndarray = np.array(rolling_df["base_rate"], dtype=float)
         max_rate = float(rates.max())
         min_rate = float(rates.min())
         max_swing_pp = (max_rate - min_rate) * 100.0
@@ -685,7 +697,7 @@ def main():
     print(f"Pre-April window: {MIN_DATE} to {MAX_DATE}")
     print("=" * 60)
 
-    results = {
+    results: dict[str, Any] = {
         "meta": {
             "run_at": pd.Timestamp.now().isoformat(),
             "min_date": str(MIN_DATE),
