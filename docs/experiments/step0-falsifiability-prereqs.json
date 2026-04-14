@@ -1,0 +1,493 @@
+{
+  "generated": "2026-04-14",
+  "verdicts": {
+    "stress": "PASS",
+    "informed_flow": "PASS",
+    "climax_diversity": "PASS",
+    "spring_recalibration": "PASS",
+    "autocorr_lag5": "RECALIBRATE"
+  },
+  "recommendations": {
+    "stress": "Mean firing rate 1.626% >= 0.5% on BTC/ETH. Stress label is sufficiently sensitive.",
+    "informed_flow": "Firing rate 8.80%\u201313.75% within 2\u201315% target range.",
+    "climax_diversity": "2\u03c3: 25/25 symbols \u226515 dates. 3\u03c3: 25/25 \u226515 dates.",
+    "spring_recalibration": "sigma_mult=3.0 achieves \u22648% on 25/25 symbols. Use sigma_mult=3.0 in Steps 1-2 spring label.",
+    "autocorr_lag5": "Features with r>0.8 at lag 5: ['kyle_lambda', 'prev_seq_time_span']. MEM block size must grow to 10\u201315 events for these features, or use random position masking instead of block masking."
+  },
+  "stress_firing": {
+    "BTC": {
+      "2025-10-20": {
+        "n_snapshots": 3585,
+        "firing_rate_pct": 1.199442119944212
+      },
+      "2025-12-15": {
+        "n_snapshots": 3593,
+        "firing_rate_pct": 1.6977456164764821
+      },
+      "2026-02-10": {
+        "n_snapshots": 3512,
+        "firing_rate_pct": 2.8189066059225514
+      }
+    },
+    "ETH": {
+      "2025-10-20": {
+        "n_snapshots": 3585,
+        "firing_rate_pct": 0.7252440725244073
+      },
+      "2025-12-15": {
+        "n_snapshots": 3593,
+        "firing_rate_pct": 1.9760645699972168
+      },
+      "2026-02-10": {
+        "n_snapshots": 3512,
+        "firing_rate_pct": 1.3382687927107062
+      }
+    }
+  },
+  "informed_firing": {
+    "BTC": {
+      "2025-10-20": {
+        "n_snapshots": 3585,
+        "firing_rate_pct": 9.707112970711297,
+        "kyle_lambda_mean": 2.2416014473844476e-05,
+        "cum_ofi5_std": 1.5465993074567643e-06
+      },
+      "2025-12-15": {
+        "n_snapshots": 3593,
+        "firing_rate_pct": 9.240189256888394,
+        "kyle_lambda_mean": -3.7255440185731075e-06,
+        "cum_ofi5_std": 4.690099623511768e-06
+      },
+      "2026-02-10": {
+        "n_snapshots": 3512,
+        "firing_rate_pct": 8.798405466970387,
+        "kyle_lambda_mean": -3.559683565065035e-05,
+        "cum_ofi5_std": 8.018028046679491e-06
+      }
+    },
+    "ETH": {
+      "2025-10-20": {
+        "n_snapshots": 3585,
+        "firing_rate_pct": 9.9302649930265,
+        "kyle_lambda_mean": 9.96848762496019e-07,
+        "cum_ofi5_std": 4.5876213455337586e-05
+      },
+      "2025-12-15": {
+        "n_snapshots": 3593,
+        "firing_rate_pct": 12.301697745616476,
+        "kyle_lambda_mean": 5.137333723240296e-07,
+        "cum_ofi5_std": 6.926917777841358e-05
+      },
+      "2026-02-10": {
+        "n_snapshots": 3512,
+        "firing_rate_pct": 13.75284738041002,
+        "kyle_lambda_mean": -1.1702794565612803e-06,
+        "cum_ofi5_std": 0.00012324699387356977
+      }
+    }
+  },
+  "climax_date_diversity": {
+    "2Z": {
+      "distinct_dates_2sigma": 148,
+      "distinct_dates_3sigma": 128,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "AAVE": {
+      "distinct_dates_2sigma": 150,
+      "distinct_dates_3sigma": 124,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "ASTER": {
+      "distinct_dates_2sigma": 157,
+      "distinct_dates_3sigma": 143,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "AVAX": {
+      "distinct_dates_2sigma": 158,
+      "distinct_dates_3sigma": 132,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "BNB": {
+      "distinct_dates_2sigma": 159,
+      "distinct_dates_3sigma": 149,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "BTC": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 160,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "CRV": {
+      "distinct_dates_2sigma": 157,
+      "distinct_dates_3sigma": 142,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "DOGE": {
+      "distinct_dates_2sigma": 157,
+      "distinct_dates_3sigma": 140,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "ENA": {
+      "distinct_dates_2sigma": 157,
+      "distinct_dates_3sigma": 128,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "ETH": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 159,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "FARTCOIN": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 150,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "HYPE": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 156,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "KBONK": {
+      "distinct_dates_2sigma": 153,
+      "distinct_dates_3sigma": 138,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "KPEPE": {
+      "distinct_dates_2sigma": 155,
+      "distinct_dates_3sigma": 137,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "LDO": {
+      "distinct_dates_2sigma": 156,
+      "distinct_dates_3sigma": 113,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "LINK": {
+      "distinct_dates_2sigma": 152,
+      "distinct_dates_3sigma": 124,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "LTC": {
+      "distinct_dates_2sigma": 157,
+      "distinct_dates_3sigma": 127,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "PENGU": {
+      "distinct_dates_2sigma": 144,
+      "distinct_dates_3sigma": 119,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "PUMP": {
+      "distinct_dates_2sigma": 159,
+      "distinct_dates_3sigma": 133,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "SOL": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 153,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "SUI": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 148,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "UNI": {
+      "distinct_dates_2sigma": 153,
+      "distinct_dates_3sigma": 128,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "WLFI": {
+      "distinct_dates_2sigma": 160,
+      "distinct_dates_3sigma": 150,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "XPL": {
+      "distinct_dates_2sigma": 156,
+      "distinct_dates_3sigma": 140,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    },
+    "XRP": {
+      "distinct_dates_2sigma": 159,
+      "distinct_dates_3sigma": 151,
+      "total_dates": 161,
+      "flag_below_15_2sigma": false,
+      "flag_below_15_3sigma": false
+    }
+  },
+  "spring_recalibration": {
+    "2Z": {
+      "sigma_2.0": 5.365,
+      "sigma_2.5": 4.342,
+      "sigma_3.0": 3.166
+    },
+    "AAVE": {
+      "sigma_2.0": 5.855,
+      "sigma_2.5": 3.324,
+      "sigma_3.0": 1.833
+    },
+    "ASTER": {
+      "sigma_2.0": 5.395,
+      "sigma_2.5": 3.685,
+      "sigma_3.0": 2.339
+    },
+    "AVAX": {
+      "sigma_2.0": 3.662,
+      "sigma_2.5": 2.528,
+      "sigma_3.0": 1.537
+    },
+    "BNB": {
+      "sigma_2.0": 5.271,
+      "sigma_2.5": 3.454,
+      "sigma_3.0": 2.133
+    },
+    "BTC": {
+      "sigma_2.0": 12.05,
+      "sigma_2.5": 8.791,
+      "sigma_3.0": 6.141
+    },
+    "CRV": {
+      "sigma_2.0": 3.601,
+      "sigma_2.5": 3.062,
+      "sigma_3.0": 2.391
+    },
+    "DOGE": {
+      "sigma_2.0": 3.353,
+      "sigma_2.5": 2.339,
+      "sigma_3.0": 1.505
+    },
+    "ENA": {
+      "sigma_2.0": 5.135,
+      "sigma_2.5": 3.556,
+      "sigma_3.0": 2.285
+    },
+    "ETH": {
+      "sigma_2.0": 11.784,
+      "sigma_2.5": 8.217,
+      "sigma_3.0": 5.486
+    },
+    "FARTCOIN": {
+      "sigma_2.0": 3.139,
+      "sigma_2.5": 2.462,
+      "sigma_3.0": 1.888
+    },
+    "HYPE": {
+      "sigma_2.0": 8.43,
+      "sigma_2.5": 5.711,
+      "sigma_3.0": 3.653
+    },
+    "KBONK": {
+      "sigma_2.0": 1.447,
+      "sigma_2.5": 1.026,
+      "sigma_3.0": 0.617
+    },
+    "KPEPE": {
+      "sigma_2.0": 1.364,
+      "sigma_2.5": 0.942,
+      "sigma_3.0": 0.597
+    },
+    "LDO": {
+      "sigma_2.0": 3.233,
+      "sigma_2.5": 2.674,
+      "sigma_3.0": 2.078
+    },
+    "LINK": {
+      "sigma_2.0": 6.183,
+      "sigma_2.5": 3.657,
+      "sigma_3.0": 2.104
+    },
+    "LTC": {
+      "sigma_2.0": 6.515,
+      "sigma_2.5": 3.852,
+      "sigma_3.0": 1.85
+    },
+    "PENGU": {
+      "sigma_2.0": 2.49,
+      "sigma_2.5": 1.833,
+      "sigma_3.0": 1.329
+    },
+    "PUMP": {
+      "sigma_2.0": 4.498,
+      "sigma_2.5": 3.245,
+      "sigma_3.0": 2.136
+    },
+    "SOL": {
+      "sigma_2.0": 10.156,
+      "sigma_2.5": 6.531,
+      "sigma_3.0": 3.779
+    },
+    "SUI": {
+      "sigma_2.0": 3.799,
+      "sigma_2.5": 2.437,
+      "sigma_3.0": 1.462
+    },
+    "UNI": {
+      "sigma_2.0": 5.643,
+      "sigma_2.5": 3.77,
+      "sigma_3.0": 2.091
+    },
+    "WLFI": {
+      "sigma_2.0": 4.476,
+      "sigma_2.5": 3.426,
+      "sigma_3.0": 2.505
+    },
+    "XPL": {
+      "sigma_2.0": 6.086,
+      "sigma_2.5": 4.238,
+      "sigma_3.0": 2.52
+    },
+    "XRP": {
+      "sigma_2.0": 5.047,
+      "sigma_2.5": 3.295,
+      "sigma_3.0": 1.991
+    },
+    "_recommendation": {
+      "sigma_2.0": 21,
+      "sigma_2.5": 23,
+      "sigma_3.0": 25
+    },
+    "_recommended_sigma_mult": 3.0
+  },
+  "autocorr_lag5": {
+    "BTC": {
+      "n_windows": 1000,
+      "lag5_autocorr": {
+        "log_return": 0.0285,
+        "log_total_qty": 0.0301,
+        "is_open": 0.0264,
+        "time_delta": 0.0065,
+        "num_fills": 0.0068,
+        "book_walk": 0.0,
+        "effort_vs_result": -0.0038,
+        "climax_score": -0.0032,
+        "prev_seq_time_span": 0.9068,
+        "log_spread": 0.713,
+        "imbalance_L1": 0.3976,
+        "imbalance_L5": 0.4069,
+        "depth_ratio": 0.4357,
+        "trade_vs_mid": 0.288,
+        "delta_imbalance_L1": -0.0425,
+        "kyle_lambda": 0.8121,
+        "cum_ofi_5": 0.1128
+      }
+    },
+    "ETH": {
+      "n_windows": 1000,
+      "lag5_autocorr": {
+        "log_return": 0.0065,
+        "log_total_qty": 0.0449,
+        "is_open": 0.0399,
+        "time_delta": 0.0213,
+        "num_fills": 0.0161,
+        "book_walk": 0.0,
+        "effort_vs_result": 0.0031,
+        "climax_score": 0.0075,
+        "prev_seq_time_span": 0.9174,
+        "log_spread": 0.6622,
+        "imbalance_L1": 0.3715,
+        "imbalance_L5": 0.3919,
+        "depth_ratio": 0.4053,
+        "trade_vs_mid": 0.2431,
+        "delta_imbalance_L1": -0.0455,
+        "kyle_lambda": 0.0919,
+        "cum_ofi_5": 0.7864
+      }
+    },
+    "SOL": {
+      "n_windows": 1000,
+      "lag5_autocorr": {
+        "log_return": 0.0079,
+        "log_total_qty": 0.0497,
+        "is_open": 0.0325,
+        "time_delta": 0.0468,
+        "num_fills": 0.0156,
+        "book_walk": 0.0,
+        "effort_vs_result": 0.0121,
+        "climax_score": 0.006,
+        "prev_seq_time_span": 0.9401,
+        "log_spread": 0.4345,
+        "imbalance_L1": 0.2679,
+        "imbalance_L5": 0.2892,
+        "depth_ratio": 0.2606,
+        "trade_vs_mid": 0.1509,
+        "delta_imbalance_L1": -0.0512,
+        "kyle_lambda": 0.0282,
+        "cum_ofi_5": 0.7068
+      }
+    },
+    "_flags": [
+      {
+        "symbol": "BTC",
+        "feature": "prev_seq_time_span",
+        "lag5_autocorr": 0.906787740840356,
+        "flag": "r>0.8 -- MEM block masking trivially solvable"
+      },
+      {
+        "symbol": "BTC",
+        "feature": "kyle_lambda",
+        "lag5_autocorr": 0.8121176707022794,
+        "flag": "r>0.8 -- MEM block masking trivially solvable"
+      },
+      {
+        "symbol": "ETH",
+        "feature": "prev_seq_time_span",
+        "lag5_autocorr": 0.9174380504953128,
+        "flag": "r>0.8 -- MEM block masking trivially solvable"
+      },
+      {
+        "symbol": "SOL",
+        "feature": "prev_seq_time_span",
+        "lag5_autocorr": 0.9400603733202835,
+        "flag": "r>0.8 -- MEM block masking trivially solvable"
+      }
+    ]
+  }
+}
