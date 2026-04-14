@@ -50,16 +50,17 @@ for date in $DATES; do
   echo "⏳ Polling $status (every ${POLL_INTERVAL}s, max ${POLL_TIMEOUT}s)..."
   elapsed=0
   exit_code=""
+  # flyctl ssh -C does NOT invoke a remote shell — shell operators
+  # like '2>/dev/null' would be passed as argv. Redirect on the host
+  # side and let failures (missing file) fall through to a retry.
   while [ "$elapsed" -lt "$POLL_TIMEOUT" ]; do
     sleep "$POLL_INTERVAL"
     elapsed=$((elapsed + POLL_INTERVAL))
-    if exit_code=$(ssh_exec "cat $status 2>/dev/null" 2>/dev/null); then
-      if [ -n "$exit_code" ]; then
-        break
-      fi
+    exit_code=$(ssh_exec "cat $status" 2>/dev/null | tr -d '[:space:]' || true)
+    if [ -n "$exit_code" ]; then
+      break
     fi
-    # Tail recent progress to keep GHA logs informative.
-    ssh_exec "tail -n 3 $log 2>/dev/null" || true
+    ssh_exec "tail -n 3 $log" 2>/dev/null || true
   done
 
   echo "📜 Final log for date=$date:"
