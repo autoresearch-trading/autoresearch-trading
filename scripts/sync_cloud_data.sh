@@ -24,9 +24,11 @@ ssh_exec() {
 echo "▶️ Ensuring boto3 is installed on Fly.io..."
 ssh_exec "pip install -q boto3"
 
-echo "▶️ Uploading sync script to Fly.io..."
-ssh_exec "rm -f /tmp/sync.py"
+echo "▶️ Uploading sync scripts to Fly.io..."
+ssh_exec "rm -f /tmp/sync.py /tmp/sync_launch.sh"
 flyctl ssh sftp put -q -a "$APP_NAME" "$SCRIPT_DIR/sync_remote.py" /tmp/sync.py
+flyctl ssh sftp put -q -a "$APP_NAME" "$SCRIPT_DIR/sync_launch.sh" /tmp/sync_launch.sh
+ssh_exec "chmod +x /tmp/sync_launch.sh"
 
 # Purge FIRST — cleans accumulated old data (already synced in
 # previous successful runs), keeping the volume lean for sync.
@@ -43,7 +45,7 @@ for date in $DATES; do
   echo "▶️ Launching detached sync for date=$date ..."
   log="/tmp/sync_${date}.log"
   status="/tmp/sync_${date}.status"
-  ssh_exec "rm -f $status $log; nohup sh -c 'python3 /tmp/sync.py $date > $log 2>&1; echo \$? > $status' >/dev/null 2>&1 &"
+  ssh_exec "/tmp/sync_launch.sh $date"
 
   echo "⏳ Polling $status (every ${POLL_INTERVAL}s, max ${POLL_TIMEOUT}s)..."
   elapsed=0
