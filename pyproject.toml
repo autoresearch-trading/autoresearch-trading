@@ -12,13 +12,15 @@ dependencies = [
     "optuna>=4.7.0",
     "stable-baselines3>=2.7.1",
     "tensorboard>=2.20.0",
+    "scikit-learn>=1.5",
 ]
 
-[tool.setuptools]
-py-modules = ["prepare", "train"]
+[tool.setuptools.packages.find]
+include = ["tape*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=65"]
