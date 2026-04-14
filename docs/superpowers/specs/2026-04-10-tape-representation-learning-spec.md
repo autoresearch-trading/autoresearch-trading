@@ -44,7 +44,7 @@ event_type:  fulfill_taker        (fulfill_taker/fulfill_maker — from Apr 1)
 - **Pre-April data:** `df.drop_duplicates(subset=['ts_ms', 'qty', 'price'], keep='first')` — WITHOUT `side`
 - **April+ data:** Filter to `event_type == 'fulfill_taker'`
 
-**Validation required (Step 0):** Verify same-timestamp = same-order assumption. Expect 59% mixed-side events (exchange mechanic, not error).
+**Validation required (Step 0):** Verify same-timestamp = same-order assumption. Step 0 measured **3-16% mixed-side events** across 25 symbols after correct no-side dedup (median ~3%; liquid symbols BTC/ETH/SOL toward upper end). Raw data before dedup shows ~99% cross-side pairs, confirming the API records both counterparties per fill — no-side dedup collapses these correctly. The earlier "59%" figure in drafts was an artifact of measuring on undeduped or dedup-with-side data.
 
 ## Input Representation (17 features per order event)
 
@@ -223,7 +223,7 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
   - Time reversal (breaks causality)
   - Event shuffling (destroys sequence order)
   - Large noise > 0.1 std
-- **Cross-symbol positive pairs:** same-date, same-hour windows from different liquid symbols (BTC, ETH, SOL, BNB, AVAX, LINK) as soft positives (weight 0.5)
+- **Cross-symbol positive pairs:** same-date, same-hour windows from different liquid symbols (BTC, ETH, SOL, BNB, LINK) as soft positives (weight 0.5). **AVAX is the held-out symbol for Gate 3 and MUST NOT appear in contrastive pairs during pretraining** — its inclusion in an earlier draft was a spec bug that would have contaminated Gate 3.
 - Batch: 256 windows → 512 augmented views → 256 positive pairs, 65K negative pairs
 
 **Direction labels: NOT used during pretraining.** Pure self-supervised.
@@ -422,7 +422,7 @@ April+ data has `cause` field (market_liquidation, backstop_liquidation). A spec
 7. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivial copy from neighbors)
 8. **MEM reconstruction space**: compute loss in BatchNorm-normalized space, not raw feature space
 9. **Embedding collapse**: monitor per-batch embedding std. If → 0, training has collapsed.
-10. **Cross-symbol contrastive pairs**: only for liquid symbols (BTC, ETH, SOL, BNB, AVAX, LINK). Do NOT force invariance with memecoins.
+10. **Cross-symbol contrastive pairs**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK). **AVAX excluded — it is the Gate 3 held-out symbol.** Do NOT force invariance with memecoins.
 11. **Day boundaries**: do not construct windows crossing day boundaries
 12. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance
 13. **April hold-out**: April 14+ untouched — do not view, even informally

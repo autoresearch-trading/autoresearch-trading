@@ -141,7 +141,7 @@ Fine-tuning heads (added after):
 
 1. **R2 fake timestamps**: Use `--size-only` with rclone
 2. **Orderbook alignment**: use `np.searchsorted(ob_ts, trade_ts, side="right") - 1` — vectorize over all events, not Python for-loop
-3. **Order event grouping**: same-timestamp trades are fragments of one order — **dedup first**, then group. Pre-April: `drop_duplicates(subset=['ts_ms', 'qty', 'price'])` WITHOUT `side`. April+: filter to `event_type == 'fulfill_taker'`. 59% of events have mixed buy/sell fills (exchange mechanic, not error).
+3. **Order event grouping**: same-timestamp trades are fragments of one order — **dedup first**, then group. Pre-April: `drop_duplicates(subset=['ts_ms', 'qty', 'price'])` WITHOUT `side`. April+: filter to `event_type == 'fulfill_taker'`. After correct dedup, **3-16% of events are mixed-side** (median ~3%; liquid symbols higher). The earlier "59%" figure was an artifact of measuring on undeduped data where each fill appears twice (buyer + seller perspective).
 4. **Rolling medians for normalization**: never use global statistics (lookahead bias). Rolling 1000-event, causal.
 5. **`effort_vs_result` explosion**: clip to [-5, 5], epsilon = 1e-6 (not 1e-4 — too coarse for BTC tick-level). Uses median-normalized log_total_qty, not raw log(qty).
 6. **`climax_score` σ**: must be rolling 1000-event σ, not global. Continuous score, not binary.
@@ -157,12 +157,12 @@ Fine-tuning heads (added after):
 16. **Stride**: 50 for pretraining, 200 for evaluation probes. First window offset randomized per epoch.
 17. **April hold-out**: April 14+ is untouched — do not view, even for data quality checks
 18. **BatchNorm at inference**: must use `model.eval()` for entire test pass — otherwise running stats contaminated. Single-sample = NaN.
-19. **Dedup key must NOT include `side`**: buyer/seller pairs differ on `side`, so including it in dedup removes nothing. Use `(ts_ms, qty, price)` only.
+19. **Dedup key must NOT include `side`**: buyer/seller pairs share identical `(ts_ms, qty, price)` but differ on `side` — including `side` in the dedup key PRESERVES both counterparty records (doubling event counts); excluding `side` collapses them to one record per fill (correct). Use `(ts_ms, qty, price)` only.
 20. **OB has 10 levels, not 25**: all symbols measured at 10 bid + 10 ask levels. ~24s cadence, not ~3s.
 21. **Training samples ~3.5M at stride=50**: after dedup + grouping. ~28K events/day on BTC (was 140K raw trades).
 22. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivially copyable from neighbors)
 23. **MEM loss space**: compute in BatchNorm-normalized space, not raw feature space
 24. **Embedding collapse**: monitor per-batch embedding std. If → 0, pretraining has collapsed.
-25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, AVAX, LINK). Do NOT force invariance with memecoins.
+25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK). **AVAX is the Gate 3 held-out symbol and must NOT appear in contrastive pairs.** Do NOT force invariance with memecoins.
 26. **Day boundaries**: do not construct windows crossing day boundaries
 27. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance
