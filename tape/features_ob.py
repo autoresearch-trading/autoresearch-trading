@@ -44,7 +44,11 @@ from tape.ob_align import align_events_to_ob
 _EPS: float = 1e-10
 
 
-def compute_snapshot_features(ob: pd.DataFrame) -> pd.DataFrame:
+def compute_snapshot_features(
+    ob: pd.DataFrame,
+    *,
+    prior_imbalance_l1: float | None = None,
+) -> pd.DataFrame:
     """Compute per-snapshot OB features.
 
     Parameters
@@ -52,6 +56,12 @@ def compute_snapshot_features(ob: pd.DataFrame) -> pd.DataFrame:
     ob : pd.DataFrame
         Must have columns: ts_ms, bid{1..10}_price, bid{1..10}_qty,
         ask{1..10}_price, ask{1..10}_qty.
+    prior_imbalance_l1 : float | None
+        The imbalance_L1 value from the last snapshot of the previous day's
+        shard. When provided, the first snapshot's delta_imbalance_L1 is
+        computed as imbalance_L1[0] - prior_imbalance_l1 instead of 0.
+        Pass None (default) for the first calendar day per symbol — first
+        snapshot's delta will be 0 (gotcha #11).
 
     Returns
     -------
@@ -107,8 +117,13 @@ def compute_snapshot_features(ob: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Feature 15: delta_imbalance_L1 — change since previous snapshot
-    # First snapshot = 0 (gotcha #11; full day-boundary warm-up is handled by caller).
-    delta_imb_l1 = np.concatenate([[0.0], np.diff(imb_l1)])
+    # First snapshot: 0 when prior_imbalance_l1 is None (first calendar day per symbol,
+    # gotcha #11); otherwise imb_l1[0] - prior_imbalance_l1 for day-boundary pre-warming.
+    if prior_imbalance_l1 is None:
+        first_delta = 0.0
+    else:
+        first_delta = imb_l1[0] - prior_imbalance_l1
+    delta_imb_l1 = np.concatenate([[first_delta], np.diff(imb_l1)])
 
     # Feature 16: kyle_lambda — per-SNAPSHOT rolling 50-snapshot window (gotcha #13)
     # Proxy: uses (bid_notional - ask_notional) as signed notional. The integration

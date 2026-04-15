@@ -22,6 +22,7 @@ Integration tasks performed here (not in prior pipeline steps):
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 from typing import Any
 
@@ -166,27 +167,56 @@ def compute_real_kyle_lambda(
 # ---------------------------------------------------------------------------
 
 
-def build_symbol_day(symbol: str, date_str: str) -> dict | None:
+def build_symbol_day(
+    symbol: str,
+    date_str: str,
+    *,
+    raw_root: Path | str | None = None,
+    out_root: Path | str | None = None,
+) -> dict | None:
     """Build feature tensor + labels for a single symbol-day.
 
+    Parameters
+    ----------
+    symbol : str
+        Trading symbol (e.g. "BTC").
+    date_str : str
+        ISO date string (e.g. "2025-10-16").
+    raw_root : Path | str | None
+        Root directory for raw parquet data. If None, uses the default path
+        from tape.io_parquet (DATA_ROOT).
+    out_root : Path | str | None
+        Root directory for cached .npz shards. Used to load the prior day's
+        shard for delta_imbalance_L1 pre-warming (gotcha #11). If None,
+        prior-day pre-warming is skipped (first snapshot delta = 0).
+
     Returns None if:
-    - date is in the April hold-out (>= 2026-04-14) — hard gate, gotcha #17
     - no data on disk for this symbol-day
     - fewer than 400 events after dedup + OB alignment (too few for windowing)
     - fewer than 2 OB snapshots
 
-    Returns a dict suitable for save_shard().
+    Raises ValueError if:
+    - date is in the April hold-out (>= 2026-04-14) — hard gate, gotcha #17
     """
-    # Hard gate: April 14+ is untouched (gotcha #17)
+    # Hard gate: April 14+ is untouched (gotcha #17) — must raise, not silently skip
     if date_str >= APRIL_HELDOUT_START:
-        import sys
-
-        print(
-            f"[{symbol} {date_str}] SKIP — date is in the April hold-out "
-            f"(>= {APRIL_HELDOUT_START})",
-            file=sys.stderr,
+        raise ValueError(
+            f"Refusing to process hold-out date {date_str} >= {APRIL_HELDOUT_START} "
+            f"for symbol {symbol} (gotcha #17)"
         )
-        return None
+
+    # --- Prior-day delta_imbalance_L1 pre-warming (gotcha #11) ---
+    prior_imbalance_l1: float | None = None
+    if out_root is not None:
+        out_root_path = Path(out_root)
+        date_obj = datetime.date.fromisoformat(date_str)
+        prior_date_str = (date_obj - datetime.timedelta(days=1)).isoformat()
+        prior_shard_path = out_root_path / symbol / f"{symbol}__{prior_date_str}.npz"
+        if prior_shard_path.exists():
+            with np.load(prior_shard_path, allow_pickle=False) as prior:
+                if "features" in prior.files:
+                    idx = list(FEATURE_NAMES).index("imbalance_L1")
+                    prior_imbalance_l1 = float(prior["features"][-1, idx])
 
     # Load raw trades
     trades = load_trades_day(symbol, date_str)
@@ -210,7 +240,8 @@ def build_symbol_day(symbol: str, date_str: str) -> dict | None:
         return None
 
     # Snapshot features (placeholder kyle_lambda; we replace it below)
-    snap = compute_snapshot_features(ob)
+    # Pass prior_imbalance_l1 for day-boundary delta pre-warming (gotcha #11)
+    snap = compute_snapshot_features(ob, prior_imbalance_l1=prior_imbalance_l1)
 
     # Overwrite kyle_lambda with the real trade-attributed version (gotcha #13)
     snap_ts = snap["ts_ms"].to_numpy(dtype=np.int64)
@@ -296,9 +327,15 @@ def build_symbol_day(symbol: str, date_str: str) -> dict | None:
         arr: np.ndarray = np.asarray(v)
         dir_arrays[k] = arr.astype(np.int8) if arr.dtype != np.dtype(bool) else arr
 
+    # day_id: days since 1970-01-01 epoch, uniform across all events in this shard
+    _epoch = datetime.date(1970, 1, 1)
+    _day_id_int = (datetime.date.fromisoformat(date_str) - _epoch).days
+    day_id = np.full(n, _day_id_int, dtype=np.int64)
+
     return {
         "features": features,
         "event_ts": events["ts_ms"].to_numpy(dtype=np.int64),
+        "day_id": day_id,
         "directions": dir_arrays,
         "wyckoff": wyckoff,
         "symbol": symbol,
@@ -328,6 +365,7 @@ def save_shard(shard: dict, out_dir: Path) -> Path:
     payload: dict[str, Any] = {
         "features": shard["features"],
         "event_ts": shard["event_ts"],
+        "day_id": shard["day_id"],
         "schema_version": np.array(int(shard["schema_version"]), dtype=np.int32),
     }
     for k, v in shard["directions"].items():

@@ -274,9 +274,12 @@ class TestComputeRealKyleLambda:
 
 class TestShardRoundTrip:
     def _make_shard(self, n: int = 500) -> dict:
+        date_str = "2025-11-01"
+        day_id_val = int((pd.Timestamp(date_str) - pd.Timestamp("1970-01-01")).days)
         return {
             "features": np.random.randn(n, 17).astype(np.float32),
             "event_ts": np.arange(n, dtype=np.int64),
+            "day_id": np.full(n, day_id_val, dtype=np.int64),
             "directions": (
                 {f"h{h}": np.zeros(n, dtype=np.int8) for h in (10, 50, 100, 500)}
                 | {f"mask_h{h}": np.ones(n, dtype=bool) for h in (10, 50, 100, 500)}
@@ -286,7 +289,7 @@ class TestShardRoundTrip:
                 for k in ("stress", "informed_flow", "climax", "spring", "absorption")
             },
             "symbol": "BTC",
-            "date": "2025-11-01",
+            "date": date_str,
             "schema_version": 1,
         }
 
@@ -409,3 +412,186 @@ class TestDedupDispatch:
         )
         with pytest.raises(ValueError, match="event_type"):
             filter_trades_april(df)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: hold-out guard must raise ValueError
+# ---------------------------------------------------------------------------
+
+
+class TestHoldOutGuardRaises:
+    def test_build_symbol_day_raises_on_heldout_date(self, tmp_path: Path) -> None:
+        """build_symbol_day must raise ValueError for dates >= APRIL_HELDOUT_START."""
+        from tape.cache import build_symbol_day
+
+        with pytest.raises(ValueError, match="hold-out"):
+            build_symbol_day(
+                "BTC",
+                "2026-04-14",
+                raw_root=tmp_path,
+                out_root=tmp_path,
+            )
+
+    def test_build_symbol_day_raises_for_later_heldout_date(
+        self, tmp_path: Path
+    ) -> None:
+        """Dates well past the hold-out boundary also raise."""
+        from tape.cache import build_symbol_day
+
+        with pytest.raises(ValueError, match="hold-out"):
+            build_symbol_day(
+                "ETH",
+                "2026-05-01",
+                raw_root=tmp_path,
+                out_root=tmp_path,
+            )
+
+    def test_build_symbol_day_accepts_last_pre_heldout_date(
+        self, tmp_path: Path
+    ) -> None:
+        """2026-04-13 (one day before hold-out) must NOT raise — returns None (no data)."""
+        from tape.cache import build_symbol_day
+
+        # No parquet files on disk → returns None, does not raise
+        result = build_symbol_day(
+            "BTC",
+            "2026-04-13",
+            raw_root=tmp_path,
+            out_root=tmp_path,
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: delta_imbalance_L1 prior-day pre-warming
+# ---------------------------------------------------------------------------
+
+
+def _make_ob_df(n: int, seed: int = 0) -> pd.DataFrame:
+    """Minimal 10-level OB DataFrame."""
+    rng = np.random.default_rng(seed)
+    ts = (np.arange(n, dtype=np.int64) * 24_000) + 1_700_000_000_000
+    mid = 100.0 + np.cumsum(rng.normal(0, 0.1, size=n))
+    spread = np.abs(rng.normal(0.05, 0.01, size=n)) + 1e-4
+    bid = mid - spread / 2
+    ask = mid + spread / 2
+    data: dict[str, object] = {"ts_ms": ts}
+    for lvl in range(1, 11):
+        data[f"bid{lvl}_price"] = bid - (lvl - 1) * 0.01
+        data[f"ask{lvl}_price"] = ask + (lvl - 1) * 0.01
+        data[f"bid{lvl}_qty"] = rng.gamma(2.0, 5.0, size=n)
+        data[f"ask{lvl}_qty"] = rng.gamma(2.0, 5.0, size=n)
+    return pd.DataFrame(data)
+
+
+class TestDeltaImbalancePreWarm:
+    def test_none_prior_gives_zero_first_delta(self) -> None:
+        """When prior_imbalance_l1=None, first snapshot delta_imbalance_L1 == 0."""
+        from tape.features_ob import compute_snapshot_features
+
+        ob = _make_ob_df(20)
+        snap = compute_snapshot_features(ob, prior_imbalance_l1=None)
+        assert snap["delta_imbalance_L1"].iloc[0] == pytest.approx(0.0)
+
+    def test_prior_provided_first_delta_reflects_it(self) -> None:
+        """When prior_imbalance_l1 is provided, first delta uses it (not 0)."""
+        from tape.features_ob import compute_snapshot_features
+
+        ob = _make_ob_df(20, seed=42)
+        snap_no_prior = compute_snapshot_features(ob, prior_imbalance_l1=None)
+        first_imb = float(snap_no_prior["imbalance_L1"].iloc[0])
+
+        # Use a known prior that differs from first_imb
+        prior = first_imb + 0.15
+        snap_with_prior = compute_snapshot_features(ob, prior_imbalance_l1=prior)
+        expected_delta = first_imb - prior
+        assert snap_with_prior["delta_imbalance_L1"].iloc[0] == pytest.approx(
+            expected_delta, abs=1e-7
+        )
+
+    def test_prior_does_not_affect_subsequent_deltas(self) -> None:
+        """Deltas at index >= 1 are unaffected by prior_imbalance_l1."""
+        from tape.features_ob import compute_snapshot_features
+
+        ob = _make_ob_df(20, seed=7)
+        snap_no = compute_snapshot_features(ob, prior_imbalance_l1=None)
+        snap_yes = compute_snapshot_features(ob, prior_imbalance_l1=99.0)
+        np.testing.assert_array_equal(
+            snap_no["delta_imbalance_L1"].to_numpy()[1:],
+            snap_yes["delta_imbalance_L1"].to_numpy()[1:],
+        )
+
+    def test_positional_call_still_works(self) -> None:
+        """compute_snapshot_features(ob) without keyword arg (old callers) still works."""
+        from tape.features_ob import compute_snapshot_features
+
+        ob = _make_ob_df(10)
+        snap = compute_snapshot_features(ob)
+        assert "delta_imbalance_L1" in snap.columns
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: day_id in .npz shard
+# ---------------------------------------------------------------------------
+
+
+class TestDayIdInShard:
+    def _make_shard_with_day_id(self, n: int = 100, date: str = "2025-11-01") -> dict:
+        import pandas as pd
+
+        day_id = int((pd.Timestamp(date) - pd.Timestamp("1970-01-01")).days)
+        return {
+            "features": np.random.default_rng(0).random((n, 17)).astype(np.float32),
+            "event_ts": np.arange(n, dtype=np.int64),
+            "day_id": np.full(n, day_id, dtype=np.int64),
+            "directions": (
+                {f"h{h}": np.zeros(n, dtype=np.int8) for h in (10, 50, 100, 500)}
+                | {f"mask_h{h}": np.ones(n, dtype=bool) for h in (10, 50, 100, 500)}
+            ),
+            "wyckoff": {
+                k: np.zeros(n, dtype=np.int8)
+                for k in ("stress", "informed_flow", "climax", "spring", "absorption")
+            },
+            "symbol": "BTC",
+            "date": date,
+            "schema_version": 1,
+        }
+
+    def test_day_id_present_in_saved_shard(self, tmp_path: Path) -> None:
+        """day_id key must be present in the .npz after save_shard."""
+        shard = self._make_shard_with_day_id()
+        path = save_shard(shard, tmp_path)
+        payload = load_shard(path)
+        assert "day_id" in payload, "day_id missing from saved shard"
+
+    def test_day_id_correct_shape(self, tmp_path: Path) -> None:
+        """day_id shape matches n_events."""
+        n = 123
+        shard = self._make_shard_with_day_id(n=n)
+        path = save_shard(shard, tmp_path)
+        payload = load_shard(path)
+        assert payload["day_id"].shape == (n,)
+
+    def test_day_id_correct_dtype(self, tmp_path: Path) -> None:
+        """day_id dtype is int64."""
+        shard = self._make_shard_with_day_id()
+        path = save_shard(shard, tmp_path)
+        payload = load_shard(path)
+        assert payload["day_id"].dtype == np.int64
+
+    def test_day_id_correct_value(self, tmp_path: Path) -> None:
+        """day_id value equals (date - 1970-01-01).days."""
+        date_str = "2025-11-01"
+        expected = int((pd.Timestamp(date_str) - pd.Timestamp("1970-01-01")).days)
+        shard = self._make_shard_with_day_id(date=date_str)
+        path = save_shard(shard, tmp_path)
+        payload = load_shard(path)
+        assert int(payload["day_id"][0]) == expected
+
+    def test_all_day_id_values_identical(self, tmp_path: Path) -> None:
+        """All events in a shard must share the same day_id (np.full)."""
+        n = 50
+        shard = self._make_shard_with_day_id(n=n)
+        path = save_shard(shard, tmp_path)
+        payload = load_shard(path)
+        assert len(set(payload["day_id"].tolist())) == 1

@@ -74,7 +74,9 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    # Safety: never touch the April hold-out (gotcha #17)
+    # Safety: never touch the April hold-out (gotcha #17).
+    # Check at the CLI layer so we fail fast with a clear message before touching disk.
+    # The library layer (build_symbol_day) also raises ValueError — this is belt-and-suspenders.
     if args.end_date >= APRIL_HELDOUT_START:
         print(
             f"ERROR: end-date {args.end_date!r} is in or past the held-out range "
@@ -98,7 +100,15 @@ def main() -> int:
                 skipped += 1
                 continue
             try:
-                shard = build_symbol_day(sym, d)
+                shard = build_symbol_day(sym, d, out_root=out_dir)
+            except ValueError as exc:
+                # Library-level hold-out guard — should not reach here if CLI check passed,
+                # but handle gracefully just in case (e.g. programmatic misuse).
+                print(
+                    f"[{sym} {d}] REFUSED (hold-out guard): {exc}",
+                    file=sys.stderr,
+                )
+                return 2
             except Exception as exc:
                 print(f"[{sym} {d}] FAILED: {exc}", file=sys.stderr)
                 failed += 1
