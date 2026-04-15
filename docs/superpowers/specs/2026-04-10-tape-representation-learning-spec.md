@@ -221,8 +221,9 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 - Generate 2 augmented views of each window
 - NT-Xent loss on L2-normalized global embeddings
 - Augmentations that preserve market meaning:
-  - Window start jitter: ±10 events
+  - Window start jitter: **±25 events** (strengthened 2026-04-15 per council-6 — crosses BTC session micro-boundaries; shifts illiquid-alt window centers by ~10 min)
   - Additive Gaussian noise: σ = 0.02 × feature_std (continuous features only)
+  - **Timing-feature noise**: σ = 0.10 Gaussian noise on `time_delta` and `prev_seq_time_span` during view generation (5× baseline). Forces encoder to rely on relative rhythms, not absolute session-indicative magnitudes.
   - Feature dropout: p=0.05 per feature per event (zero to BatchNorm mean)
   - Time scale dilation: multiply time_delta by factor in [0.8, 1.2]
 - Augmentations that DESTROY meaning (do NOT use):
@@ -260,6 +261,7 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 - NT-Xent contrastive loss (should decrease, watch for collapse)
 - **Embedding collapse detector:** if std of embedding values across batch approaches 0, encoder has collapsed to constant output. Monitor per-epoch.
 - Direction probe accuracy on April 1-13 every 5 epochs (early stopping signal)
+- **Hour-of-day probe** (24-class LR on frozen embeddings) every 5 epochs. If accuracy exceeds 10% or stratified cross-session variance exceeds 1.5pp, flag as session-of-day shortcut — early warning before Gate 1.
 
 ### Fine-Tuning (after Gate 1 passes)
 
@@ -281,23 +283,42 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 - **Model size cap:** 500K params
 - **Compute budget:** 1 H100-day before gates
 
-### Gate 0: PCA Baseline (before pretraining)
+### Gate 0: Flat-Feature Baseline Grid (before pretraining)
 
-Flatten (200, 17) → 3400-dim. Fit PCA (n=50 components, training set only). Logistic regression (C sweep) on PCA components at 100-event horizon.
+Compute four baselines over the same walk-forward folds (3-fold, 600-event embargo, min_train=2000, min_test=500) at H10/H50/H100/H500:
 
-Also compute random (untrained) encoder + linear probe baseline.
+1. **PCA(n=20) + LogisticRegression** on 85-dim flat features (mean/std/skew/kurt/last per channel).
+2. **Random Projection (85→20, frozen) + LogisticRegression** — adaptive-structure control.
+3. **Majority-class predictor** (training-fold majority) — the true noise floor.
+4. **Shuffled-labels PCA+LR** — null-hypothesis pipeline check; must stay within ±0.005 of 0.500.
 
-**Reference numbers — pretraining must exceed these.**
+**Metric: balanced accuracy at ALL horizons** (council-1 + council-5 findings, 2026-04-15 — raw accuracy is gameable via per-fold label imbalance; up to 10pp inflation observed on illiquid symbols at H10).
+
+**Gate 0 passes** iff (a) shuffled-labels control ≈ 0.500, (b) per-symbol per-horizon tables for all four baselines published. Gate 0 itself is NOT a threshold-gate — it establishes the noise floor against which Gate 1 is measured.
+
+See `docs/experiments/gate0-summary.md` for the 2026-04-15 baseline run.
+
+### Session-of-Day Confound Check (pre-pretraining)
+
+Before launching pretraining, run an LR probe on a single hour-of-day feature (4-hour bins, one-hot) against the same walk-forward folds and labels as Gate 0. If this single-feature model exceeds PCA+LR on the 85-dim flat features by > 0.5pp balanced accuracy on ≥ 5 symbols, the `_last` statistic block in `tape/flat_features.py` (particularly `time_delta_last`, `prev_seq_time_span_last`) is leaking session-of-day — prune it before training. Cost: < 5 minutes.
 
 ### Gate 1: Linear Probe on Frozen Embeddings (after pretraining)
 
-Train logistic regression (C ∈ {0.001, 0.01, 0.1}) on frozen 256-dim pretrained embeddings. Evaluate on April 1-13 at 100-event horizon per symbol.
+Train logistic regression (C ∈ {0.001, 0.01, 0.1}) on frozen 256-dim pretrained embeddings. Evaluate on **April 1–13 held-out period** at H100, balanced accuracy per symbol.
 
-**STOP if fewer than 15/25 symbols achieve > 51.4%.** Representations are not meaningful.
+**All four conditions MUST hold (binding stop-gates, revised 2026-04-15 per council-1/5/6):**
 
-Also report:
-- Pretrained probe must exceed PCA baseline by ≥ 0.5pp on 15+ symbols
-- Pretrained probe must exceed random encoder by ≥ 0.5pp
+1. Balanced accuracy ≥ 51.4% on 15+/25 symbols (absolute sanity floor).
+2. Balanced accuracy > Majority-class baseline + **1.0pp** on 15+/25 symbols (strengthened from +0.5pp over PCA).
+3. Balanced accuracy > Random-Projection control + **1.0pp** on 15+/25 symbols (adaptive-structure test).
+4. Hour-of-day 24-class probe on the same frozen embeddings < **10%** accuracy AND stratified accuracy variance < **1.5pp** across UTC sessions (Asia 0–8 / Europe 8–16 / US 16–24). Catches session-of-day shortcuts.
+
+Plus existing diagnostics:
+- Symbol-identity probe < 20%
+- CKA > 0.7 between seed-varied runs
+- Per-fold balanced-accuracy standard deviation reported alongside means
+
+**STOP if any of 1–4 fail, or if any representation diagnostic fails.** The encoder has not learned tape microstructure — likely learned session-of-day or class imbalance.
 
 ### Gate 2: Fine-Tuned vs Supervised Baseline (after fine-tuning)
 
@@ -317,9 +338,7 @@ Evaluate probe accuracy on training months 1-4 vs months 5-6 separately.
 
 **STOP if accuracy drops > 3pp between periods on > 10/25 symbols.** Representations memorized regime-specific noise.
 
-**Metric selection by horizon (from Step 0 base-rate stationarity measurement):**
-- **H500:** MUST use balanced accuracy / F1 (not raw accuracy). Measured 30-day rolling H500 base rates show 3.8pp–11.4pp intra-period swings on all 8 focus symbols (BTC, ETH, SOL, CRV, 2Z, AVAX, UNI, LDO). Under raw accuracy, label distribution shift at H500 is indistinguishable from representation degradation.
-- **H100 and H50:** raw accuracy is fine (base rates stay within ±2pp on liquid symbols at these horizons).
+**Metric: balanced accuracy at ALL horizons** (H10, H50, H100, H500). Revised 2026-04-15 per council-1 / council-5 Gate 0 review — raw accuracy is gameable via per-fold label imbalance at every horizon, not just H500. Measured Gate 0 H10 inflation up to 9.9pp on illiquid symbols (2Z: raw 0.621 → balanced 0.522). Symmetric use of balanced accuracy eliminates the ambiguity.
 
 ### Representation Quality Metrics (not go/no-go, but diagnostic)
 

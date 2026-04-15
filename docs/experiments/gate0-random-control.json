@@ -989,7 +989,11 @@
         "XRP": 7388
       },
       "primary_metric": "accuracy_mean",
-      "threshold": 0.514
+      "threshold": 0.514,
+      "mean_balanced_accuracy": 0.5091035435109004,
+      "median_balanced_accuracy": 0.5055767923673876,
+      "std_balanced_accuracy": 0.0131981525936465,
+      "n_symbols_above_514_balanced": 6
     },
     "h50": {
       "mean_accuracy": 0.5106667930355807,
@@ -1028,7 +1032,11 @@
         "XRP": 7356
       },
       "primary_metric": "accuracy_mean",
-      "threshold": 0.514
+      "threshold": 0.514,
+      "mean_balanced_accuracy": 0.5013157223513887,
+      "median_balanced_accuracy": 0.49995761965976654,
+      "std_balanced_accuracy": 0.00953329552685067,
+      "n_symbols_above_514_balanced": 2
     },
     "h100": {
       "mean_accuracy": 0.503342589313743,
@@ -1067,7 +1075,11 @@
         "XRP": 7315
       },
       "primary_metric": "accuracy_mean",
-      "threshold": 0.514
+      "threshold": 0.514,
+      "mean_balanced_accuracy": 0.4982910315963877,
+      "median_balanced_accuracy": 0.4991553717617732,
+      "std_balanced_accuracy": 0.010568359242473879,
+      "n_symbols_above_514_balanced": 1
     },
     "h500": {
       "mean_accuracy": 0.49929311201199283,
@@ -1106,7 +1118,11 @@
         "XRP": 6995
       },
       "primary_metric": "balanced_accuracy_mean",
-      "threshold": 0.514
+      "threshold": 0.514,
+      "mean_balanced_accuracy": 0.49929311201199283,
+      "median_balanced_accuracy": 0.4998490518622969,
+      "std_balanced_accuracy": 0.011002431430112572,
+      "n_symbols_above_514_balanced": 2
     }
   }
 }
