@@ -192,25 +192,29 @@ class TestComputeSnapshotFeatures:
 
     # --- kyle_lambda ---
 
-    def test_kyle_lambda_zero_before_full_window(self) -> None:
-        """Gotcha #13: per-SNAPSHOT, needs KYLE_LAMBDA_WINDOW history."""
+    def test_kyle_lambda_placeholder_zero_before_full_window(self) -> None:
+        """Validates placeholder behavior only — real Kyle's λ implemented in Task 7."""
         from tape.constants import KYLE_LAMBDA_WINDOW
         from tape.features_ob import compute_snapshot_features
 
         ob = _fake_ob(200)
         snap = compute_snapshot_features(ob)
-        # First KYLE_LAMBDA_WINDOW rows should be 0 (insufficient history)
-        assert (snap["kyle_lambda"].iloc[:KYLE_LAMBDA_WINDOW] == 0.0).all()
+        # First KYLE_LAMBDA_WINDOW - 1 rows have insufficient history (< 50 snapshots)
+        # Row KYLE_LAMBDA_WINDOW - 1 (index 49) is the first row with a full window
+        assert (snap["kyle_lambda"].iloc[: KYLE_LAMBDA_WINDOW - 1] == 0.0).all()
 
-    def test_kyle_lambda_nonzero_after_full_window(self) -> None:
-        """After KYLE_LAMBDA_WINDOW snapshots, at least some values should be non-zero."""
+    def test_kyle_lambda_placeholder_nonzero_after_full_window(self) -> None:
+        """Validates placeholder behavior only — real Kyle's λ implemented in Task 7."""
         from tape.constants import KYLE_LAMBDA_WINDOW
         from tape.features_ob import compute_snapshot_features
 
         ob = _fake_ob(200)
         snap = compute_snapshot_features(ob)
-        tail = snap["kyle_lambda"].iloc[KYLE_LAMBDA_WINDOW:]
-        # Not all zeros after the window fills
+        # Index KYLE_LAMBDA_WINDOW - 1 (=49) has exactly 50 snapshots of history
+        # and must be nonzero (off-by-one fix: was previously left as 0)
+        assert snap["kyle_lambda"].iloc[KYLE_LAMBDA_WINDOW - 1] != 0.0
+        # The tail from that index onward should have non-zero values
+        tail = snap["kyle_lambda"].iloc[KYLE_LAMBDA_WINDOW - 1 :]
         assert (tail != 0.0).any()
 
     def test_kyle_lambda_same_value_within_snapshot(self) -> None:

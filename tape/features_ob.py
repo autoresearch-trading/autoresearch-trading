@@ -24,6 +24,11 @@ Gotchas addressed:
   #14 (notional for cross-symbol comparability) — all formulas use qty × price
   #15 (piecewise Cont 2014 OFI) — _piecewise_cont_ofi handles three price cases
   #20 (10 OB levels per side) — depth_ratio sums all 10 levels
+
+NOTE: kyle_lambda here is a PLACEHOLDER using OB-only signed notional
+(bid_notional - ask_notional at L1). This is not true Kyle's λ per CLAUDE.md
+gotcha #13, which requires trade-attributed cumulative signed notional.
+Task 7 integration layer will overwrite this column using trade data.
 """
 
 from __future__ import annotations
@@ -242,15 +247,19 @@ def _rolling_kyle_lambda(mid: np.ndarray, signed_notional: np.ndarray) -> np.nda
     """Per-snapshot Kyle λ: Cov(Δmid, signed_notional) / Var(signed_notional)
     over a rolling `KYLE_LAMBDA_WINDOW`-snapshot window.
 
+    # TODO: PLACEHOLDER — not true Kyle λ, replaced in Task 7 integration
+
     Gotcha #13: per-snapshot, not per-event. Events are aligned to snapshots
     by `align_ob_features_to_events`, so the per-event value equals the value
     at the aligned snapshot (pure forward-fill — no event-level computation).
 
     Uses `Δmid` (NOT Δvwap). The proxy here is OB-derived signed notional
-    (bid_not - ask_not). The integration layer can substitute trade-attributed
-    signed notional via an override if needed.
+    (bid_not_total - ask_not_total across all 10 levels). Instantaneous 10-level
+    tilt is kept (simpler than cumsum L1) since both are placeholders anyway.
+    The integration layer will substitute trade-attributed signed notional.
 
-    First KYLE_LAMBDA_WINDOW rows are set to 0 (insufficient history).
+    First KYLE_LAMBDA_WINDOW - 1 rows are set to 0 (insufficient history).
+    Row KYLE_LAMBDA_WINDOW - 1 (index 49) is the first row with a full window.
     """
     n = len(mid)
     out = np.zeros(n, dtype=float)
@@ -267,6 +276,7 @@ def _rolling_kyle_lambda(mid: np.ndarray, signed_notional: np.ndarray) -> np.nda
     lam_series: Any = (cov / var.replace(0.0, np.nan)).fillna(0.0)
     lam = lam_series.to_numpy(dtype=float)
 
-    # Zero out rows with insufficient history; forward-fill the rest
-    out[KYLE_LAMBDA_WINDOW:] = lam[KYLE_LAMBDA_WINDOW:]
+    # pandas rolling(window=50) produces its first non-NaN at index 49 (KYLE_LAMBDA_WINDOW - 1).
+    # Assign from that index onward; indices 0..48 remain 0 (insufficient history).
+    out[KYLE_LAMBDA_WINDOW - 1 :] = lam[KYLE_LAMBDA_WINDOW - 1 :]
     return out
