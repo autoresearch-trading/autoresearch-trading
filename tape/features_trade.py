@@ -77,32 +77,50 @@ def compute_trade_features(
     eps_spread: np.ndarray = np.maximum(spread, _EPS_SPREAD_MID * mid)
     book_walk = book_walk_abs / eps_spread
 
-    # 7. effort_vs_result — clip(log_total_qty - log(|return|+eps), -5, 5)  (gotcha #5)
-    #    Event 0: log_return[0] = 0 (undefined — no prior vwap), which gives
-    #    log(0 + 1e-6) = -13.8 → clips to +5.  Zero it out (option (a) from spec).
+    # 7. effort_vs_result — both qty and |return| terms median-normalised (gotcha #5)
+    #
+    #    Old formula: log_total_qty - log(|return| + eps)
+    #    Problem: typical BTC tick returns ~1e-3 → log(1e-3 + 1e-6) ≈ -6.9 →
+    #    effort_vs_result ≈ 6.9 → clips to +5 for ~98% of events.
+    #
+    #    Fix: normalise |return| by its rolling 1000-event median (same as qty).
+    #    Both terms are now on a relative scale → feature is discriminative.
+    #
+    #    Event 0: log_return[0] = 0 (undefined) → zero out (option (a) from spec).
     abs_ret = np.abs(log_return)
-    effort_vs_result = np.clip(log_total_qty - np.log(abs_ret + _EPS_RETURN), -5.0, 5.0)
+    _mret: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=1).median()
+    roll_med_abs_ret: np.ndarray = np.maximum(_mret.to_numpy(dtype=float), 1e-10)
+    normalized_abs_ret = abs_ret / roll_med_abs_ret
+    effort_vs_result = np.clip(
+        log_total_qty - np.log(normalized_abs_ret + _EPS_RETURN),
+        -5.0,
+        5.0,
+    )
     effort_vs_result[0] = 0.0
 
-    # 8. climax_score — rolling-1000 σ, clipped [0, 5]  (gotcha #6)
+    # 8. climax_score — rolling-1000 σ on log_total_qty_raw, clipped [0, 5]  (gotcha #6)
     #
-    #    Fix 2: use min_periods=1 (accept noisy early estimates) and apply a
-    #    sigma floor (_SIGMA_FLOOR = 0.1) so that the first few events with
-    #    near-zero rolling std do not produce z-scores of ~qty/1e-10 → 5.0.
-    #    std() returns NaN for n=1; fillna(0.0) then the floor picks up.
-    _ssq: Any = pd.Series(total_qty).rolling(ROLLING_WINDOW, min_periods=1).std()
-    roll_std_qty: np.ndarray = np.maximum(
+    #    Fix: z-score log_total_qty_raw (pre-median-normalisation log qty) instead
+    #    of raw total_qty. log(qty) is approximately symmetric (log-normal fits
+    #    gamma well) → well-behaved z-scores; raw qty is heavy-tailed gamma →
+    #    rolling σ is dominated by outliers → unreliable z-scores.
+    #
+    #    Cold-start: min_periods=1 + sigma floor (_SIGMA_FLOOR=0.1) prevents
+    #    z ≈ qty/1e-10 blow-up for events 1-9.
+    log_total_qty_raw = pd.Series(np.log(np.maximum(total_qty, _EPS_RETURN)))
+    _smq: Any = log_total_qty_raw.rolling(ROLLING_WINDOW, min_periods=1).mean()
+    roll_mean_log_qty: np.ndarray = _smq.fillna(0.0).to_numpy(dtype=float)
+    _ssq: Any = log_total_qty_raw.rolling(ROLLING_WINDOW, min_periods=1).std()
+    roll_std_log_qty: np.ndarray = np.maximum(
         _ssq.fillna(0.0).to_numpy(dtype=float), _SIGMA_FLOOR
     )
     _ssr: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=1).std()
     roll_std_ret: np.ndarray = np.maximum(
         _ssr.fillna(0.0).to_numpy(dtype=float), _SIGMA_FLOOR
     )
-    _smq: Any = pd.Series(total_qty).rolling(ROLLING_WINDOW, min_periods=1).mean()
-    roll_mean_qty: np.ndarray = _smq.fillna(0.0).to_numpy(dtype=float)
     _smr: Any = pd.Series(abs_ret).rolling(ROLLING_WINDOW, min_periods=1).mean()
     roll_mean_ret: np.ndarray = _smr.fillna(0.0).to_numpy(dtype=float)
-    z_qty = (total_qty - roll_mean_qty) / roll_std_qty
+    z_qty = (log_total_qty_raw.to_numpy() - roll_mean_log_qty) / roll_std_log_qty
     z_ret = (abs_ret - roll_mean_ret) / roll_std_ret
     climax_score = np.clip(np.minimum(z_qty, z_ret), 0.0, 5.0)
 

@@ -134,6 +134,40 @@ def test_prev_seq_time_span_sliding_window():
     ), "prev_seq_time_span is a step-function — sliding window not implemented"
 
 
+def test_effort_vs_result_not_saturated():
+    # Realistic tick-scale returns: normal(0, 0.1) price walks starting at 100
+    # produce per-event log_returns ~1e-3. Under the old formula, this
+    # saturated to +5 for essentially the whole series.
+    ev = _fake_events(2_000)
+    out = compute_trade_features(
+        ev, spread=np.full(2_000, 0.1), mid=np.full(2_000, 100.0)
+    )
+    # After warmup (first 200 events), effort should be mostly unsaturated
+    tail = out["effort_vs_result"].iloc[200:]
+    saturated_frac = (tail.abs() >= 4.9).mean()
+    assert (
+        saturated_frac < 0.10
+    ), f"effort_vs_result saturated in {saturated_frac:.1%} of events"
+    # And should show meaningful variation
+    assert tail.std() > 0.3, f"effort_vs_result std too low: {tail.std():.3f}"
+
+
+def test_climax_score_uses_log_qty_not_raw():
+    # With gamma-distributed qty, a log-qty z-score should produce a less
+    # heavy-tailed climax distribution than raw-qty z-score. Sanity check:
+    # under the fixed formula, most events (after warmup) have climax < 1.
+    ev = _fake_events(2_000)
+    out = compute_trade_features(
+        ev, spread=np.full(2_000, 0.1), mid=np.full(2_000, 100.0)
+    )
+    tail = out["climax_score"].iloc[200:]
+    # Climax is min(z_qty, z_ret), clipped [0, 5]. For well-behaved data,
+    # most events should be near 0 (not saturating).
+    assert (
+        tail < 1.0
+    ).mean() > 0.80, f"too many high-climax events: {(tail < 1.0).mean():.1%} below 1.0"
+
+
 def test_no_day_start_saturation():
     """Fix 2: cold-start sigma floor + event-0 effort_vs_result guard.
 
