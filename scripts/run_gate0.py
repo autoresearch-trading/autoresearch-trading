@@ -301,17 +301,21 @@ def _build_summary(
 ) -> dict[str, Any]:
     """Aggregate per-symbol per-horizon scores into a summary dict.
 
-    Enriched fields (Fix 2):
-      n_successful        — symbols that completed all requested folds
-      n_errors            — symbols that hit an error at this horizon
-      error_types         — dict mapping error string → count
-      symbol_window_counts — {symbol: n_windows} for every symbol with data
+    Enriched fields:
+      n_successful              — symbols that completed all requested folds
+      n_errors                  — symbols that hit an error at this horizon
+      error_types               — dict mapping error string → count
+      symbol_window_counts      — {symbol: n_windows} for every symbol with data
+      mean_balanced_accuracy    — mean balanced accuracy across symbols (all horizons)
+      median_balanced_accuracy  — median balanced accuracy (council-preferred)
+      n_symbols_above_514_balanced — count with balanced_accuracy_mean > 0.514
     """
     summary: dict[str, Any] = {}
     for h in horizons:
         key = f"h{h}"
         metric = "balanced_accuracy_mean" if h == 500 else "accuracy_mean"
         vals: list[float] = []
+        bal_vals: list[float] = []
         n_successful: int = 0
         n_errors: int = 0
         error_types: dict[str, int] = {}
@@ -326,13 +330,16 @@ def _build_summary(
             elif metric in h_data:
                 vals.append(h_data[metric])
                 n_successful += 1
+            # Always collect balanced accuracy if present (all horizons)
+            if "balanced_accuracy_mean" in h_data:
+                bal_vals.append(h_data["balanced_accuracy_mean"])
             # Collect window counts regardless of success/error
             if "n_windows" in h_data:
                 symbol_window_counts[sym] = int(h_data["n_windows"])
 
         if vals:
             arr = np.array(vals)
-            summary[key] = {
+            entry: dict[str, Any] = {
                 "mean_accuracy": float(arr.mean()),
                 "median_accuracy": float(np.median(arr)),
                 "std_accuracy": float(arr.std()),
@@ -345,6 +352,13 @@ def _build_summary(
                 "primary_metric": metric,
                 "threshold": threshold,
             }
+            if bal_vals:
+                bal_arr = np.array(bal_vals)
+                entry["mean_balanced_accuracy"] = float(bal_arr.mean())
+                entry["median_balanced_accuracy"] = float(np.median(bal_arr))
+                entry["std_balanced_accuracy"] = float(bal_arr.std())
+                entry["n_symbols_above_514_balanced"] = int((bal_arr > threshold).sum())
+            summary[key] = entry
         else:
             summary[key] = {
                 "n_symbols": 0,
@@ -376,21 +390,22 @@ def _write_md_report(
         "StandardScaler → PCA(n=20) → LogisticRegression(C=1.0).",
         f"Walk-forward {_K_FOLDS}-fold, 600-event embargo. Stride=200 for evaluation windows.",
         "",
-        "**Metric:** H500 uses balanced accuracy (base-rate non-stationary — Gate 4 rule). "
-        "H10/H50/H100 use raw accuracy.",
+        "**Metric:** Two tables reported per council-1 / council-5 review. "
+        "Balanced accuracy is the council-preferred reading at ALL horizons (not just H500). "
+        "Raw accuracy is preserved for historical comparison.",
         "",
         "**Reference bar:** Gate 1 CNN probe must exceed these numbers by ≥ 0.5pp on "
         "15+/25 symbols at H100.",
         "",
     ]
 
-    # Per-horizon summary table
-    lines.append("## Per-horizon summary")
+    # --- Raw-accuracy summary table (historical reference) ---
+    lines.append("## Per-horizon summary — Raw Accuracy *(historical reference)*")
     lines.append("")
-    header = "| Horizon | Mean acc | Median acc | n successful | n errors | n above 51.4% | Metric |"
-    sep = "|---|---|---|---|---|---|---|"
-    lines.append(header)
-    lines.append(sep)
+    lines.append(
+        "| Horizon | Mean raw acc | Median raw acc | n successful | n errors | n above 51.4% | Metric |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
     for h in horizons:
         key = f"h{h}"
         s = summary.get(key, {})
@@ -408,6 +423,37 @@ def _write_md_report(
                 f"| {n_err} "
                 f"| {s['n_symbols_above_514']} "
                 f"| {s['primary_metric']} |"
+            )
+    lines.append("")
+
+    # --- Balanced-accuracy summary table (council-preferred) ---
+    lines.append(
+        "## Per-horizon summary — Balanced Accuracy *(council-preferred reading)*"
+    )
+    lines.append("")
+    lines.append(
+        "| Horizon | Mean bal acc | Median bal acc | n successful | n errors | n above 51.4% |"
+    )
+    lines.append("|---|---|---|---|---|---|")
+    for h in horizons:
+        key = f"h{h}"
+        s = summary.get(key, {})
+        if "error" in s and s.get("n_symbols", 0) == 0:
+            n_err = s.get("n_errors", 0)
+            lines.append(f"| H{h} | — | — | 0 | {n_err} | — |")
+        else:
+            n_succ = s.get("n_successful", s.get("n_symbols", 0))
+            n_err = s.get("n_errors", 0)
+            bal_mean = s.get("mean_balanced_accuracy", float("nan"))
+            bal_med = s.get("median_balanced_accuracy", float("nan"))
+            bal_above = s.get("n_symbols_above_514_balanced", "—")
+            lines.append(
+                f"| H{h} "
+                f"| {bal_mean:.4f} "
+                f"| {bal_med:.4f} "
+                f"| {n_succ} "
+                f"| {n_err} "
+                f"| {bal_above} |"
             )
     lines.append("")
 
@@ -441,10 +487,15 @@ def _write_md_report(
         lines.append("| " + " | ".join(row) + " |")
     lines.append("")
 
-    # Per-symbol table
+    # Per-symbol table — both raw and balanced accuracy columns
     lines.append("## Per-symbol results")
     lines.append("")
-    col_headers = ["Symbol"] + [f"H{h}" for h in horizons] + ["n_windows", "Notes"]
+    col_headers = (
+        ["Symbol"]
+        + [f"H{h} raw" for h in horizons]
+        + [f"H{h} bal" for h in horizons]
+        + ["n_windows", "Notes"]
+    )
     lines.append("| " + " | ".join(col_headers) + " |")
     lines.append("|" + "|".join(["---"] * len(col_headers)) + "|")
 
@@ -458,11 +509,18 @@ def _write_md_report(
             if "error" in h_data:
                 row.append(f"err:{h_data['error'][:8]}")
             else:
-                metric = "balanced_accuracy_mean" if h == 500 else "accuracy_mean"
-                val = h_data.get(metric, float("nan"))
+                val = h_data.get("accuracy_mean", float("nan"))
                 row.append(f"{val:.4f}")
                 if n_windows_val == "—" and "n_windows" in h_data:
                     n_windows_val = str(h_data["n_windows"])
+        for h in horizons:
+            key = f"h{h}"
+            h_data = sym_data.get(key, {})
+            if "error" in h_data:
+                row.append("—")
+            else:
+                val = h_data.get("balanced_accuracy_mean", float("nan"))
+                row.append(f"{val:.4f}")
         row.append(n_windows_val)
         notes = []
         if sym == HELD_OUT_SYMBOL:
@@ -626,8 +684,9 @@ def main(argv: list[str] | None = None) -> int:
     _write_md_report(results, summary, horizons, md_path)
     print(f"MD report    → {md_path}")
 
-    # Print summary to stdout
+    # Print summary to stdout — both raw and balanced accuracy per council-1/council-5
     print("\n=== Gate 0 Summary ===")
+    print("  [Raw accuracy — historical reference]")
     for h in horizons:
         key = f"h{h}"
         s = summary.get(key, {})
@@ -635,16 +694,31 @@ def main(argv: list[str] | None = None) -> int:
             n_err = s.get("n_errors", 0)
             print(f"  H{h}: no data  (errors={n_err})")
         else:
-            metric_label = "bal-acc" if h == 500 else "acc"
             n_succ = s.get("n_successful", s.get("n_symbols", 0))
             n_err = s.get("n_errors", 0)
             etypes = s.get("error_types", {})
             err_detail = "  errors=" + str(etypes) if etypes else ""
             print(
-                f"  H{h}: mean {metric_label}={s['mean_accuracy']:.4f}  "
+                f"  H{h}: mean raw={s['mean_accuracy']:.4f}  "
                 f"median={s['median_accuracy']:.4f}  "
                 f"n>{int(s['threshold'] * 100)}%={s['n_symbols_above_514']}/{n_succ}"
                 f"  completed={n_succ}/25  errors={n_err}{err_detail}"
+            )
+    print("  [Balanced accuracy — council-preferred reading (council-1/council-5)]")
+    for h in horizons:
+        key = f"h{h}"
+        s = summary.get(key, {})
+        if s.get("n_symbols", 0) == 0 and "error" in s:
+            print(f"  H{h}: no data")
+        else:
+            n_succ = s.get("n_successful", s.get("n_symbols", 0))
+            bal_mean = s.get("mean_balanced_accuracy", float("nan"))
+            bal_med = s.get("median_balanced_accuracy", float("nan"))
+            bal_above = s.get("n_symbols_above_514_balanced", "—")
+            print(
+                f"  H{h}: mean bal={bal_mean:.4f}  "
+                f"median={bal_med:.4f}  "
+                f"n>{int(s.get('threshold', 0.514) * 100)}%={bal_above}/{n_succ}"
             )
 
     return 0
