@@ -57,10 +57,12 @@ from tape.splits import walk_forward_folds
 _PCA_N_COMPONENTS: int = 20
 _LR_C: float = 1.0
 _LR_MAX_ITER: int = 1_000
-_K_FOLDS: int = 5
+# New defaults sized to fit illiquid symbols (e.g. LDO at H500: 4577 windows).
+# needed = min_train + embargo + n_folds * min_test = 2000 + 600 + 3*500 = 4100 <= 4577.
+_K_FOLDS: int = 3
 _EMBARGO: int = 600
-_MIN_TRAIN: int = 10_000
-_MIN_TEST: int = 200
+_MIN_TRAIN: int = 2_000
+_MIN_TEST: int = 500
 _MIN_LABELED_WINDOWS: int = 50  # minimum valid windows to attempt a fold
 
 
@@ -178,6 +180,7 @@ def evaluate_symbol(
     min_train: int = _MIN_TRAIN,
     min_test: int = _MIN_TEST,
     embargo: int = _EMBARGO,
+    n_folds: int = _K_FOLDS,
 ) -> dict[str, Any] | None:
     """Run Gate 0 PCA+LR evaluation for a single symbol.
 
@@ -205,6 +208,9 @@ def evaluate_symbol(
     embargo : int
         Gap (in window-index units) between train and test.  Production default
         is 600 (events); expose here for unit tests with small window counts.
+    n_folds : int
+        Number of walk-forward folds.  Default is _K_FOLDS (3).
+        Pass a larger value (e.g. 5) for liquid symbols if desired.
     """
     loaded = _load_symbol_shards(cache, symbol)
     if loaded is None:
@@ -246,7 +252,7 @@ def evaluate_symbol(
         try:
             folds = walk_forward_folds(
                 np.arange(len(Xv), dtype=np.int64),
-                n_folds=_K_FOLDS,
+                n_folds=n_folds,
                 embargo=embargo,
                 min_train=min_train,
                 min_test=min_test,
@@ -293,16 +299,36 @@ def _build_summary(
     horizons: tuple[int, ...],
     threshold: float = 0.514,
 ) -> dict[str, Any]:
-    """Aggregate per-symbol per-horizon scores into a summary dict."""
+    """Aggregate per-symbol per-horizon scores into a summary dict.
+
+    Enriched fields (Fix 2):
+      n_successful        — symbols that completed all requested folds
+      n_errors            — symbols that hit an error at this horizon
+      error_types         — dict mapping error string → count
+      symbol_window_counts — {symbol: n_windows} for every symbol with data
+    """
     summary: dict[str, Any] = {}
     for h in horizons:
         key = f"h{h}"
         metric = "balanced_accuracy_mean" if h == 500 else "accuracy_mean"
-        vals = []
-        for sym_data in results.values():
+        vals: list[float] = []
+        n_successful: int = 0
+        n_errors: int = 0
+        error_types: dict[str, int] = {}
+        symbol_window_counts: dict[str, int] = {}
+
+        for sym, sym_data in results.items():
             h_data = sym_data.get(key, {})
-            if metric in h_data:
+            if "error" in h_data:
+                n_errors += 1
+                err = h_data["error"]
+                error_types[err] = error_types.get(err, 0) + 1
+            elif metric in h_data:
                 vals.append(h_data[metric])
+                n_successful += 1
+            # Collect window counts regardless of success/error
+            if "n_windows" in h_data:
+                symbol_window_counts[sym] = int(h_data["n_windows"])
 
         if vals:
             arr = np.array(vals)
@@ -312,11 +338,22 @@ def _build_summary(
                 "std_accuracy": float(arr.std()),
                 "n_symbols": len(vals),
                 "n_symbols_above_514": int((arr > threshold).sum()),
+                "n_successful": n_successful,
+                "n_errors": n_errors,
+                "error_types": error_types,
+                "symbol_window_counts": symbol_window_counts,
                 "primary_metric": metric,
                 "threshold": threshold,
             }
         else:
-            summary[key] = {"n_symbols": 0, "error": "no_symbols_with_data"}
+            summary[key] = {
+                "n_symbols": 0,
+                "n_successful": 0,
+                "n_errors": n_errors,
+                "error_types": error_types,
+                "symbol_window_counts": symbol_window_counts,
+                "error": "no_symbols_with_data",
+            }
     return summary
 
 
@@ -337,7 +374,7 @@ def _write_md_report(
         "",
         "**Method:** 85-dim flat features (mean/std/skew/kurt/last per channel) → "
         "StandardScaler → PCA(n=20) → LogisticRegression(C=1.0).",
-        "Walk-forward 5-fold, 600-event embargo. Stride=200 for evaluation windows.",
+        f"Walk-forward {_K_FOLDS}-fold, 600-event embargo. Stride=200 for evaluation windows.",
         "",
         "**Metric:** H500 uses balanced accuracy (base-rate non-stationary — Gate 4 rule). "
         "H10/H50/H100 use raw accuracy.",
@@ -350,24 +387,58 @@ def _write_md_report(
     # Per-horizon summary table
     lines.append("## Per-horizon summary")
     lines.append("")
-    header = "| Horizon | Mean acc | Median acc | n symbols | n above 51.4% | Metric |"
-    sep = "|---|---|---|---|---|---|"
+    header = "| Horizon | Mean acc | Median acc | n successful | n errors | n above 51.4% | Metric |"
+    sep = "|---|---|---|---|---|---|---|"
     lines.append(header)
     lines.append(sep)
     for h in horizons:
         key = f"h{h}"
         s = summary.get(key, {})
-        if "error" in s:
-            lines.append(f"| H{h} | — | — | 0 | — | — |")
+        if "error" in s and s.get("n_symbols", 0) == 0:
+            n_err = s.get("n_errors", 0)
+            lines.append(f"| H{h} | — | — | 0 | {n_err} | — | — |")
         else:
+            n_succ = s.get("n_successful", s.get("n_symbols", 0))
+            n_err = s.get("n_errors", 0)
             lines.append(
                 f"| H{h} "
                 f"| {s['mean_accuracy']:.4f} "
                 f"| {s['median_accuracy']:.4f} "
-                f"| {s['n_symbols']} "
+                f"| {n_succ} "
+                f"| {n_err} "
                 f"| {s['n_symbols_above_514']} "
                 f"| {s['primary_metric']} |"
             )
+    lines.append("")
+
+    # Error breakdown
+    any_errors = any(summary.get(f"h{h}", {}).get("n_errors", 0) > 0 for h in horizons)
+    if any_errors:
+        lines.append("## Error breakdown")
+        lines.append("")
+        for h in horizons:
+            key = f"h{h}"
+            s = summary.get(key, {})
+            etypes = s.get("error_types", {})
+            if etypes:
+                lines.append(
+                    f"**H{h}:** " + ", ".join(f"{k}: {v}" for k, v in etypes.items())
+                )
+        lines.append("")
+
+    # Per-symbol window counts table
+    lines.append("## Per-symbol window counts")
+    lines.append("")
+    wc_headers = ["Symbol"] + [f"H{h} windows" for h in horizons]
+    lines.append("| " + " | ".join(wc_headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(wc_headers)) + "|")
+    for sym in sorted(results.keys()):
+        row = [sym]
+        for h in horizons:
+            key = f"h{h}"
+            wc_map = summary.get(key, {}).get("symbol_window_counts", {})
+            row.append(str(wc_map.get(sym, "—")))
+        lines.append("| " + " | ".join(row) + " |")
     lines.append("")
 
     # Per-symbol table
@@ -446,10 +517,31 @@ def main(argv: list[str] | None = None) -> int:
         help="Output path prefix (without extension). Writes <out>.json and <out>.md.",
     )
     parser.add_argument(
+        "--n-folds",
+        type=int,
+        default=_K_FOLDS,
+        help=(
+            f"Number of walk-forward folds (default: {_K_FOLDS}). "
+            "Smaller values allow illiquid symbols to complete evaluation."
+        ),
+    )
+    parser.add_argument(
         "--min-train",
         type=int,
         default=_MIN_TRAIN,
-        help=argparse.SUPPRESS,  # hidden: only for unit tests on small synthetic caches
+        help=(
+            f"Minimum training windows per fold (default: {_MIN_TRAIN}). "
+            "Reduce to fit illiquid symbols."
+        ),
+    )
+    parser.add_argument(
+        "--min-test",
+        type=int,
+        default=_MIN_TEST,
+        help=(
+            f"Minimum test windows per fold (default: {_MIN_TEST}). "
+            "Reduce to fit illiquid symbols."
+        ),
     )
     parser.add_argument(
         "--min-labeled-windows",
@@ -461,12 +553,6 @@ def main(argv: list[str] | None = None) -> int:
         "--embargo",
         type=int,
         default=_EMBARGO,
-        help=argparse.SUPPRESS,  # hidden: only for unit tests on small synthetic caches
-    )
-    parser.add_argument(
-        "--min-test",
-        type=int,
-        default=_MIN_TEST,
         help=argparse.SUPPRESS,  # hidden: only for unit tests on small synthetic caches
     )
     args = parser.parse_args(argv)
@@ -482,6 +568,7 @@ def main(argv: list[str] | None = None) -> int:
     min_train: int = args.min_train
     min_labeled_windows: int = args.min_labeled_windows
     min_test: int = args.min_test
+    n_folds: int = args.n_folds
 
     results: dict[str, Any] = {}
     for sym in args.symbols:
@@ -500,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_train=min_train,
                 min_test=min_test,
                 embargo=args.embargo,
+                n_folds=n_folds,
             )
         except ValueError as exc:
             # Hard gate: propagate hold-out date violations
@@ -543,14 +631,20 @@ def main(argv: list[str] | None = None) -> int:
     for h in horizons:
         key = f"h{h}"
         s = summary.get(key, {})
-        if "error" in s:
-            print(f"  H{h}: no data")
+        if s.get("n_symbols", 0) == 0 and "error" in s:
+            n_err = s.get("n_errors", 0)
+            print(f"  H{h}: no data  (errors={n_err})")
         else:
             metric_label = "bal-acc" if h == 500 else "acc"
+            n_succ = s.get("n_successful", s.get("n_symbols", 0))
+            n_err = s.get("n_errors", 0)
+            etypes = s.get("error_types", {})
+            err_detail = "  errors=" + str(etypes) if etypes else ""
             print(
                 f"  H{h}: mean {metric_label}={s['mean_accuracy']:.4f}  "
                 f"median={s['median_accuracy']:.4f}  "
-                f"n>{int(s['threshold'] * 100)}%={s['n_symbols_above_514']}/{s['n_symbols']}"
+                f"n>{int(s['threshold'] * 100)}%={s['n_symbols_above_514']}/{n_succ}"
+                f"  completed={n_succ}/25  errors={n_err}{err_detail}"
             )
 
     return 0

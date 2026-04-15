@@ -536,3 +536,167 @@ class TestCLIEndToEnd:
         assert "summary" in data, "JSON missing top-level 'summary' key"
         h100_summary = data["summary"].get("h100", {})
         assert "mean_accuracy" in h100_summary or "n_symbols_above_514" in h100_summary
+
+    def test_enriched_summary_has_error_counts(self, gate0, synthetic_cache, tmp_path):
+        """Summary must include n_successful and n_errors counts per horizon."""
+        out_prefix = str(tmp_path / "gate0")
+        gate0.main(
+            [
+                "--cache",
+                str(synthetic_cache),
+                "--symbols",
+                "SYNTH_A",
+                "SYNTH_B",
+                "--horizons",
+                "100",
+                "--seed",
+                "0",
+                "--out",
+                out_prefix,
+            ]
+            + _SMALL_CLI_FLAGS
+        )
+        with open(out_prefix + ".json") as f:
+            data = json.load(f)
+        h100_summary = data["summary"].get("h100", {})
+        assert "n_successful" in h100_summary, "summary missing n_successful"
+        assert "n_errors" in h100_summary, "summary missing n_errors"
+
+
+# ---------------------------------------------------------------------------
+# Test: illiquid symbol (~5000 windows) completes all 3 folds at new defaults
+# This is the key regression test: old defaults (min_train=10_000, n_folds=5)
+# failed for any symbol with < 12_100 windows; new defaults must fit LDO (4577).
+# ---------------------------------------------------------------------------
+
+# LDO-sized: 4577 windows at H500.  At stride=200 we need ~4577 raw windows.
+# Each raw window occupies one stride slot.  4577 * 200 + 200 = 916_000 events.
+# But we don't simulate the full event chain — we build a shard with enough events
+# to yield 4577 eval windows at stride=200:  4577 * 200 + 200 = 916_200 events.
+# That is too large for a unit test.  Instead we test at a scaled-down ratio:
+# 5_000 windows ~= LDO.  Use _build_eval_windows(n_events) and set n_events to
+# yield exactly 5_000 windows: n_events = (5_000 - 1) * 200 + 200 = 1_000_000.
+# Still huge.  The point is the fold arithmetic, so we override stride internally.
+# Better approach: build a shard with n_events = 5_000 and window_len = 1, stride = 1
+# to simulate 5_000 windows directly — but that changes the flat feature contract.
+#
+# Simplest correct approach: build a synthetic cache with enough events to produce
+# 5_000 windows at stride=200 *from evaluate_symbol directly*, relying on the fact
+# that evaluate_symbol's internal _build_eval_windows uses WINDOW_LEN=200 / STRIDE_EVAL=200.
+# n_events = (5_000 - 1) * 200 + 200 = 1_000_000 — too large.
+#
+# Final approach: patch min_labeled_windows=1 and use the evaluate_symbol API
+# directly with a synthetic Xv of shape (5000, 85) via walk_forward_folds.
+# This exercises the fold arithmetic without building huge event arrays.
+
+
+class TestIlliquidSymbolFolds:
+    """New defaults (min_train=2000, min_test=500, n_folds=3) must complete
+    all 3 folds for a symbol with 5000 valid labeled windows (LDO-like).
+    Old defaults (min_train=10_000, n_folds=5) would have raised ValueError
+    and returned 'no_folds_completed' for this window count."""
+
+    def test_5000_windows_completes_3_folds_at_new_defaults(self, gate0):
+        """Walk-forward with new defaults must return 3 completed folds for 5000 windows."""
+        from tape.splits import walk_forward_folds
+
+        n_windows = 5_000
+        # New defaults from the patch: min_train=2000, min_test=500, n_folds=3, embargo=600
+        folds = walk_forward_folds(
+            np.arange(n_windows, dtype=np.int64),
+            n_folds=3,
+            embargo=600,
+            min_train=2_000,
+            min_test=500,
+        )
+        assert (
+            len(folds) == 3
+        ), f"Expected 3 folds for 5000 windows at new defaults, got {len(folds)}"
+
+    def test_5000_windows_would_fail_old_defaults(self, gate0):
+        """Old defaults (min_train=10_000, n_folds=5) must raise ValueError for 5000 windows."""
+        import pytest
+
+        from tape.splits import walk_forward_folds
+
+        with pytest.raises(ValueError, match="insufficient events"):
+            walk_forward_folds(
+                np.arange(5_000, dtype=np.int64),
+                n_folds=5,
+                embargo=600,
+                min_train=10_000,
+                min_test=1_000,
+            )
+
+    def test_n_folds_cli_flag_threads_through(self, gate0, tmp_path):
+        """--n-folds CLI flag must be accepted and override the default fold count."""
+        rng = np.random.default_rng(seed=77)
+        cache_dir = tmp_path / "illiquid_cache"
+        cache_dir.mkdir()
+        # Build a cache with enough events for 5 folds at small settings
+        for date in _DATES:
+            shard = _make_shard("ILLIQ", date, _N_EVENTS, rng)
+            _write_shard(shard, cache_dir)
+
+        out_prefix = str(tmp_path / "gate0_illiq")
+        rc = gate0.main(
+            [
+                "--cache",
+                str(cache_dir),
+                "--symbols",
+                "ILLIQ",
+                "--horizons",
+                "100",
+                "--seed",
+                "0",
+                "--out",
+                out_prefix,
+                "--n-folds",
+                "2",
+                "--min-train",
+                "5",
+                "--min-labeled-windows",
+                "1",
+                "--embargo",
+                "0",
+                "--min-test",
+                "1",
+            ]
+        )
+        assert rc == 0
+        with open(out_prefix + ".json") as f:
+            data = json.load(f)
+        illiq = data.get("ILLIQ", {})
+        h100 = illiq.get("h100", {})
+        assert (
+            h100.get("n_folds") == 2
+        ), f"Expected n_folds=2 from --n-folds flag, got {h100}"
+
+    def test_summary_has_per_symbol_window_counts(
+        self, gate0, synthetic_cache, tmp_path
+    ):
+        """Summary JSON must include per-symbol window counts at each horizon."""
+        out_prefix = str(tmp_path / "gate0_wc")
+        gate0.main(
+            [
+                "--cache",
+                str(synthetic_cache),
+                "--symbols",
+                "SYNTH_A",
+                "SYNTH_B",
+                "--horizons",
+                "100",
+                "--seed",
+                "0",
+                "--out",
+                out_prefix,
+            ]
+            + _SMALL_CLI_FLAGS
+        )
+        with open(out_prefix + ".json") as f:
+            data = json.load(f)
+        summary = data.get("summary", {})
+        h100_summary = summary.get("h100", {})
+        assert (
+            "symbol_window_counts" in h100_summary
+        ), "summary h100 missing 'symbol_window_counts'"
