@@ -32,3 +32,6 @@ reports/
 
 # Git worktrees
 .worktrees/
+
+# Claude Code runtime
+.claude/scheduled_tasks.lock
