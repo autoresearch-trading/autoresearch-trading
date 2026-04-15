@@ -30,16 +30,16 @@ def expand_ob_levels(ob: pd.DataFrame) -> pd.DataFrame:
     (length _N_LEVELS = 10).
 
     Returns a new DataFrame with ts_ms plus 40 flat level columns.
-    Rows where the nested array is shorter than _N_LEVELS have NaN in
-    the missing levels.
+    Rows where the nested array is shorter than _N_LEVELS have 0.0 in
+    the missing levels (zero liquidity at that depth — not NaN).
     """
     n_rows = len(ob)
     ts_ms = ob["ts_ms"].to_numpy(dtype=np.int64)
 
-    bid_prices = np.full((n_rows, _N_LEVELS), np.nan, dtype=float)
-    bid_qtys = np.full((n_rows, _N_LEVELS), np.nan, dtype=float)
-    ask_prices = np.full((n_rows, _N_LEVELS), np.nan, dtype=float)
-    ask_qtys = np.full((n_rows, _N_LEVELS), np.nan, dtype=float)
+    bid_prices = np.zeros((n_rows, _N_LEVELS), dtype=float)
+    bid_qtys = np.zeros((n_rows, _N_LEVELS), dtype=float)
+    ask_prices = np.zeros((n_rows, _N_LEVELS), dtype=float)
+    ask_qtys = np.zeros((n_rows, _N_LEVELS), dtype=float)
 
     bids_col = ob["bids"].to_numpy()
     asks_col = ob["asks"].to_numpy()
