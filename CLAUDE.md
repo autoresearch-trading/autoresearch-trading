@@ -89,8 +89,10 @@ Fine-tuning heads (added after):
 - Direction labels NOT used during pretraining
 - Stride=50 (4× data), equal-symbol sampling per epoch
 - Exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 from MEM reconstruction (trivial copy)
+- SimCLR augmentations: window jitter ±25 events (not ±10), timing-feature noise σ=0.10 on `time_delta` and `prev_seq_time_span` — decorrelates session-of-day (council round 6)
 - AdamW + OneCycleLR(max_lr=1e-3, 20% warmup)
 - Compute cap: 1 H100-day before evaluation gates
+- Monitor hour-of-day probe every 5 epochs (early warning for session-of-day shortcut — flag if >10% or cross-session variance >1.5pp)
 
 **Fine-tuning** (after Gate 1 passes):
 - Freeze encoder 5 epochs → unfreeze at lr=5e-5
@@ -99,16 +101,22 @@ Fine-tuning heads (added after):
 
 ## Evaluation Gates (pre-registered, sequential)
 
+**Metric: balanced accuracy at ALL horizons** (H10/H50/H100/H500) — raw accuracy is gameable via per-fold label imbalance (amended 2026-04-15 after council round 6).
+
 | Gate | Test | Threshold |
 |------|------|-----------|
-| **0** | PCA + logistic regression baseline | Reference (CNN probe must exceed) |
-| **1** | Linear probe on frozen embeddings, 100-event direction | > 51.4% on 15+/25 symbols (April 1-13) |
+| **0** | 4-baseline grid: PCA + RP + Majority-class + Shuffled-labels on flat features | Publishes noise floor; pipeline-clean check (shuffled ≈ 0.500). NOT a threshold-gate. |
+| **1** | Linear probe on frozen embeddings, H100, April 1-13 | **All 4 must hold:** ≥51.4% on 15+/25; > Majority+1.0pp on 15+; > RP-control+1.0pp on 15+; hour-of-day probe <10% with <1.5pp session-stratified variance |
 | **2** | Fine-tuned CNN vs logistic regression on flat features | Exceed by ≥ 0.5pp on 15+ symbols |
-| **3** | Held-out symbol (AVAX) accuracy | > 51.4% at primary horizon |
-| **4** | Temporal stability (months 1-4 vs 5-6) | < 3pp drop on 10+ symbols |
+| **3** | Held-out symbol (AVAX) accuracy | > 51.4% at H100 |
+| **4** | Temporal stability (months 1-4 vs 5-6) | < 3pp drop on 10+ symbols (balanced accuracy) |
+
+**Pre-pretraining sanity check:** session-of-day confound — LR on hour-of-day-only feature; if it beats PCA+LR on 85-dim flat features by >0.5pp on 5+ symbols, prune `time_delta_last` and `prev_seq_time_span_last` from flat features (session-of-day leak).
 
 **Representation quality diagnostics:**
 - Symbol identity probe < 20% accuracy (embeddings must NOT encode symbol)
+- **Hour-of-day probe < 10%** accuracy (24-class; must not encode UTC hour — council round 6)
+- Cross-session stratified probe variance < 1.5pp (Asia 0-8 / Europe 8-16 / US 16-24)
 - CKA > 0.7 between seed-varied runs
 - Wyckoff label probes (absorption, climax, informed flow, stress)
 
@@ -130,6 +138,7 @@ Fine-tuning heads (added after):
 - The flat MLP classifier (main branch) hit Sortino 0.353 on 9/23 symbols — every incremental change made it worse
 - 100-trade batching destroys tape signals — this branch works with raw trades
 - Council data sufficiency review: 40GB is massive for representation learning, marginal for proving a 2% trading edge
+- **Gate 0 round 6 (2026-04-15):** PCA+LR on 85-dim flat features ≈ Majority-class predictor ≈ Random-projection at every horizon (balanced accuracy). Shuffled-labels control stays at 0.500±0.003 — pipeline is leakage-free. Implication: flat aggregation destroys sequential signal; CNN hypothesis remains unproven but the linear-on-summaries alternative is ruled out. Raw accuracy inflated H10 numbers by up to 9.9pp on illiquid symbols via label imbalance (2Z raw 0.621 → balanced 0.522).
 
 ## Conventions
 
@@ -159,10 +168,16 @@ Fine-tuning heads (added after):
 18. **BatchNorm at inference**: must use `model.eval()` for entire test pass — otherwise running stats contaminated. Single-sample = NaN.
 19. **Dedup key must NOT include `side`**: buyer/seller pairs share identical `(ts_ms, qty, price)` but differ on `side` — including `side` in the dedup key PRESERVES both counterparty records (doubling event counts); excluding `side` collapses them to one record per fill (correct). Use `(ts_ms, qty, price)` only.
 20. **OB has 10 levels, not 25**: all symbols measured at 10 bid + 10 ask levels. ~24s cadence, not ~3s.
-21. **Training windows ~627K at stride=50** (Step 0 measurement): pre-April, 25 symbols, 161 days. BTC alone contributes ~133K; all other symbols average ~2K/symbol. BTC events/day median is ~20,563 (not ~28K). 200-event window on BTC is ~5.1 min (not ~10 min). Data-to-400K-params ratio is ~1:1.6 — tight; model size is a live question for Step 3 (council-6 review pending).
+21. **Training windows ~641K at stride=50** (2026-04-15 cache build, post-NaN-fix): 4003 shards, 32,060,988 events across 25 symbols × 161 days. BTC: 67,459 windows (17× illiquid alts); ETH: 63,093; HYPE: 43,986; SOL: 40,674. Illiquid alts: 18–22K windows each. Data-to-400K-params ratio ~1:1.6 — model size is a live question for Step 3 (council-6 review pending).
 22. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivially copyable from neighbors)
 23. **MEM loss space**: compute in BatchNorm-normalized space, not raw feature space
 24. **Embedding collapse**: monitor per-batch embedding std. If → 0, pretraining has collapsed.
 25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK, LTC). **AVAX is the Gate 3 held-out symbol and must NOT appear in contrastive pairs.** LTC substitutes for AVAX in the 6-symbol anchor set. Do NOT force invariance with memecoins.
 26. **Day boundaries**: do not construct windows crossing day boundaries
 27. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance
+28. **Balanced accuracy at ALL horizons, not just H500**: raw accuracy is gameable via per-fold label imbalance on illiquid symbols at EVERY horizon (measured H10 inflation up to 9.9pp on 2Z). Spec's prior H10/H50 raw-accuracy carve-out was wrong.
+29. **Gate 0 is a noise floor, not a threshold**: post-amendment, Gate 0 publishes a 4-baseline grid (PCA, RP, Majority-class, Shuffled-labels) without a pass/fail bar. The binding thresholds live at Gate 1.
+30. **Gate 1 requires beating BOTH Majority AND RP controls by ≥1pp** (in addition to the 51.4% absolute floor and a hour-of-day probe <10%). The old "beat PCA by 0.5pp" language is obsolete.
+31. **OB level NaN trap**: `tape/io_parquet.py` MUST initialize level arrays with `np.zeros`, NOT `np.full(np.nan)`. When a raw snapshot has fewer than 10 levels on a side, NaN in the unfilled slots propagates to `depth_ratio`, `imbalance_L5`, `cum_ofi_5`, `delta_imbalance_L1`. Missing levels semantically = zero liquidity on that side.
+32. **Session-of-day leakage risk in flat features**: `time_delta_last` and `prev_seq_time_span_last` in the 85-dim flat vector encode approximate UTC hour. Pre-pretraining sanity check: hour-of-day-only LR should NOT beat PCA+LR by >0.5pp on 5+ symbols. If it does, prune these `_last` columns.
+33. **Kyle's λ: real trade-attributed, not book-proxy**: the per-snapshot implementation in `tape/features_ob.py` is a PLACEHOLDER (OB-only signed notional = `bid_not - ask_not`). Real Kyle's λ is computed in `tape/cache.py::build_symbol_day` integration layer using `cum_signed_notional` from trade sides (`open_long`/`close_short` = +1; `open_short`/`close_long` = -1). The cache-layer value overwrites the OB placeholder.
