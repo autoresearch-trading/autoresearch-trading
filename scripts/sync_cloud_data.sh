@@ -21,13 +21,22 @@ ssh_exec() {
   flyctl ssh console -q --pty=false -a "$APP_NAME" -C "$1"
 }
 
+# Uploads a local file to a remote path by piping through `tee` over ssh console.
+# `flyctl ssh sftp put` panics in flyctl 0.4.x (nil deref in selectContainer),
+# so we route file uploads through the same ssh-console channel used elsewhere.
+ssh_put() {
+  local src="$1"
+  local dst="$2"
+  flyctl ssh console -q --pty=false -a "$APP_NAME" -C "tee $dst" < "$src" > /dev/null
+}
+
 echo "▶️ Ensuring boto3 is installed on Fly.io..."
 ssh_exec "pip install -q boto3"
 
 echo "▶️ Uploading sync scripts to Fly.io..."
 ssh_exec "rm -f /tmp/sync.py /tmp/sync_launch.sh"
-flyctl ssh sftp put -q -a "$APP_NAME" "$SCRIPT_DIR/sync_remote.py" /tmp/sync.py
-flyctl ssh sftp put -q -a "$APP_NAME" "$SCRIPT_DIR/sync_launch.sh" /tmp/sync_launch.sh
+ssh_put "$SCRIPT_DIR/sync_remote.py" /tmp/sync.py
+ssh_put "$SCRIPT_DIR/sync_launch.sh" /tmp/sync_launch.sh
 ssh_exec "chmod +x /tmp/sync_launch.sh"
 
 # Purge FIRST — cleans accumulated old data (already synced in
