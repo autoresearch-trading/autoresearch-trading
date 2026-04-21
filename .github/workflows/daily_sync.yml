@@ -16,6 +16,9 @@ jobs:
 
     - name: Install Fly.io CLI
       uses: superfly/flyctl-actions/setup-flyctl@master
+      with:
+        # Pin to 0.4.36 — 0.4.37 panics in `ssh sftp put` (selectContainer nil deref, 2026-04-21).
+        version: 0.4.36
 
     - name: Run Sync on Fly.io
       env:
