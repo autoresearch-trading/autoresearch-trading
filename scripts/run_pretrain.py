@@ -49,14 +49,29 @@ from tape.probes import direction_probe_h100, hour_of_day_probe, symbol_identity
 from tape.sampler import EqualSymbolSampler
 
 
-def _filter_shards(cache_dir: Path, symbols: list[str]) -> list[Path]:
-    """Return all .npz shards for `symbols` that are pre-April hold-out (gotcha #17)."""
+def _filter_shards(
+    cache_dir: Path,
+    symbols: list[str],
+    *,
+    train_end_date: str = APRIL_HELDOUT_START,
+) -> list[Path]:
+    """Return all .npz shards for `symbols` with date strictly less than train_end_date.
+
+    train_end_date defaults to APRIL_HELDOUT_START (2026-04-14) — matches the
+    original spec's train/test split. Pass an earlier ISO date to carve out a
+    held-out period from the tail of the pre-April data (e.g. "2026-02-01"
+    holds out Feb-Mar for evaluation after council 2026-04-23 diagnostics
+    showed April is terminally underpowered at stride=200 eval).
+    """
     shards: list[Path] = []
     for sym in symbols:
         if sym == HELD_OUT_SYMBOL:
             continue  # hard exclude AVAX from pretraining (spec §Held-out symbol)
         for p in sorted(cache_dir.glob(f"{sym}__*.npz")):
             date_part = p.stem.split("__", 1)[1] if "__" in p.stem else ""
+            if date_part >= train_end_date:
+                continue
+            # Also enforce the hard April hold-out guard regardless of cutoff.
             if date_part >= APRIL_HELDOUT_START:
                 continue
             shards.append(p)
@@ -94,13 +109,14 @@ def run_pretrain(
     contrastive_weight_end: float | None = None,
     anneal_epochs: int | None = None,
     probe_every_epochs: int = 5,
+    train_end_date: str = APRIL_HELDOUT_START,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / "training-log.jsonl"
     ckpt_path = out_dir / "encoder.pt"
 
     syms = list(symbols or PRETRAINING_SYMBOLS)
-    shards = _filter_shards(cache_dir, syms)
+    shards = _filter_shards(cache_dir, syms, train_end_date=train_end_date)
     if not shards:
         raise RuntimeError("no pretraining shards found")
 
@@ -376,6 +392,16 @@ def main() -> int:
     ap.add_argument("--contrastive-weight-end", type=float, default=None)
     ap.add_argument("--anneal-epochs", type=int, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--train-end-date",
+        type=str,
+        default=None,
+        help=(
+            "ISO date (YYYY-MM-DD). Only shards with date < this are used "
+            "for training. Defaults to APRIL_HELDOUT_START. Use an earlier "
+            "date (e.g. 2026-02-01) to carve out a held-out period."
+        ),
+    )
     args = ap.parse_args()
 
     # Resolve wall-clock cap. Prefer --max-hours; fall back to deprecated
@@ -410,6 +436,7 @@ def main() -> int:
         contrastive_weight_start=args.contrastive_weight_start,
         contrastive_weight_end=args.contrastive_weight_end,
         anneal_epochs=args.anneal_epochs,
+        train_end_date=args.train_end_date or APRIL_HELDOUT_START,
     )
     print(json.dumps(res, indent=2))
     return 0
