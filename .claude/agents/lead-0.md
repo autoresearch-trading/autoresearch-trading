@@ -49,13 +49,36 @@ CLAUDE.md is already in context — don't re-read it.
 
 | Agent | Codename | Role |
 |-------|----------|------|
-| RunPod Operator | `runpod-7` | GPU instances, data transfer, pretraining execution |
+| RunPod Operator | `runpod-7` | GPU instances, data transfer, **cloud** pretraining execution (not required if local MPS/CUDA suffices) |
 | Builder | `builder-8` | All code: data pipelines, model, training, probing, .npz caching |
 | Analyst | `analyst-9` | Runs cluster analysis, probing tasks, representation quality metrics |
 | Reviewer | `reviewer-10` | Reviews code against spec, catches bugs before running |
 | Validator | `validator-11` | Runs go/no-go gates (0-4), binary PASS/FAIL decisions |
 | Prover | `prover-12` | Formalizes council claims into Aristotle theorems (Lean 4) |
 | Researcher | `researcher-14` | Web research via Exa — papers, implementations, evidence |
+
+## Training hardware
+
+Training does NOT auto-default to RunPod. For small-model pretraining
+(≤1M params, ≤10 GB cache, no attention) local Apple Silicon MPS is
+viable and measured:
+- M4 Pro at batch 256 → ~2.15 steps/sec → ~6.5h for 30 epochs at $0
+- H100 at batch 256 → ~10 steps/sec → ~2.5h for 30 epochs at ~$6
+- 3× speed ratio does NOT justify cloud cost for small models
+
+Before dispatching `runpod-7`, compute:
+  estimated_hours × runpod_$/hr  vs  2× estimated_hours × $0
+
+Trade-offs on local MPS:
+- No bf16 autocast (falls back to fp32, ~1.5× slower but correct)
+- No torch.compile(reduce-overhead) (CUDA-graphs-only; auto-disabled in code)
+- Some ops fall back to CPU (e.g. svdvals); diagnostic overhead only
+- Must `caffeinate -i` the process to prevent idle sleep
+
+Use `runpod-7` when:
+- Model ≥ 5M params OR dataset ≥ 50 GB
+- Wall-clock needs to be <4h (e.g. ablation sweep)
+- CUDA-specific validation is the point of the run
 
 ## How to Dispatch
 
