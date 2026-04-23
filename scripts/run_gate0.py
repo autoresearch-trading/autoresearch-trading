@@ -130,12 +130,12 @@ def _extract_flat_features_for_windows(
     starts: list[int],
     window_len: int = WINDOW_LEN,
 ) -> np.ndarray:
-    """Extract 85-dim flat features for each window start.
+    """Extract 83-dim flat features for each window start.
 
-    Returns float32 array of shape (len(starts), 85).
+    Returns float32 array of shape (len(starts), 83).
     """
     if not starts:
-        return np.empty((0, 85), dtype=np.float32)
+        return np.empty((0, 83), dtype=np.float32)
     windows = np.stack([features[s : s + window_len] for s in starts], axis=0)
     # windows: (N, 200, 17)
     return extract_flat_features_batch(windows)
@@ -386,7 +386,8 @@ def _write_md_report(
     lines: list[str] = [
         "# Gate 0 Results — PCA + Logistic Regression on Flat Features",
         "",
-        "**Method:** 85-dim flat features (mean/std/skew/kurt/last per channel) → "
+        "**Method:** 83-dim flat features (mean/std/skew/kurt/last per channel, "
+        "minus time_delta_last + prev_seq_time_span_last — session-of-day leak pruned 2026-04-23) → "
         "StandardScaler → PCA(n=20) → LogisticRegression(C=1.0).",
         f"Walk-forward {_K_FOLDS}-fold, 600-event embargo. Stride=200 for evaluation windows.",
         "",

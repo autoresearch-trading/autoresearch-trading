@@ -232,7 +232,7 @@ class TestExtractFlatFeaturesForWindows:
         feats, _, _ = result
         starts = gate0._build_eval_windows(len(feats), 200, 200)
         X = gate0._extract_flat_features_for_windows(feats, starts)
-        assert X.shape == (len(starts), 85)
+        assert X.shape == (len(starts), 83)
 
     def test_output_is_finite(self, gate0, synthetic_cache):
         result = gate0._load_symbol_shards(synthetic_cache, "SYNTH_A")

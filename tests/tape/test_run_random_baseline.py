@@ -175,17 +175,17 @@ class TestProjectionMatrixDeterminism:
         P99 = rb.build_projection_matrix(seed=99)
         assert not np.array_equal(P42, P99)
 
-    def test_matrix_shape_85_by_20(self, rb):
-        """Projection matrix must map 85-dim flat features to 20 dims."""
+    def test_matrix_shape_83_by_20(self, rb):
+        """Projection matrix must map 83-dim flat features to 20 dims."""
         P = rb.build_projection_matrix(seed=42)
-        assert P.shape == (85, 20), f"Expected (85, 20), got {P.shape}"
+        assert P.shape == (83, 20), f"Expected (83, 20), got {P.shape}"
 
     def test_columns_have_unit_variance_in_expectation(self, rb):
         """Column normalization: each output dim should have std ~ 1 when applied
         to zero-mean unit-variance input.  Check via column norms of P."""
         P = rb.build_projection_matrix(seed=42)
         # Each column of P was drawn from N(0,1) and column-normalized so that
-        # var(X @ P[:,j]) = 1 when X ~ N(0,I_{85}).
+        # var(X @ P[:,j]) = 1 when X ~ N(0,I_{83}).
         # Equivalently ||P[:,j]||^2 should be 1.0 for each j.
         col_norms_sq = np.sum(P**2, axis=0)  # shape (20,)
         np.testing.assert_allclose(col_norms_sq, 1.0, atol=1e-5)
@@ -201,7 +201,7 @@ class TestProjectionNonAdaptive:
         """_fit_fold_rp must NOT modify the projection matrix — it must be the
         same object (or at least identical values) before and after fitting."""
         rng = np.random.default_rng(7)
-        X_train = rng.standard_normal((200, 85)).astype(np.float32)
+        X_train = rng.standard_normal((200, 83)).astype(np.float32)
         y_train = rng.integers(0, 2, 200)
         P = rb.build_projection_matrix(seed=42)
         P_before = P.copy()
@@ -215,7 +215,7 @@ class TestProjectionNonAdaptive:
     def test_fit_fold_rp_returns_scaler_and_lr(self, rb):
         """_fit_fold_rp returns (StandardScaler, LogisticRegression) — no PCA."""
         rng = np.random.default_rng(8)
-        X_train = rng.standard_normal((300, 85)).astype(np.float32)
+        X_train = rng.standard_normal((300, 83)).astype(np.float32)
         y_train = rng.integers(0, 2, 300)
         P = rb.build_projection_matrix(seed=42)
         result = rb._fit_fold_rp(X_train, y_train, P)

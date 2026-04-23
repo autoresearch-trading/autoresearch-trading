@@ -1,10 +1,10 @@
 """Random-projection control baseline for Gate 0.
 
 Same walk-forward pipeline as run_gate0.py but swaps PCA(n=20) for a
-fixed-seed random projection of the 85-dim flat features to 20 dimensions.
+fixed-seed random projection of the 83-dim flat features to 20 dimensions.
 
 Purpose: establish a noise floor.  If PCA+LR substantially beats RP+LR, the
-85-dim flat features carry real structure.  If they are similar, Gate 0 results
+83-dim flat features carry real structure.  If they are similar, Gate 0 results
 could be base-rate artifacts.
 
 The projection matrix is NON-ADAPTIVE: it is drawn once from a fixed seed and
@@ -62,7 +62,7 @@ from tape.splits import walk_forward_folds
 # Constants (mirror Gate 0 defaults for direct comparability)
 # ---------------------------------------------------------------------------
 
-_RP_IN_DIM: int = 85
+_RP_IN_DIM: int = 83
 _RP_OUT_DIM: int = 20
 _LR_C: float = 1.0
 _LR_MAX_ITER: int = 1_000
@@ -79,10 +79,10 @@ _MIN_LABELED_WINDOWS: int = 50
 
 
 def build_projection_matrix(seed: int = 42) -> np.ndarray:
-    """Return a fixed random projection matrix of shape (85, 20).
+    """Return a fixed random projection matrix of shape (83, 20).
 
     Columns are L2-normalized so each output dimension has unit variance in
-    expectation when input is drawn from N(0, I_{85}).
+    expectation when input is drawn from N(0, I_{83}).
 
     The matrix is deterministic given `seed` and must NOT be modified after
     construction.  Freeze it across all folds and all symbols.
@@ -94,7 +94,7 @@ def build_projection_matrix(seed: int = 42) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray of shape (85, 20), dtype float32
+    np.ndarray of shape (83, 20), dtype float32
     """
     rng = np.random.default_rng(seed)
     P = rng.standard_normal((_RP_IN_DIM, _RP_OUT_DIM)).astype(np.float32)
@@ -165,12 +165,12 @@ def _extract_flat_features_for_windows(
     starts: list[int],
     window_len: int = WINDOW_LEN,
 ) -> np.ndarray:
-    """Extract 85-dim flat features for each window start.
+    """Extract 83-dim flat features for each window start.
 
-    Returns float32 array of shape (len(starts), 85).
+    Returns float32 array of shape (len(starts), 83).
     """
     if not starts:
-        return np.empty((0, 85), dtype=np.float32)
+        return np.empty((0, 83), dtype=np.float32)
     windows = np.stack([features[s : s + window_len] for s in starts], axis=0)
     return extract_flat_features_batch(windows)
 
@@ -189,9 +189,9 @@ def _fit_fold_rp(
 
     Parameters
     ----------
-    X_train : np.ndarray, shape (n_train, 85)
+    X_train : np.ndarray, shape (n_train, 83)
     y_train : np.ndarray, shape (n_train,)
-    proj : np.ndarray, shape (85, 20) — fixed projection matrix (not mutated)
+    proj : np.ndarray, shape (83, 20) — fixed projection matrix (not mutated)
     C : float — LR regularization strength
     random_state : int
 
@@ -389,8 +389,9 @@ def _write_md_report(
     lines: list[str] = [
         "# Gate 0 Random-Projection Control Baseline",
         "",
-        "**Method:** 85-dim flat features (mean/std/skew/kurt/last per channel) → "
-        "StandardScaler → FixedRandomProjection(seed={seed}, 85→20) → "
+        "**Method:** 83-dim flat features (mean/std/skew/kurt/last per channel, "
+        "minus time_delta_last + prev_seq_time_span_last — session-of-day leak pruned 2026-04-23) → "
+        "StandardScaler → FixedRandomProjection(seed={seed}, 83→20) → "
         "LogisticRegression(C=1.0).".format(seed=proj_seed),
         f"Walk-forward {_K_FOLDS}-fold, 600-event embargo. Stride=200 for evaluation windows.",
         "",
@@ -398,7 +399,7 @@ def _write_md_report(
         "a fixed seed and frozen for ALL folds and ALL symbols.  It is non-adaptive — "
         "it does not fit to training data.  Only StandardScaler and LR refit per fold.",
         "",
-        "**Purpose:** Noise floor.  If PCA substantially beats this, the 85-dim features "
+        "**Purpose:** Noise floor.  If PCA substantially beats this, the 83-dim features "
         "carry real structure.  If they are similar, Gate 0 may reflect base-rate drift "
         "rather than learned structure.",
         "",
@@ -633,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = _build_summary(results, horizons)
     output: dict[str, Any] = {
-        "method": "random_projection_85to20",
+        "method": "random_projection_83to20",
         "proj_seed": seed,
         **results,
         "summary": summary,

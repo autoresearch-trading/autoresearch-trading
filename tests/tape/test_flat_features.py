@@ -22,8 +22,8 @@ def test_single_window_shape():
     assert v.shape == (FLAT_DIM,)
 
 
-def test_flat_dim_is_85():
-    assert FLAT_DIM == 85
+def test_flat_dim_is_83():
+    assert FLAT_DIM == 83
 
 
 def test_batch_shape():
@@ -32,11 +32,11 @@ def test_batch_shape():
     assert vs.shape == (8, FLAT_DIM)
 
 
-def test_window_to_flat_shape_85():
-    """Plan reference implementation: window_to_flat → (85,)."""
+def test_window_to_flat_shape_83():
+    """window_to_flat → (83,) after pruning time_delta_last + prev_seq_time_span_last."""
     w = np.random.randn(200, 17).astype(np.float32)
     v = window_to_flat(w)
-    assert v.shape == (85,)
+    assert v.shape == (83,)
 
 
 # ---- Purity test ----
@@ -73,8 +73,9 @@ def test_last_value():
     w = np.zeros((200, 17), dtype=np.float32)
     w[-1, :] = 7.0  # last row all sevens
     v = extract_flat_features(w)
-    # Last 17 elements are last values
-    last_block = v[68:]  # 4 * 17 = 68 offset
+    # Last 15 elements are last values (17 - 2 pruned: time_delta_last, prev_seq_time_span_last)
+    last_block = v[68:]  # 4 * 17 = 68 offset; last block is 15 elements
+    assert len(last_block) == 15
     np.testing.assert_allclose(last_block, 7.0, atol=1e-5)
 
 
