@@ -84,13 +84,17 @@ Fine-tuning heads (added after):
 ## Training
 
 **Self-supervised pretraining** (primary):
-- Masked Event Modeling (block masking, 5-event blocks, 15% of events) — weight 0.70
-- SimCLR contrastive on global embeddings — weight 0.30
+- Masked Event Modeling (block masking, 20-event blocks, 20% of events) — weight annealed 0.90→0.60 over 20 epochs (knowledge/decisions/mem-block-size-20.md; concepts/mem-pretraining.md)
+- **MEM flow (critical):** BN full input → zero-fill masked positions in BN-normalized space → encode MASKED input → decode → MSE vs BN-normalized original at masked positions. Encoding the unmasked input defeats MEM (decoder trivially copies).
+- SimCLR contrastive on global embeddings — weight annealed 0.10→0.40 over 20 epochs (convergence-asymmetry with MEM)
+- NT-Xent temperature **τ=0.5 anneal to τ=0.3 by epoch 10** then hold (knowledge/decisions/ntxent-temperature.md; ImageNet default τ=0.1 explicitly rejected)
 - Direction labels NOT used during pretraining
 - Stride=50 (4× data), equal-symbol sampling per epoch
 - Exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 from MEM reconstruction (trivial copy)
 - SimCLR augmentations: window jitter ±25 events (not ±10), timing-feature noise σ=0.10 on `time_delta` and `prev_seq_time_span` — decorrelates session-of-day (council round 6)
 - AdamW + OneCycleLR(max_lr=1e-3, 20% warmup)
+- Gradient clipping `max_norm=1.0` (primary anti-collapse mechanism, knowledge/concepts/contrastive-learning.md)
+- bf16 mixed precision (`torch.autocast(dtype=bfloat16)`) + `torch.compile(encoder, mode="reduce-overhead")` for the 24h H100 budget
 - Compute cap: 1 H100-day before evaluation gates
 - Monitor hour-of-day probe every 5 epochs (early warning for session-of-day shortcut — flag if >10% or cross-session variance >1.5pp)
 
@@ -171,7 +175,7 @@ Fine-tuning heads (added after):
 21. **Training windows ~641K at stride=50** (2026-04-15 cache build, post-NaN-fix): 4003 shards, 32,060,988 events across 25 symbols × 161 days. BTC: 67,459 windows (17× illiquid alts); ETH: 63,093; HYPE: 43,986; SOL: 40,674. Illiquid alts: 18–22K windows each. Data-to-400K-params ratio ~1:1.6 — model size is a live question for Step 3 (council-6 review pending).
 22. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivially copyable from neighbors)
 23. **MEM loss space**: compute in BatchNorm-normalized space, not raw feature space
-24. **Embedding collapse**: monitor per-batch embedding std. If → 0, pretraining has collapsed.
+24. **Embedding collapse**: monitor per-batch embedding std — flag if < **0.05** (NOT 1e-4 — at 256 dims std 1e-3 is already functionally collapsed). Also monitor **effective rank** of the 256×B embedding matrix (count singular values above 1% of max): < 20 at epoch 5 or < 30 at epoch 10 is an early warning (knowledge/concepts/contrastive-learning.md).
 25. **Cross-symbol contrastive**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK, LTC). **AVAX is the Gate 3 held-out symbol and must NOT appear in contrastive pairs.** LTC substitutes for AVAX in the 6-symbol anchor set. Do NOT force invariance with memecoins.
 26. **Day boundaries**: do not construct windows crossing day boundaries
 27. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance

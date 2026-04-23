@@ -210,16 +210,17 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 
 ### Pretraining Objective
 
-**Masked Event Modeling (MEM) — weight 0.70:**
-- Mask 15% of events using **block masking** (consecutive 5-event blocks)
-- Reconstruct masked events' features from context via per-position MEM decoder
-- Reconstruct in **BatchNorm-normalized** feature space (not raw values)
+**Masked Event Modeling (MEM) — weight annealed 0.90→0.60 over 20 epochs:**
+- Mask **20% of events** using **block masking** (consecutive **20-event blocks**; 4 blocks per 200-event window) — per `docs/knowledge/decisions/mem-block-size-20.md` (2026-04-10 council round 5). 5-event blocks were bridgeable at layer 3 (dilation=4) and taught no tape structure.
+- **Mask-first-then-encode flow (mandatory):** BatchNorm the full input → zero-fill masked positions in BN-normalized space (= training mean) → encode the MASKED input → decode at masked positions → MSE against BN-normalized original. Encoding the unmasked input defeats MEM entirely (the decoder trivially copies the ground-truth features the encoder already saw).
+- Reconstruct in **BatchNorm-normalized** feature space (not raw values) — BN runs BEFORE masking to keep running statistics clean (BN-after-masking contaminates stats with 20% artificial zeros).
 - **Exclude 3 carry-forward features** from reconstruction targets: `delta_imbalance_L1` (90% zero), `kyle_lambda` (forward-filled), `cum_ofi_5` (forward-filled) — trivially predictable from adjacent events via copy
 - Reconstruct only 14 features: log_return, log_total_qty, is_open, time_delta, num_fills, book_walk, effort_vs_result, climax_score, prev_seq_time_span, log_spread, imbalance_L1, imbalance_L5, depth_ratio, trade_vs_mid
 
-**SimCLR Contrastive — weight 0.30:**
+**SimCLR Contrastive — weight annealed 0.10→0.40 over 20 epochs:**
 - Generate 2 augmented views of each window
 - NT-Xent loss on L2-normalized global embeddings
+- **Temperature τ=0.5 anneal to τ=0.3 by epoch 10** (then hold constant) — per `docs/knowledge/decisions/ntxent-temperature.md`. ImageNet default τ=0.1 is explicitly rejected: too cold, pushes genuinely similar market states apart using spurious features (symbol identity, time-of-day). Schedule: `tau = max(0.3, 0.5 - epoch * 0.02)` for epochs 1–10, then constant 0.3.
 - Augmentations that preserve market meaning:
   - Window start jitter: **±25 events** (strengthened 2026-04-15 per council-6 — crosses BTC session micro-boundaries; shifts illiquid-alt window centers by ~10 min)
   - Additive Gaussian noise: σ = 0.02 × feature_std (continuous features only)
@@ -253,13 +254,17 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 - Batch size: 256 (512 views for contrastive)
 - Epochs: 20-40 (monitor probe accuracy every 5 epochs)
 - Stopping: if MEM loss improves < 1% over last 20% of epochs, stop
+- **Gradient clipping `max_norm=1.0`** — primary anti-collapse mechanism for the projection head (bf16 + high-τ early phase can spike grads 10–100×).
+- **Mixed precision: bf16** via `torch.autocast(dtype=torch.bfloat16)` — ~1.8× throughput on H100 with no accuracy cost at this model size.
+- **`torch.compile(encoder, mode="reduce-overhead")`** — dilated CNN with static shapes (B=256, T=200, F=17) gets significant kernel-fusion gains. Apply to encoder only, not MEM decoder (shapes vary with masked-position count).
 - **Compute cap: 1 H100-day (24 GPU-hours) before evaluation gates must be run**
 
 ### Monitoring During Pretraining
 
-- MEM reconstruction MSE (should decrease)
+- MEM reconstruction MSE (should decrease); per-feature MSE breakouts for `log_return` and `effort_vs_result` (highest-variance features — flag underfitting if > 0.9× baseline variance at epoch 2)
 - NT-Xent contrastive loss (should decrease, watch for collapse)
-- **Embedding collapse detector:** if std of embedding values across batch approaches 0, encoder has collapsed to constant output. Monitor per-epoch.
+- **Embedding collapse detector:** flag if per-batch embedding std < **0.05** (NOT 1e-4 — at 256 dims std 1e-3 is already functionally collapsed for a 128-class probe). Monitor every step.
+- **Effective rank of the 256×B embedding matrix** (count singular values above 1% of max): flag < 20 at epoch 5, < 30 at epoch 10 as collapse early warning.
 - Direction probe accuracy on April 1-13 every 5 epochs (early stopping signal)
 - **Hour-of-day probe** (24-class LR on frozen embeddings) every 5 epochs. If accuracy exceeds 10% or stratified cross-session variance exceeds 1.5pp, flag as session-of-day shortcut — early warning before Gate 1.
 
@@ -450,7 +455,10 @@ April+ data has `cause` field (market_liquidation, backstop_liquidation). A spec
 6. **climax_score σ**: rolling 1000-event σ, not global.
 7. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivial copy from neighbors)
 8. **MEM reconstruction space**: compute loss in BatchNorm-normalized space, not raw feature space
-9. **Embedding collapse**: monitor per-batch embedding std. If → 0, training has collapsed.
+8a. **MEM flow order (CRITICAL)**: BN full input → zero-fill masked positions in BN-normalized space → encode MASKED input → decode → MSE vs BN-normalized original. Encoding the UNMASKED input and applying the mask only to the loss is a silent bug — the decoder trivially copies the ground truth (knowledge/concepts/mem-pretraining.md §"Critical: Mask Token Replacement Order").
+8b. **MEM block size = 20, masking rate = 20%**: 5-event blocks are bridged by layer-1 convolutions (k=5, d=1) from p-1 and p+5 — no tape structure learned (knowledge/decisions/mem-block-size-20.md).
+8c. **NT-Xent temperature τ=0.5→0.3 by epoch 10, NOT 0.1**: ImageNet default τ=0.1 is too cold for financial data, drives collapse via spurious-feature learning (knowledge/decisions/ntxent-temperature.md).
+9. **Embedding collapse**: flag per-batch embedding std < **0.05** (not 1e-4). Also monitor **effective rank** of 256×B embedding matrix — flag < 20 at epoch 5 or < 30 at epoch 10 (knowledge/concepts/contrastive-learning.md).
 10. **Cross-symbol contrastive pairs**: only for liquid symbols (BTC, ETH, SOL, BNB, LINK, LTC). **AVAX excluded — it is the Gate 3 held-out symbol.** Do NOT force invariance with memecoins.
 11. **Day boundaries**: do not construct windows crossing day boundaries
 12. **Symbol sampling**: equal-symbol sampling per epoch to prevent BTC dominance

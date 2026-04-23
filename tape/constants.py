@@ -78,8 +78,10 @@ INFORMED_KYLE_PCTL: float = 0.75
 INFORMED_OFI_PCTL: float = 0.50
 
 # ---- MEM masking ----
-MEM_MASK_FRACTION: float = 0.15
-MEM_BLOCK_LEN: int = 5
+# Block size 20 + fraction 0.20 per decisions/mem-block-size-20.md (round-5 council-6).
+# RF=253 makes 5-event gaps trivially solvable by local interpolation from p-1 and p+5.
+MEM_MASK_FRACTION: float = 0.20
+MEM_BLOCK_LEN: int = 20
 # Features that use random-position masking instead of block masking because
 # their lag-5 autocorrelation exceeds 0.8 (step0-falsifiability-prereqs.md #5).
 MEM_RANDOM_MASK_FEATURES: tuple[str, ...] = ("prev_seq_time_span", "kyle_lambda")
