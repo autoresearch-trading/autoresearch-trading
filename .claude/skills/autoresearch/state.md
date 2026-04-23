@@ -33,11 +33,10 @@
 - Hour-of-day probe added to pretraining monitoring (every 5 epochs).
 - Pre-pretraining session-of-day confound check added.
 
-### Session-of-day leak vectors identified (to mitigate during pretraining)
-- Flat features: `time_delta_last`, `prev_seq_time_span_last` (in 85-dim flat vector)
-- Raw sequence: `time_delta` and `prev_seq_time_span` at every event
-- MEM does not protect against this — session patterns repeat day-to-day, encoder can shortcut
-- Mitigations locked in via SimCLR augmentation recipe above
+### Session-of-day leak — RESOLVED (2026-04-23, commit `800d1a2`)
+- **FLAT_DIM is now 83** (was 85): `time_delta_last` and `prev_seq_time_span_last` pruned from `tape/flat_features.py` after confound check triggered on 5/25 symbols
+- Gate 0 re-run on 83-dim: PCA+LR H100 bal 0.5043→0.5037 (-0.06pp); RP H100 bal 0.4983→0.5020 (+0.37pp). All within 0.5pp — qualitative result unchanged (commits `ea4f6f4`, `04a9283`)
+- Raw sequence: `time_delta` and `prev_seq_time_span` still in full (200, 17) tensor for encoder; mitigated via SimCLR timing-noise augmentation (σ=0.10)
 
 ## Architecture (unchanged from spec)
 - Self-supervised encoder: ~400K params, dilated CNN (kernel=5, dilations 1/2/4/8/16/32), 256-dim embeddings

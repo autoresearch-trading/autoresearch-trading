@@ -115,7 +115,7 @@ Fine-tuning heads (added after):
 | **3** | Held-out symbol (AVAX) accuracy | > 51.4% at H100 |
 | **4** | Temporal stability (months 1-4 vs 5-6) | < 3pp drop on 10+ symbols (balanced accuracy) |
 
-**Pre-pretraining sanity check:** session-of-day confound — LR on hour-of-day-only feature; if it beats PCA+LR on 85-dim flat features by >0.5pp on 5+ symbols, prune `time_delta_last` and `prev_seq_time_span_last` from flat features (session-of-day leak).
+**Pre-pretraining sanity check — COMPLETED (2026-04-23):** session-of-day confound check ran; LR on hour-of-day-only feature beat PCA+LR on 85-dim flat features by >0.5pp on exactly 5 symbols, triggering the prune. `time_delta_last` and `prev_seq_time_span_last` removed; FLAT_DIM=83 (commit `800d1a2`). No further action needed before pretraining.
 
 **Representation quality diagnostics:**
 - Symbol identity probe < 20% accuracy (embeddings must NOT encode symbol)
@@ -183,5 +183,5 @@ Fine-tuning heads (added after):
 29. **Gate 0 is a noise floor, not a threshold**: post-amendment, Gate 0 publishes a 4-baseline grid (PCA, RP, Majority-class, Shuffled-labels) without a pass/fail bar. The binding thresholds live at Gate 1.
 30. **Gate 1 requires beating BOTH Majority AND RP controls by ≥1pp** (in addition to the 51.4% absolute floor and a hour-of-day probe <10%). The old "beat PCA by 0.5pp" language is obsolete.
 31. **OB level NaN trap**: `tape/io_parquet.py` MUST initialize level arrays with `np.zeros`, NOT `np.full(np.nan)`. When a raw snapshot has fewer than 10 levels on a side, NaN in the unfilled slots propagates to `depth_ratio`, `imbalance_L5`, `cum_ofi_5`, `delta_imbalance_L1`. Missing levels semantically = zero liquidity on that side.
-32. **Session-of-day leakage risk in flat features**: `time_delta_last` and `prev_seq_time_span_last` in the 85-dim flat vector encode approximate UTC hour. Pre-pretraining sanity check: hour-of-day-only LR should NOT beat PCA+LR by >0.5pp on 5+ symbols. If it does, prune these `_last` columns.
+32. **Session-of-day leakage — PRUNED (2026-04-23)**: `time_delta_last` and `prev_seq_time_span_last` encoded approximate UTC hour in the 85-dim flat vector. Pre-pretraining sanity check (commit `a6845de`) confirmed the leak on 5/25 symbols (LTC +1.63pp, HYPE +1.17pp, WLFI +1.12pp, BNB +0.74pp, PENGU +0.62pp), triggering decision `prune_last_features`. Both `_last` columns were removed from `tape/flat_features.py` in commit `800d1a2`; **FLAT_DIM is now 83** (not 85). Gate 0 baselines re-run on 83-dim (commits `ea4f6f4`, `04a9283`). The CNN encoder still receives the full (200, 17) tensor; session-of-day mitigation for the encoder is via SimCLR timing-noise augmentation (σ=0.10).
 33. **Kyle's λ: real trade-attributed, not book-proxy**: the per-snapshot implementation in `tape/features_ob.py` is a PLACEHOLDER (OB-only signed notional = `bid_not - ask_not`). Real Kyle's λ is computed in `tape/cache.py::build_symbol_day` integration layer using `cum_signed_notional` from trade sides (`open_long`/`close_short` = +1; `open_short`/`close_long` = -1). The cache-layer value overwrites the OB placeholder.
