@@ -66,9 +66,20 @@ class EqualSymbolSampler(Sampler[int]):
         """Number of indices yielded per epoch: target * num_symbols."""
         return self._effective_target() * len(self._by_symbol)
 
+    def _rebuild_index(self) -> None:
+        """Rebuild _by_symbol from current dataset._refs (call after dataset.set_epoch)."""
+        self._by_symbol = {}
+        for i, ref in enumerate(self.dataset._refs):
+            self._by_symbol.setdefault(ref.symbol, []).append(i)
+
     def set_epoch(self, epoch: int) -> None:
-        """Update epoch so that __iter__ produces a different permutation."""
+        """Update epoch so that __iter__ produces a different permutation.
+
+        Must be called AFTER dataset.set_epoch() — the dataset rebuilds _refs
+        with a new random offset, so we must resync _by_symbol to the new index.
+        """
         self._epoch = epoch
+        self._rebuild_index()
 
     def __iter__(self) -> Iterator[int]:
         # Combine base seed with epoch for deterministic per-epoch diversity
