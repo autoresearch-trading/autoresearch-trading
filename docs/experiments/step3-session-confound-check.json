@@ -1,0 +1,153 @@
+{
+  "horizon": 100,
+  "delta_threshold_pp": 0.5,
+  "symbol_count_trigger": 5,
+  "n_symbols_with_leak": 5,
+  "decision": "prune_last_features",
+  "per_symbol": {
+    "2Z": {
+      "flat_pca_lr_balanced_acc": 0.509392611225874,
+      "hour_only_lr_balanced_acc": 0.5,
+      "delta_pp": -0.9393,
+      "leaks": false
+    },
+    "AAVE": {
+      "flat_pca_lr_balanced_acc": 0.5059745563653872,
+      "hour_only_lr_balanced_acc": 0.49543606282782093,
+      "delta_pp": -1.0538,
+      "leaks": false
+    },
+    "ASTER": {
+      "flat_pca_lr_balanced_acc": 0.506800451034228,
+      "hour_only_lr_balanced_acc": 0.5108705842346485,
+      "delta_pp": 0.407,
+      "leaks": false
+    },
+    "BNB": {
+      "flat_pca_lr_balanced_acc": 0.5029752202127732,
+      "hour_only_lr_balanced_acc": 0.5103532548006605,
+      "delta_pp": 0.7378,
+      "leaks": true
+    },
+    "BTC": {
+      "flat_pca_lr_balanced_acc": 0.5138506221898559,
+      "hour_only_lr_balanced_acc": 0.49754945641072396,
+      "delta_pp": -1.6301,
+      "leaks": false
+    },
+    "CRV": {
+      "flat_pca_lr_balanced_acc": 0.5352586737446711,
+      "hour_only_lr_balanced_acc": 0.5,
+      "delta_pp": -3.5259,
+      "leaks": false
+    },
+    "DOGE": {
+      "flat_pca_lr_balanced_acc": 0.5043019850145598,
+      "hour_only_lr_balanced_acc": 0.4926719057386302,
+      "delta_pp": -1.163,
+      "leaks": false
+    },
+    "ENA": {
+      "flat_pca_lr_balanced_acc": 0.5026768237706771,
+      "hour_only_lr_balanced_acc": 0.48392712071856697,
+      "delta_pp": -1.875,
+      "leaks": false
+    },
+    "ETH": {
+      "flat_pca_lr_balanced_acc": 0.5136901486366398,
+      "hour_only_lr_balanced_acc": 0.5025577770640886,
+      "delta_pp": -1.1132,
+      "leaks": false
+    },
+    "FARTCOIN": {
+      "flat_pca_lr_balanced_acc": 0.5189640497311652,
+      "hour_only_lr_balanced_acc": 0.5,
+      "delta_pp": -1.8964,
+      "leaks": false
+    },
+    "HYPE": {
+      "flat_pca_lr_balanced_acc": 0.4934786014148565,
+      "hour_only_lr_balanced_acc": 0.5052284151060608,
+      "delta_pp": 1.175,
+      "leaks": true
+    },
+    "KBONK": {
+      "flat_pca_lr_balanced_acc": 0.5062463722331648,
+      "hour_only_lr_balanced_acc": 0.5066949070016554,
+      "delta_pp": 0.0449,
+      "leaks": false
+    },
+    "KPEPE": {
+      "flat_pca_lr_balanced_acc": 0.49410452193565385,
+      "hour_only_lr_balanced_acc": 0.4989722830636763,
+      "delta_pp": 0.4868,
+      "leaks": false
+    },
+    "LDO": {
+      "flat_pca_lr_balanced_acc": 0.5010464381449339,
+      "hour_only_lr_balanced_acc": 0.49324860078495386,
+      "delta_pp": -0.7798,
+      "leaks": false
+    },
+    "LINK": {
+      "flat_pca_lr_balanced_acc": 0.5056897922880311,
+      "hour_only_lr_balanced_acc": 0.4902046785295249,
+      "delta_pp": -1.5485,
+      "leaks": false
+    },
+    "LTC": {
+      "flat_pca_lr_balanced_acc": 0.4857413022212378,
+      "hour_only_lr_balanced_acc": 0.5019967527237705,
+      "delta_pp": 1.6255,
+      "leaks": true
+    },
+    "PENGU": {
+      "flat_pca_lr_balanced_acc": 0.4930808853172595,
+      "hour_only_lr_balanced_acc": 0.4992815382293801,
+      "delta_pp": 0.6201,
+      "leaks": true
+    },
+    "PUMP": {
+      "flat_pca_lr_balanced_acc": 0.5003465146659126,
+      "hour_only_lr_balanced_acc": 0.5028232842022944,
+      "delta_pp": 0.2477,
+      "leaks": false
+    },
+    "SOL": {
+      "flat_pca_lr_balanced_acc": 0.5062325083997019,
+      "hour_only_lr_balanced_acc": 0.5059443864736893,
+      "delta_pp": -0.0288,
+      "leaks": false
+    },
+    "SUI": {
+      "flat_pca_lr_balanced_acc": 0.5014008097636972,
+      "hour_only_lr_balanced_acc": 0.49521070288796865,
+      "delta_pp": -0.619,
+      "leaks": false
+    },
+    "UNI": {
+      "flat_pca_lr_balanced_acc": 0.5057493784344116,
+      "hour_only_lr_balanced_acc": 0.499412944335152,
+      "delta_pp": -0.6336,
+      "leaks": false
+    },
+    "WLFI": {
+      "flat_pca_lr_balanced_acc": 0.48875522857457615,
+      "hour_only_lr_balanced_acc": 0.5,
+      "delta_pp": 1.1245,
+      "leaks": true
+    },
+    "XPL": {
+      "flat_pca_lr_balanced_acc": 0.5021230167813101,
+      "hour_only_lr_balanced_acc": 0.5,
+      "delta_pp": -0.2123,
+      "leaks": false
+    },
+    "XRP": {
+      "flat_pca_lr_balanced_acc": 0.5056770595289029,
+      "hour_only_lr_balanced_acc": 0.49838097288177624,
+      "delta_pp": -0.7296,
+      "leaks": false
+    }
+  }
+}
