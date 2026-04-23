@@ -1,18 +1,25 @@
 # scripts/run_pretrain.py
-"""Pretraining entry point — local-debug AND RunPod modes are identical.
+"""Pretraining entry point — local (CPU/MPS) AND RunPod (CUDA) modes are identical.
 
-Compute cap: --max-h100-hours triggers a graceful shutdown (saves checkpoint,
-writes final log row).  Default: 24.0 (1 H100-day, spec §Training).
+Compute cap: --max-hours triggers a graceful shutdown (saves checkpoint,
+writes final log row). Default: 24.0 (hardware-agnostic wall-clock).
+
+The legacy --max-h100-hours flag is accepted as a deprecated alias.
 
 Usage (local smoke):
     uv run python scripts/run_pretrain.py \
         --cache data/cache --symbols BTC ETH --epochs 2 --batch-size 8 \
-        --channel-mult 0.7 --out-dir runs/smoke --max-h100-hours 0.5
+        --channel-mult 0.7 --out-dir runs/smoke --max-hours 0.5
 
-Usage (RunPod):
+Usage (RunPod H100):
     python scripts/run_pretrain.py --cache /workspace/cache \
         --epochs 30 --batch-size 256 --channel-mult 1.0 \
-        --out-dir /workspace/runs/r1 --max-h100-hours 23.0
+        --out-dir /workspace/runs/r1 --max-hours 23.0
+
+Usage (local MPS, M-series Mac):
+    caffeinate -i uv run python scripts/run_pretrain.py \
+        --cache data/cache --epochs 30 --batch-size 256 --channel-mult 1.0 \
+        --out-dir runs/step3-r1 --max-hours 10.0
 """
 
 from __future__ import annotations
@@ -77,7 +84,7 @@ def run_pretrain(
     batch_size: int,
     channel_mult: float,
     out_dir: Path,
-    max_h100_hours: float,
+    max_hours: float,
     seed: int,
     # MEM/contrastive weights are annealed — override the defaults from PretrainConfig
     # only for experiments. Defaults: MEM 0.90 -> 0.60, contrastive 0.10 -> 0.40 over 20 ep.
@@ -143,7 +150,7 @@ def run_pretrain(
     enc, mem_dec, proj = enc.to(device), mem_dec.to(device), proj.to(device)
 
     started = time.time()
-    cap_seconds = max_h100_hours * 3_600
+    cap_seconds = max_hours * 3_600
     epoch_records: list[dict] = []
 
     with log_path.open("w") as logf:
@@ -280,7 +287,15 @@ def main() -> int:
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--channel-mult", type=float, default=1.0)
     ap.add_argument("--out-dir", type=Path, required=True)
-    ap.add_argument("--max-h100-hours", type=float, default=24.0)
+    # Primary wall-clock cap (hardware-agnostic). --max-h100-hours is a legacy
+    # alias kept for backward compatibility with runpod/launch.sh.
+    ap.add_argument("--max-hours", type=float, default=None)
+    ap.add_argument(
+        "--max-h100-hours",
+        type=float,
+        default=None,
+        help="DEPRECATED alias for --max-hours (retained for RunPod launch.sh back-compat)",
+    )
     # MEM/contrastive weights are ANNEALED by default (MEM 0.90->0.60,
     # contrastive 0.10->0.40 over 20 epochs). Flags below override schedule
     # endpoints for experiments — leave unset to use the knowledge-base default.
@@ -292,6 +307,24 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
+    # Resolve wall-clock cap. Prefer --max-hours; fall back to deprecated
+    # --max-h100-hours with a warning; default 24.0 if neither is set.
+    if args.max_hours is not None and args.max_h100_hours is not None:
+        ap.error("pass --max-hours OR --max-h100-hours, not both")
+    if args.max_hours is not None:
+        max_hours = args.max_hours
+    elif args.max_h100_hours is not None:
+        import warnings
+
+        warnings.warn(
+            "--max-h100-hours is deprecated; use --max-hours (hardware-agnostic)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        max_hours = args.max_h100_hours
+    else:
+        max_hours = 24.0
+
     res = run_pretrain(
         cache_dir=args.cache,
         symbols=args.symbols,
@@ -299,7 +332,7 @@ def main() -> int:
         batch_size=args.batch_size,
         channel_mult=args.channel_mult,
         out_dir=args.out_dir,
-        max_h100_hours=args.max_h100_hours,
+        max_hours=max_hours,
         seed=args.seed,
         mem_weight_start=args.mem_weight_start,
         mem_weight_end=args.mem_weight_end,

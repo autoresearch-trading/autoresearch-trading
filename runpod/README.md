@@ -34,7 +34,7 @@ OUT_PREFIX=r2:pacifica-models/step3-seed0
 EPOCHS=30
 BATCH_SIZE=256
 CHANNEL_MULT=1.0
-MAX_H100_HOURS=23.0
+MAX_HOURS=23.0
 SEED=0
 MEM_WEIGHT_START=0.90
 MEM_WEIGHT_END=0.60
@@ -52,7 +52,7 @@ ANNEAL_EPOCHS=20
 | `EPOCHS` | no | 30 | Training epochs |
 | `BATCH_SIZE` | no | 256 | Per-device batch size |
 | `CHANNEL_MULT` | no | 1.0 | Channel width multiplier |
-| `MAX_H100_HOURS` | no | 23.0 | Hard wall-clock cap |
+| `MAX_HOURS` | no | 23.0 | Hard wall-clock cap (hardware-agnostic). `MAX_H100_HOURS` accepted as deprecated alias. |
 | `SEED` | no | 0 | RNG seed |
 | `MEM_WEIGHT_START` | no | (0.90) | MEM loss weight at epoch 1 |
 | `MEM_WEIGHT_END` | no | (0.60) | MEM loss weight at anneal end |
@@ -62,13 +62,13 @@ ANNEAL_EPOCHS=20
 
 ## Compute cap discipline
 
-`MAX_H100_HOURS` defaults to **23.0**, leaving 1h headroom under the spec's
+`MAX_HOURS` defaults to **23.0**, leaving 1h headroom under the spec's
 1 H100-day cap (spec §Training). The remaining hour covers:
 - rclone cache sync (~20 min for ~2GB)
 - checkpoint export + probe report (~15 min)
 - rclone artifact push (~5 min)
 
-Never set `MAX_H100_HOURS` above 23.0 without council sign-off.
+Never set `MAX_HOURS` above 23.0 without council sign-off.
 
 ## Artifact layout (pushed to OUT_PREFIX)
 

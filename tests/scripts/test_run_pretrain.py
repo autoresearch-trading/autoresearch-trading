@@ -20,7 +20,7 @@ def test_run_pretrain_smoke(tmp_path):
         batch_size=8,
         channel_mult=0.5,
         out_dir=out,
-        max_h100_hours=0.5,
+        max_hours=0.5,
         seed=0,
     )
     ckpt = out / "encoder.pt"

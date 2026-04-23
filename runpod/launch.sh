@@ -9,7 +9,8 @@
 #   EPOCHS                      default 30
 #   BATCH_SIZE                  default 256
 #   CHANNEL_MULT                default 1.0
-#   MAX_H100_HOURS              default 23.0  (1h headroom under spec 24h cap)
+#   MAX_HOURS                   default 23.0  (1h headroom under spec 24h cap)
+#                               MAX_H100_HOURS accepted as deprecated alias
 #   SEED                        default 0
 #   MEM_WEIGHT_START            default unset → PretrainConfig default (0.90)
 #   MEM_WEIGHT_END              default unset → PretrainConfig default (0.60)
@@ -24,14 +25,14 @@ set -euo pipefail
 EPOCHS=${EPOCHS:-30}
 BATCH_SIZE=${BATCH_SIZE:-256}
 CHANNEL_MULT=${CHANNEL_MULT:-1.0}
-MAX_H100_HOURS=${MAX_H100_HOURS:-23.0}
+MAX_HOURS=${MAX_HOURS:-${MAX_H100_HOURS:-23.0}}
 SEED=${SEED:-0}
 
 mkdir -p /workspace/cache /workspace/runs
 
 echo "[launch] === Step 3 pretraining start ==="
 echo "[launch] EPOCHS=$EPOCHS  BATCH_SIZE=$BATCH_SIZE  CHANNEL_MULT=$CHANNEL_MULT"
-echo "[launch] MAX_H100_HOURS=$MAX_H100_HOURS  SEED=$SEED"
+echo "[launch] MAX_HOURS=$MAX_HOURS  SEED=$SEED"
 echo "[launch] R2_CACHE_PREFIX=${R2_CACHE_PREFIX:-<not set>}"
 echo "[launch] OUT_PREFIX=${OUT_PREFIX:-<not set>}"
 
@@ -67,7 +68,7 @@ python scripts/run_pretrain.py \
     --batch-size "$BATCH_SIZE" \
     --channel-mult "$CHANNEL_MULT" \
     --out-dir /workspace/runs/run \
-    --max-h100-hours "$MAX_H100_HOURS" \
+    --max-hours "$MAX_HOURS" \
     --seed "$SEED" \
     "${EXTRA_FLAGS[@]}"
 
