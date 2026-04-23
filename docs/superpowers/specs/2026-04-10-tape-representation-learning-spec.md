@@ -255,9 +255,9 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 - Epochs: 20-40 (monitor probe accuracy every 5 epochs)
 - Stopping: if MEM loss improves < 1% over last 20% of epochs, stop
 - **Gradient clipping `max_norm=1.0`** — primary anti-collapse mechanism for the projection head (bf16 + high-τ early phase can spike grads 10–100×).
-- **Mixed precision: bf16** via `torch.autocast(dtype=torch.bfloat16)` — ~1.8× throughput on H100 with no accuracy cost at this model size.
+- **Mixed precision: bf16** via `torch.autocast(dtype=torch.bfloat16)` — ~1.8× throughput on H100 with no accuracy cost at this model size. On hardware without bf16 support (e.g. Apple Silicon MPS) the autocast falls back to fp32 at ~1.5× slowdown; model remains correct.
 - **`torch.compile(encoder, mode="reduce-overhead")`** — dilated CNN with static shapes (B=256, T=200, F=17) gets significant kernel-fusion gains. Apply to encoder only, not MEM decoder (shapes vary with masked-position count).
-- **Compute cap: 1 H100-day (24 GPU-hours) before evaluation gates must be run**
+- **Compute cap: 1 H100-day-equivalent (~24h wall-clock on any single-GPU target) before evaluation gates must be run**
 
 ### Monitoring During Pretraining
 
@@ -286,7 +286,7 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 - **Success threshold:** > 51.4% linear probe accuracy on 15+/25 symbols
 - **Held-out symbol:** AVAX (pre-designated, irrevocable)
 - **Model size cap:** 500K params
-- **Compute budget:** 1 H100-day before gates
+- **Compute budget:** 1 H100-day-equivalent (~24h wall-clock) before gates
 
 ### Gate 0: Flat-Feature Baseline Grid (before pretraining)
 
@@ -384,7 +384,7 @@ Same pipeline as prior spec. Add stride=50 option for pretraining.
 - Random encoder + linear probe
 - Record reference numbers
 
-### Step 3: Pretraining (RunPod H100, ~12 hours)
+### Step 3: Pretraining (single-GPU target; H100 reference ≈ 12h, M4 Pro MPS ≈ 6.5h for 30 epochs batch 256)
 - MEM + contrastive on all pre-April data
 - ~400K param encoder
 - Monitor MEM loss, contrastive loss, embedding collapse
@@ -396,7 +396,7 @@ Same pipeline as prior spec. Add stride=50 option for pretraining.
 - Wyckoff label probes
 - Go/no-go decision
 
-### Step 5: Fine-Tuning (conditional, RunPod H100, ~4 hours)
+### Step 5: Fine-Tuning (conditional, single-GPU target; ~4h on H100)
 - Freeze → unfreeze protocol
 - Walk-forward evaluation
 - Per-symbol accuracy, temporal stability
@@ -432,9 +432,9 @@ April+ data has `cause` field (market_liquidation, backstop_liquidation). A spec
 | Label + data validation | Local CPU | ~15 min |
 | Data pipeline | Local CPU | ~3-5 hours |
 | Baselines (Gate 0) | Local CPU | ~30 min |
-| Pretraining | RunPod H100 | ~12 hours |
+| Pretraining | Single GPU (H100 reference) | ~12h H100 / ~6.5h M4 Pro MPS |
 | Evaluation (Gates 1-4) | Local CPU | ~2 hours |
-| Fine-tuning | RunPod H100 | ~4 hours |
+| Fine-tuning | Single GPU (H100 reference) | ~4h |
 | Interpretation | Local CPU | ~2 hours |
 
 ## Data
