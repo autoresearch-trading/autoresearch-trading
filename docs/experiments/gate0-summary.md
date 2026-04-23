@@ -1,7 +1,9 @@
 # Gate 0 Summary — Steps 1-2 Closeout
 
-**Date:** 2026-04-15
-**Commits:** data pipeline `ec1ea5d` → cache fix `95ca60c` → Gate 0 CLI fix `9de25c2` → RP control `c0bee9f` → majority + shuffled + balanced rendering `7ff1459`
+> **Amended 2026-04-23:** PCA+LR and Random-Projection baselines re-run on 83-dim flat features after pruning `time_delta_last` and `prev_seq_time_span_last` (session-of-day leak detected in Task 7 confound check, decision `prune_last_features`). Majority-class and Shuffled-labels baselines unchanged (they don't use flat features). Qualitative conclusion unchanged: all 4 baselines ≈ chance on balanced accuracy; pipeline leakage-free.
+
+**Date:** 2026-04-15 (original) / 2026-04-23 (PCA+LR and RP re-run on 83-dim)
+**Commits:** data pipeline `ec1ea5d` → cache fix `95ca60c` → Gate 0 CLI fix `9de25c2` → RP control `c0bee9f` → majority + shuffled + balanced rendering `7ff1459` → 83-dim prune + re-run `800d1a2` / `ea4f6f4` / `04a9283`
 **Spec:** `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
 
 ## TL;DR
@@ -14,10 +16,12 @@ The pipeline itself is clean (shuffled-labels control stays at 0.500±0.003 — 
 
 | Horizon | PCA(20)+LR | Random Projection | Majority Class | Shuffled Labels |
 |---------|------------|-------------------|----------------|-----------------|
-| H10 | **0.5104** (n>51.4%: 8/25) | 0.5091 (6/25) | 0.5000 (0/25) | 0.5030 (15/25) |
-| H50 | 0.5065 (6/25) | 0.5013 (2/25) | 0.5000 (0/25) | 0.4997 (5/25) |
-| H100 | 0.5043 (2/25) | 0.4983 (1/25) | 0.5000 (0/25) | 0.5010 (6/25) |
-| H500 | 0.5051 (4/25) | 0.4993 (2/25) | 0.5000 (0/25) | 0.5033 (3/25) |
+| H10 | **0.5119** (n>51.4%: 10/25) | 0.5056 (5/25) | 0.5000 (0/25) | 0.5030 (15/25) |
+| H50 | 0.5074 (6/25) | 0.5028 (4/25) | 0.5000 (0/25) | 0.4997 (5/25) |
+| H100 | 0.5037 (2/25) | 0.5020 (2/25) | 0.5000 (0/25) | 0.5010 (6/25) |
+| H500 | 0.5033 (4/25) | 0.5036 (2/25) | 0.5000 (0/25) | 0.5033 (3/25) |
+
+_Note: PCA+LR and RP values updated 2026-04-23 on 83-dim flat features (85-dim values were H10: PCA=0.5104/RP=0.5091; H50: 0.5065/0.5013; H100: 0.5043/0.4983; H500: 0.5051/0.4993 — all within 0.5pp of current values)._
 
 _Standard error per symbol-fold ≈ 0.022 (3 folds × ~500 test windows per illiquid symbol). All PCA margins over Majority are within one SE._
 
@@ -103,9 +107,9 @@ Gate 4: H500 uses balanced accuracy (already amended spec).
 2. **Timing-feature augmentation:** σ=0.10 Gaussian noise injected on `time_delta` and `prev_seq_time_span` during SimCLR view generation. Forces encoder to rely on relative rhythms, not absolute session-indicative magnitudes.
 3. **Do NOT exclude `prev_seq_time_span` from MEM** — it carries local event-rate rhythm (microstructure). The augmentation in (2) handles the session-leak risk without removing the feature.
 
-## Session-of-day confound check (before or during Gate 1)
+## Session-of-day confound check — COMPLETED 2026-04-23
 
-Per council-5. Train LR on a single feature — hour-of-day (4-hour bins one-hot) — over the same walk-forward folds. If this exceeds PCA+LR on the 85-dim flat features by >0.5pp balanced accuracy on ≥5 symbols, the `_last` block in `tape/flat_features.py` (specifically `time_delta_last` and `prev_seq_time_span_last`) is a session-of-day leak and must be pruned. This is a pre-pretraining sanity check that costs <5 minutes.
+Per council-5. LR trained on UTC hour alone beat PCA+LR on the 85-dim flat features by >0.5pp balanced accuracy on exactly 5/25 symbols (LTC +1.63pp, HYPE +1.17pp, WLFI +1.12pp, BNB +0.74pp, PENGU +0.62pp), hitting the ≥5-symbol trigger. The `_last` block columns `time_delta_last` and `prev_seq_time_span_last` were confirmed as session-of-day leaks and have been pruned from `tape/flat_features.py` (decision `prune_last_features`; commit `800d1a2`). FLAT_DIM is now 83. Gate 0 baselines re-run on the pruned 83-dim vector (commits `ea4f6f4`, `04a9283`). Qualitative result unchanged.
 
 ## Files of record
 
