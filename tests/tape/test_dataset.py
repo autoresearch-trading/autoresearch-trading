@@ -198,3 +198,27 @@ def test_dataset_getitem_exposes_symbol_id(tmp_path: Path) -> None:
     item = ds[0]
     assert "symbol_id" in item
     assert item["symbol_id"] == list(SYMBOLS).index("BTC")
+
+
+def test_dataset_getitem_exposes_ts_first_ms(tmp_path: Path) -> None:
+    """Each item must include 'ts_first_ms' sourced from event_ts[start].
+
+    Guards council-5 Bug B (2026-04-23): the hour-of-day probe previously
+    used `item["start"] // 3600` which treats event-index as seconds-epoch.
+    Downstream callers (`_collate`, `_run_probe_trio`, `run_pretrain_probes`)
+    need the real ms-epoch to compute UTC hour.
+    """
+    from tape.dataset import TapeDataset
+
+    # _make_shard sets event_ts = np.arange(n, dtype=np.int64); event_ts[s]
+    # therefore equals the window start index.
+    p = _make_shard(tmp_path, "BTC", "2025-11-01", n=1000)
+    ds = TapeDataset([p], stride=50)
+    item0 = ds[0]
+    item1 = ds[1]
+    assert "ts_first_ms" in item0
+    assert isinstance(item0["ts_first_ms"], int)
+    # window 0 starts at event index 0 → event_ts[0] = 0
+    assert item0["ts_first_ms"] == 0
+    # window 1 starts at event index 50 (stride=50) → event_ts[50] = 50
+    assert item1["ts_first_ms"] == 50

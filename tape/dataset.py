@@ -171,12 +171,19 @@ class TapeDataset(Dataset):
 
         features = payload["features"][s:e].astype(np.float32)
 
+        # Emit ts_first_ms so downstream probes / contrastive can compute real
+        # UTC hour. Without this, `_collate` and `_run_probe_trio` in
+        # scripts/run_pretrain.py silently fall back to 0 → the "hour_of_day"
+        # probe measures event-index-mod-24, not wall-clock hour (council-5
+        # Bug B diagnosis, 2026-04-23).
+        ts_first_ms = int(payload["event_ts"][s]) if "event_ts" in payload else 0
         out: dict = {
             "features": torch.from_numpy(features),
             "symbol": ref.symbol,
             "date": ref.date,
             "symbol_id": ref.symbol_id,
             "start": s,
+            "ts_first_ms": ts_first_ms,
         }
 
         # Direction labels: use the last event of the window (e-1) as the label

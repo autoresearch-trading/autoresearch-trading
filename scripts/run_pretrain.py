@@ -152,6 +152,9 @@ def run_pretrain(
     started = time.time()
     cap_seconds = max_hours * 3_600
     epoch_records: list[dict] = []
+    best_mem_loss = float("inf")
+    best_epoch = 0
+    ckpt_best_path = out_dir / "encoder-best.pt"
 
     with log_path.open("w") as logf:
         for epoch in range(1, epochs + 1):
@@ -183,12 +186,33 @@ def run_pretrain(
             con_loss_e = con_acc / max(1, n)
             std_e = std_acc / max(1, n)
 
+            # Best-val checkpoint: save encoder-best.pt on MEM-loss improvement.
+            # Run-0 (2026-04-23) stopped early at epoch 8 with MEM=0.74; the
+            # epoch-5 MEM-minimum (0.51) encoder was never saved and was lost.
+            improved = mem_loss_e < best_mem_loss
+            if improved:
+                best_mem_loss = mem_loss_e
+                best_epoch = epoch
+                torch.save(
+                    {
+                        "encoder_state_dict": enc.state_dict(),
+                        "encoder_config": cfg.encoder.__dict__,
+                        "epoch": epoch,
+                        "mem_loss": mem_loss_e,
+                        "seed": seed,
+                    },
+                    ckpt_best_path,
+                )
+
             row = {
                 "epoch": epoch,
                 "mem_loss": mem_loss_e,
                 "contrastive_loss": con_loss_e,
                 "embedding_std": std_e,
                 "elapsed_h": (time.time() - started) / 3_600,
+                "best_mem_loss": best_mem_loss,
+                "best_epoch": best_epoch,
+                "saved_best": improved,
             }
 
             # Every probe_every_epochs: run probe trio
@@ -196,11 +220,11 @@ def run_pretrain(
                 probe_summary = _run_probe_trio(enc, dataset, device)
                 row.update(probe_summary)
 
-            logf.write(json.dumps(row) + "\n")
-            logf.flush()
-            epoch_records.append(row)
-
-            # Stop on <1% MEM improvement over last 20% of epochs (spec)
+            # Early-stop plateau warning — LOGGED ONLY, no break (council-5
+            # diagnosis 2026-04-23: run-0 killed at epoch 8 of 30 because MEM
+            # natural mid-training regression around LR peak triggered the
+            # <1% improvement rule. Encoder was still learning real signal —
+            # preserving this as a diagnostic flag, not a stop condition).
             if epoch >= max(5, int(0.2 * epochs)):
                 window = epoch_records[-int(0.2 * epochs) :]
                 if (
@@ -208,12 +232,17 @@ def run_pretrain(
                     and window[0]["mem_loss"] - window[-1]["mem_loss"]
                     < 0.01 * window[0]["mem_loss"]
                 ):
-                    break
+                    row["plateau_warning"] = True
+
+            logf.write(json.dumps(row) + "\n")
+            logf.flush()
+            epoch_records.append(row)
 
             if time.time() - started > cap_seconds:
                 break
 
-    # Save encoder + scaler config (no optimizer state) for downstream probes
+    # Save encoder + scaler config (no optimizer state) — LAST checkpoint.
+    # encoder-best.pt already carries the MEM-min checkpoint.
     torch.save(
         {
             "encoder_state_dict": enc.state_dict(),
@@ -226,42 +255,84 @@ def run_pretrain(
     )
     return {
         "checkpoint": str(ckpt_path),
+        "checkpoint_best": str(ckpt_best_path) if ckpt_best_path.exists() else None,
+        "best_epoch": best_epoch,
+        "best_mem_loss": best_mem_loss,
         "log": str(log_path),
         "epochs_run": len(epoch_records),
     }
 
 
-def _run_probe_trio(enc, dataset: TapeDataset, device: torch.device) -> dict:
-    """Forward a held-out probe slice (April 1–13 + symbol + hour) through the frozen encoder."""
+def _run_probe_trio(
+    enc,
+    dataset: TapeDataset,
+    device: torch.device,
+    *,
+    per_symbol: int = 1500,
+    batch_size: int = 64,
+    seed: int = 0,
+) -> dict:
+    """Forward a stratified per-symbol probe sample through the frozen encoder.
+
+    Council-5 bugs patched 2026-04-23 (see commit history + council-5 review):
+    - Stratified-per-symbol sampling (was: first 50K linear → only 3 alphabetical symbols).
+    - Real UTC hour from `item["ts_first_ms"]` (was: event-index `start // 3600`).
+    """
+    from collections import defaultdict
+
     enc.eval()
-    feats_by_sym: dict[str, list[np.ndarray]] = {}
-    labels_by_sym: dict[str, list[int]] = {}
-    masks_by_sym: dict[str, list[bool]] = {}
-    all_feats: list[np.ndarray] = []
+
+    # Build per-symbol index pool and stratified sample.
+    by_symbol: dict[str, list[int]] = defaultdict(list)
+    for idx, ref in enumerate(dataset._refs):  # noqa: SLF001 — dataset is ours
+        by_symbol[ref.symbol].append(idx)
+    rng = np.random.default_rng(seed)
+    chosen: list[int] = []
+    for sym in sorted(by_symbol.keys()):
+        pool = by_symbol[sym]
+        if len(pool) <= per_symbol:
+            chosen.extend(pool)
+        else:
+            chosen.extend(rng.choice(pool, size=per_symbol, replace=False).tolist())
+    rng.shuffle(chosen)
+
+    embeddings: list[np.ndarray] = []
+    symbols: list[str] = []
     sym_ids: list[int] = []
     hours: list[int] = []
+    labels_h100: list[int] = []
+    masks_h100: list[bool] = []
 
     with torch.no_grad():
-        # Iterate dataset linearly — small subset for speed (limit at ~50K windows)
-        for i in range(min(len(dataset), 50_000)):
-            item = dataset[i]
-            x = item["features"].unsqueeze(0).to(device)
-            _, g = enc(x)
-            g_np = g.squeeze(0).cpu().numpy()
-            sym = item["symbol"]
-            feats_by_sym.setdefault(sym, []).append(g_np)
-            labels_by_sym.setdefault(sym, []).append(int(item["label_h100"]))
-            masks_by_sym.setdefault(sym, []).append(bool(item["label_h100_mask"]))
-            all_feats.append(g_np)
-            sym_ids.append(int(item["symbol_id"]))
-            hours.append(int((item.get("start", 0) // 3600) % 24))
+        for bstart in range(0, len(chosen), batch_size):
+            bend = min(bstart + batch_size, len(chosen))
+            batch_items = [dataset[int(chosen[i])] for i in range(bstart, bend)]
+            feats = torch.stack([b["features"] for b in batch_items]).to(device)
+            _, g = enc(feats)  # (B, 256)
+            embeddings.append(g.cpu().numpy())
+            for b in batch_items:
+                symbols.append(b["symbol"])
+                sym_ids.append(int(b["symbol_id"]))
+                # CORRECTED: UTC hour from ms-epoch (was event-index // 3600).
+                hours.append(int((b["ts_first_ms"] // 1_000 // 3_600) % 24))
+                labels_h100.append(int(b["label_h100"]))
+                masks_h100.append(bool(b["label_h100_mask"]))
 
-    feats_by_sym_np = {k: np.stack(v) for k, v in feats_by_sym.items()}
-    labels_by_sym_np = {k: np.array(v) for k, v in labels_by_sym.items()}
-    masks_by_sym_np = {k: np.array(v) for k, v in masks_by_sym.items()}
-    all_feats_np = np.stack(all_feats)
-    sym_ids_np = np.array(sym_ids)
-    hours_np = np.array(hours)
+    all_feats_np = np.concatenate(embeddings, axis=0)
+    sym_ids_np = np.array(sym_ids, dtype=np.int64)
+    hours_np = np.array(hours, dtype=np.int64)
+
+    # Regroup by symbol for direction probe.
+    feats_by_sym_np: dict[str, np.ndarray] = {}
+    labels_by_sym_np: dict[str, np.ndarray] = {}
+    masks_by_sym_np: dict[str, np.ndarray] = {}
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for i, sym in enumerate(symbols):
+        grouped[sym].append(i)
+    for sym, idxs in grouped.items():
+        feats_by_sym_np[sym] = all_feats_np[idxs]
+        labels_by_sym_np[sym] = np.array([labels_h100[i] for i in idxs])
+        masks_by_sym_np[sym] = np.array([masks_h100[i] for i in idxs])
 
     dir_per_sym = direction_probe_h100(
         feats_by_sym_np, labels_by_sym_np, masks_by_sym_np

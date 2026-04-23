@@ -96,8 +96,9 @@ def run_probes(
             masks_by_sym.setdefault(sym, []).append(bool(item["label_h100_mask"]))
             all_feats.append(g_np)
             sym_ids.append(int(item["symbol_id"]))
-            # hour bucket from a deterministic transform of (date, start)
-            hours.append(int(item["start"]) % 24)
+            # CORRECTED (council-5 Bug B, 2026-04-23): UTC hour from ms-epoch.
+            # The prior `int(item["start"]) % 24` treated event-index as hour.
+            hours.append(int((item["ts_first_ms"] // 1_000 // 3_600) % 24))
 
     f_np = {k: np.stack(v) for k, v in feats_by_sym.items()}
     y_np = {k: np.array(v) for k, v in labels_by_sym.items()}
