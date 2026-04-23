@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,9 +17,20 @@ from tape.model import EncoderConfig, TapeEncoder
 
 
 def _git_sha(repo: Path = Path(".")) -> str:
-    return (
-        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
-    )
+    # Inside the Docker container .git/ is excluded — fall back to the baked env var.
+    env_sha = os.environ.get("GIT_SHA", "")
+    if env_sha and env_sha != "unknown":
+        return env_sha
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, stderr=subprocess.DEVNULL
+            )
+            .decode()
+            .strip()
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return env_sha or "unknown"
 
 
 def _spec_sha() -> str:

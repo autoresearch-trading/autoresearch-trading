@@ -1,0 +1,14 @@
+data/
+runs/
+docs/
+tests/
+.git/
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+uv.lock
+*.md
+!runpod/README.md

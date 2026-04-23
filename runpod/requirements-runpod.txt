@@ -1,0 +1,10 @@
+# Pinned dependencies for RunPod H100 execution.
+# torch is pre-installed in the base image (pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime).
+# Do NOT re-install torch here — it would overwrite the CUDA-enabled wheel.
+
+numpy>=1.26,<2.0
+pandas>=2.2,<3.0
+pyarrow>=15.0,<18.0
+duckdb>=0.10,<2.0
+scikit-learn>=1.5,<2.0
+scipy>=1.13,<2.0
