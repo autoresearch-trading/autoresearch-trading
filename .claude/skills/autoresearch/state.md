@@ -99,12 +99,12 @@ Written Step 3 plan was reviewed by council-6 before execution. Outcome: `docs/c
 | `41b1b56` | feat(scripts): checkpoint export with provenance stamping |
 | `660285b` | chore(runpod): Dockerfile + launch.sh scaffold for Step 3 H100 run |
 
-## Pre-launch chores (human, before next session)
+## Pre-launch chores (status)
 
-1. **Create two R2 buckets** in the Cloudflare dashboard:
-   - `pacifica-cache` — for the tape windowing cache (derived from raw data)
-   - `pacifica-models` — for pretraining checkpoints + probe reports
-   - Rationale: `pacifica-trading-data` (raw) already exists; keeping derived/cache separate avoids accidental damage to raw data via rclone.
+1. **R2 buckets — CREATED 2026-04-23T14:49Z** via cloudflare-api MCP:
+   - `pacifica-cache` (empty, ready for `rclone sync data/cache`)
+   - `pacifica-models` (empty, ready for run output)
+   - `pacifica-trading-data` (pre-existing, raw data — do not touch)
 2. **Confirm RunPod billing** — an H100 80GB on-demand is ~$2/hr; 24h cap ≈ $48. Ensure credit or hard limit is set.
 3. **Optional:** set `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` environment variables in the RunPod secret store, or confirm rclone config will be copied into the container via `launch.sh`.
 
@@ -112,7 +112,7 @@ Written Step 3 plan was reviewed by council-6 before execution. Outcome: `docs/c
 
 Entry prompt for the new session:
 
-> Resume tape representation learning project on `main` branch. Status per `.claude/skills/autoresearch/state.md` — Step 3 CODE COMPLETE (14 commits on main, 324 tests green, CPU smoke validated). Ready for **Task 13 (H100 pretraining launch on RunPod)**. Before launch, confirm the user has created `pacifica-cache` and `pacifica-models` R2 buckets and has RunPod billing configured. Then:
+> Resume tape representation learning project on `main` branch. Status per `.claude/skills/autoresearch/state.md` — Step 3 CODE COMPLETE (15 commits on main, 324 tests green, CPU smoke validated, R2 buckets `pacifica-cache` + `pacifica-models` already created and empty). Ready for **Task 13 (H100 pretraining launch on RunPod)**. Confirm RunPod billing is configured, then:
 >
 > 1. Push local cache to R2: `rclone sync data/cache r2:pacifica-cache/v1 --transfers 32 --checkers 64 --size-only`.
 > 2. Dispatch `runpod-7` to build `runpod/Dockerfile`, push via the `flash` skill, launch an H100 80GB pod with env `R2_CACHE_PREFIX=r2:pacifica-cache/v1`, `OUT_PREFIX=r2:pacifica-models/step3-run-0`, `EPOCHS=30`, `BATCH_SIZE=256`, `CHANNEL_MULT=1.0`, `MAX_H100_HOURS=23.0`, `SEED=0`.
@@ -122,6 +122,7 @@ Entry prompt for the new session:
 > Plan reference: `docs/superpowers/plans/2026-04-15-step3-pretraining.md` Tasks 13–15.
 > Council-6 diagnostics: `docs/council-reviews/council-6-step3-model-size.md` §Q3 (early-signal thresholds).
 > CLAUDE.md gotchas 21–33 all current as of 2026-04-23.
+> R2 access: the Cloudflare MCP is connected; use `cloudflare-api.execute` for any bucket ops that rclone can't cover.
 
 ## Key References for Task 13
 - Spec: `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md` (amended 2026-04-23 with council-6 corrections)
