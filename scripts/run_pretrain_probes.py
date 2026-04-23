@@ -68,7 +68,13 @@ def run_probes(
 
     dataset = TapeDataset(shards, stride=STRIDE_EVAL, mode="eval")
     enc = _load_encoder(checkpoint)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Prefer CUDA, then MPS (Apple Silicon), else CPU.
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     enc = enc.to(device)
 
     feats_by_sym: dict[str, list[np.ndarray]] = {}

@@ -125,8 +125,21 @@ def run_pretrain(
     if anneal_epochs is not None:
         cfg_kwargs["anneal_epochs"] = anneal_epochs
     cfg = PretrainConfig(**cfg_kwargs)
+
+    # Device selection: prefer CUDA, then MPS (Apple Silicon), else CPU.
+    # torch.compile(mode="reduce-overhead") triggers CUDA graphs, so disable on
+    # non-CUDA. bf16 autocast in tape/pretrain.py is already CUDA-guarded — no
+    # change needed there.
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        cfg.use_torch_compile = False
+    else:
+        device = torch.device("cpu")
+        cfg.use_torch_compile = False
+
     enc, mem_dec, proj, opt, sched = build_pretrain_modules(cfg)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     enc, mem_dec, proj = enc.to(device), mem_dec.to(device), proj.to(device)
 
     started = time.time()

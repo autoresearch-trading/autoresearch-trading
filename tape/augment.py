@@ -89,19 +89,22 @@ def apply_augment_pipeline(
     Window is modified in place and returned.
     """
     T, C = window.shape
+    # Noise / dropout tensors are built from numpy RNG for reproducibility, then
+    # moved to the window's device — mixed CPU/MPS/CUDA arithmetic raises.
+    dev = window.device
 
     # 1. Timing-feature noise (σ=0.10 on the two timing channels)
     if cfg.timing_sigma > 0:
         for idx in _TIMING_FEATURE_INDICES:
             noise = torch.from_numpy(
                 rng.normal(0.0, cfg.timing_sigma, size=T).astype(np.float32)
-            )
+            ).to(dev)
             window[:, idx] = window[:, idx] + noise
 
     # 2. Per-channel Gaussian noise (sigma * per-channel std)
     if cfg.gauss_sigma > 0:
         per_channel_std = window.std(dim=0, keepdim=True)  # (1, C)
-        noise = torch.from_numpy(rng.standard_normal((T, C)).astype(np.float32))
+        noise = torch.from_numpy(rng.standard_normal((T, C)).astype(np.float32)).to(dev)
         window = window + noise * (cfg.gauss_sigma * per_channel_std)
 
     # 3. Time scale dilation: multiply time_delta by a factor in [a, b]
@@ -113,7 +116,7 @@ def apply_augment_pipeline(
     # 4. Per-(pos, feat) dropout to zero (BatchNorm post-input absorbs the bias)
     if cfg.dropout_p > 0:
         keep = rng.random((T, C)) >= cfg.dropout_p
-        keep_t = torch.from_numpy(keep)
+        keep_t = torch.from_numpy(keep).to(dev)
         window = window * keep_t
 
     return window

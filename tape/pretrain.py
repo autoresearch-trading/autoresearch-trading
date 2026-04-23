@@ -162,7 +162,14 @@ def effective_rank(global_emb: torch.Tensor, *, sv_floor: float = 0.01) -> int:
         raise ValueError("expected (B, D) tensor")
     # Center to avoid rank-1 inflation from a non-zero mean.
     centered = global_emb - global_emb.mean(dim=0, keepdim=True)
-    s = torch.linalg.svdvals(centered.float())
+    # svdvals is not implemented on MPS in PyTorch 2.10 — fall back to CPU for
+    # this diagnostic (called once per step at most; overhead is negligible).
+    centered_for_svd = (
+        centered.detach().float().cpu()
+        if centered.device.type == "mps"
+        else centered.float()
+    )
+    s = torch.linalg.svdvals(centered_for_svd)
     if s.numel() == 0:
         return 0
     max_sv = s.max().item()
