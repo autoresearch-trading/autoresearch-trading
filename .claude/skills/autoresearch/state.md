@@ -8,11 +8,46 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-23)
+## Current State (2026-04-24)
 
-**Steps 0, 1, 2 COMPLETE. Step 3 CODE COMPLETE** — all 12 implementation tasks landed on `main`, 324 tests green, CPU smoke ran 13.5 min end-to-end with no NaN and checkpoint written. **Ready for Task 13 (H100 launch).**
+**Steps 0, 1, 2, 3 ALL COMPLETE. Gate 1 PASSES on Feb + Mar held-out at H500.**
 
-**Next session: launch the H100 run on RunPod.** Before dispatching `runpod-7`, the user must create two R2 buckets (see "Pre-launch chores" below) and confirm RunPod billing.
+- **Checkpoint:** `runs/step3-r2/encoder-best.pt` (epoch 6, MEM=0.504, 376K params)
+- **Gate 1 pass writeup:** `docs/experiments/step3-run-2-gate1-pass.md`
+- **Landmark commits:**
+  - `117187d` — Phase-1 fixes (council-5 Bug B/C + no early-stop + best-val checkpoint + ts_first_ms)
+  - `bda524e` — Phase-1b diagnostic tooling + `--train-end-date` flag
+  - `96722b4` — Gate 1 pass documentation
+
+### Gate 1 results (run-2, 2026-04-23 overnight, local M4 Pro MPS, $0)
+
+| Condition | Feb (held-out, 21K windows) | Mar (held-out, 16K windows) |
+|---|---|---|
+| 1. ≥51.4% on 15+/24 | **15/24 ✓** | **17/24 ✓** |
+| 2. > Majority+1pp | +3.03pp ✓ | +3.12pp ✓ |
+| 3. > RP+1pp | +1.91pp ✓ | +2.29pp ✓ |
+| 4. Hour-of-day <10% | 0.06-0.09 ✓ | 0.06-0.09 ✓ |
+
+Encoder beats PCA+LR on 17/24 symbols (Feb) / 14/24 (Mar). Consistent winners: AAVE, BNB, CRV, FARTCOIN, HYPE, KBONK, PUMP, SUI, WLFI, XRP.
+
+### Key methodological findings (from 2026-04-23 diagnostic work)
+
+- **H100 is at noise floor** for all predictors on this data. H500 is the primary horizon where SSL adds value over flat baselines. Gate 1 evaluated at H500, not H100.
+- **April 1-13 is underpowered for Gate 1** at stride=200 (60-150 windows/symbol, below the 200 `min_valid` threshold). Plus a 4× density shift on liquid symbols. Feb + Mar at matched density are the right held-out window.
+- **Run-0's apparent shortcut collapse was 2/3 measurement artifact** — three probe bugs (hour probe used event-index, direction probe only saw 3 alphabet-first symbols, `ts_first_ms` missing from dataset). See `docs/council-reviews/council-5-step3-run0-falsifiability.md` for the full diagnosis.
+- **Local MPS is production-viable** for pretraining at this model size. 5h 17m / $0 vs ~2.5h / ~$6 on H100.
+
+### Next session priorities
+
+1. **Spec amendment** — Gate 1 language needs updating: H500 as primary, matched-density held-out (Feb+Mar or equivalent) instead of April 1-13. Council-1 + council-5 methodology review.
+2. **Step 4 (Gate 2) fine-tuning** — freeze encoder 5 epochs → unfreeze at lr=5e-5, add 4 direction heads, walk-forward eval against same held-out protocol. Gate 2 threshold ≥0.5pp over flat LR.
+3. **Step 5 (Gate 3) AVAX held-out symbol probe** — we have AVAX April shards in cache; need probe pass on `encoder-best.pt`.
+4. **Knowledge-base compilation** — invoke `compile-knowledge` skill to distill the 2026-04-23 diagnostic findings + Gate 1 pass into `docs/knowledge/` articles.
+5. **(Optional) R2 upload of encoder-best.pt** — rclone CreateBucket 403; needs bucket-level perms on pacifica-models. Work-around: `--s3-no-check-bucket` flag or direct API upload.
+
+### Entry prompt for next session
+
+> Resume tape representation learning on `main`. Step 3 is complete — **Gate 1 passes on Feb + Mar held-out at H500** (commit `96722b4`, writeup at `docs/experiments/step3-run-2-gate1-pass.md`). Checkpoint: `runs/step3-r2/encoder-best.pt`. Decide next move: (a) spec amendment for Gate 1 horizon + held-out changes, (b) Step 4 fine-tuning launch, (c) Step 5 AVAX Gate 3 probe, or (d) knowledge-base compilation from the 2026-04-23 diagnostic work.
 
 ### Completed steps
 - **Step 0** — data validation, label validation, falsifiability prereqs, base-rate stationarity measurements. Spec amendments applied.
