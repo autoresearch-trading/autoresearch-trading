@@ -8,16 +8,23 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-24)
+## Current State (2026-04-24, late — post Gate 3 triage)
 
-**Steps 0, 1, 2, 3 ALL COMPLETE. Gate 1 PASSES on Feb + Mar held-out at H500.**
+**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar held-out at H500. Gate 3 triage: EXONERATED (inconclusive — AVAX not anomalous, but stride=50 single-symbol probe is underpowered).**
 
 - **Checkpoint:** `runs/step3-r2/encoder-best.pt` (epoch 6, MEM=0.504, 376K params)
 - **Gate 1 pass writeup:** `docs/experiments/step3-run-2-gate1-pass.md`
+- **Gate 3 AVAX probe writeup:** `docs/experiments/step5-gate3-avax-probe.md` (initial)
+- **Gate 3 triage:** `docs/experiments/step5-gate3-triage.md` (bootstrap CIs + in-sample control → EXONERATED)
+- **Council reviews:** `docs/council-reviews/council-5-gate3-avax-falsifiability.md`, `docs/council-reviews/council-3-avax-microstructure.md`
 - **Landmark commits:**
   - `117187d` — Phase-1 fixes (council-5 Bug B/C + no early-stop + best-val checkpoint + ts_first_ms)
   - `bda524e` — Phase-1b diagnostic tooling + `--train-end-date` flag
   - `96722b4` — Gate 1 pass documentation
+  - `5acde01` — Gate 3 AVAX probe script
+  - `3833e35` — Gate 3 AVAX apparent fail (pre-triage)
+  - `ea07bda` — probe upgrade: bootstrap CIs + N=50 shuffled-null + `--target-symbols`
+  - `2c7ebc2` — Gate 3 triage: EXONERATED
 
 ### Gate 1 results (run-2, 2026-04-23 overnight, local M4 Pro MPS, $0)
 
@@ -37,17 +44,33 @@ Encoder beats PCA+LR on 17/24 symbols (Feb) / 14/24 (Mar). Consistent winners: A
 - **Run-0's apparent shortcut collapse was 2/3 measurement artifact** — three probe bugs (hour probe used event-index, direction probe only saw 3 alphabet-first symbols, `ts_first_ms` missing from dataset). See `docs/council-reviews/council-5-step3-run0-falsifiability.md` for the full diagnosis.
 - **Local MPS is production-viable** for pretraining at this model size. 5h 17m / $0 vs ~2.5h / ~$6 on H100.
 
-### Next session priorities
+### Gate 3 triage summary (2026-04-24)
 
-1. **Spec amendment** — Gate 1 language needs updating: H500 as primary, matched-density held-out (Feb+Mar or equivalent) instead of April 1-13. Council-1 + council-5 methodology review.
-2. **Step 4 (Gate 2) fine-tuning** — freeze encoder 5 epochs → unfreeze at lr=5e-5, add 4 direction heads, walk-forward eval against same held-out protocol. Gate 2 threshold ≥0.5pp over flat LR.
-3. **Step 5 (Gate 3) AVAX held-out symbol probe** — we have AVAX April shards in cache; need probe pass on `encoder-best.pt`.
-4. **Knowledge-base compilation** — invoke `compile-knowledge` skill to distill the 2026-04-23 diagnostic findings + Gate 1 pass into `docs/knowledge/` articles.
+Ran `scripts/avax_gate3_probe.py` → Gate 3 appeared to FAIL on AVAX at stride=50.
+Council-5 + council-3 reviews both demanded bootstrap CIs + in-sample control before drawing conclusions. Triage results:
+
+- **AVAX stride=50 (Feb+Mar × H100+H500):** encoder vs PCA CIs overlap on 4/4 cells (narrowest overlap 0.004pp on Mar H500, sign PCA > encoder). Encoder never clears 51.4% at CI lower bound. Shuffled null (N=50) is clean at μ≈0.500, σ≈0.02–0.03.
+- **In-sample control LINK+LTC (n_test ~660–880, ~2× AVAX):** encoder fails to beat majority on 3/4 cells, CI-overlaps PCA on 4/4 cells, never clears 51.4%. Same failure pattern as AVAX.
+- **In-sample control AAVE:** same stride=200-style "lucky cell" pattern (Feb H100 encoder >> PCA; Mar H100 PCA >> encoder; both inside each other's CIs).
+
+**Verdict:** EXONERATED. AVAX is not anomalous — the 1-month single-symbol probe at ~400–900 test windows is underpowered for the encoder's ~1–2pp Gate-1 signal regardless of which symbol is held out. The Gate-1 pass was visible at 63K windows across 25 symbols (~80× this n_test).
+
+**What this changes:**
+- Do NOT amend Gate 3 on the basis of stride=50 AVAX alone — statistically unjustified.
+- The pre-registered Gate 3 criterion needs an aggregation unit specification (n_test threshold, or pooled-symbol formulation).
+- Cross-symbol SimCLR cluster cohesion (council-5 Rank 3) remains the key unresolved diagnostic — tells us whether the encoder learned any symbol-invariance in the first place. Symbol-ID probe 0.54 → 0.67 during training is suggestive but not conclusive.
+
+### Next session priorities (revised post-triage)
+
+1. **Cluster cohesion diagnostic** — measure cosine similarity between same-hour, same-date embeddings from the 6 liquid SimCLR anchors (BTC/ETH/SOL/BNB/LINK/LTC). Per council-5 Rank 3: if cos > 0.3, cross-symbol SimCLR worked; if cos ~ 0, universality was never trained. Cheap (~2h) and prerequisite for any spec amendment on Gate 3.
+2. **Spec amendment pass (BOTH Gate 1 and Gate 3 in one amendment)** — update Gate 1 to H500 + matched-density held-out (Feb+Mar); update Gate 3 with explicit aggregation-unit requirement (n_test floor ≥ 2000, OR pooled held-out across multiple symbols). Council-1 + council-5 methodology review, grounded in measured bootstrap CIs + cluster-cohesion finding.
+3. **Step 4 (Gate 2) fine-tuning** — hold until spec is amended. The +1.9–2.3pp Gate 1 encoder margin already exceeds Gate 2's +0.5pp threshold, so likely passes — but fine-tuning on un-ratified eval protocol is wasteful.
+4. **Knowledge-base compilation** — `compile-knowledge` skill to distill the 2026-04-23 diagnostic work + Gate 1 pass + Gate 3 triage into `docs/knowledge/` articles.
 5. **(Optional) R2 upload of encoder-best.pt** — rclone CreateBucket 403; needs bucket-level perms on pacifica-models. Work-around: `--s3-no-check-bucket` flag or direct API upload.
 
 ### Entry prompt for next session
 
-> Resume tape representation learning on `main`. Step 3 is complete — **Gate 1 passes on Feb + Mar held-out at H500** (commit `96722b4`, writeup at `docs/experiments/step3-run-2-gate1-pass.md`). Checkpoint: `runs/step3-r2/encoder-best.pt`. Decide next move: (a) spec amendment for Gate 1 horizon + held-out changes, (b) Step 4 fine-tuning launch, (c) Step 5 AVAX Gate 3 probe, or (d) knowledge-base compilation from the 2026-04-23 diagnostic work.
+> Resume tape representation learning on `main`. Gate 1 passes on Feb + Mar H500 (commit `96722b4`). Gate 3 triage complete (commit `2c7ebc2`, writeup `docs/experiments/step5-gate3-triage.md`): **EXONERATED** — AVAX is not anomalous; stride=50 single-symbol probe is underpowered. Checkpoint: `runs/step3-r2/encoder-best.pt`. Decide next move: (1) cluster-cohesion diagnostic on 6 liquid anchors (council-5 Rank 3 — the key missing measurement), (2) Gate 1 + Gate 3 spec amendment (needs cluster cohesion first), (3) Step 4 fine-tuning launch (blocked on spec amendment), or (4) knowledge-base compilation.
 
 ### Completed steps
 - **Step 0** — data validation, label validation, falsifiability prereqs, base-rate stationarity measurements. Spec amendments applied.

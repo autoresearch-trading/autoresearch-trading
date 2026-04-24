@@ -46,7 +46,7 @@
 ### AVAX findings
 
 - **Shuffled null is clean at N=50**: mean tightly around 0.500 (0.4995–0.5007), σ=0.02–0.03. The old single-seed Apr 0.700 is retroactively explained as one tail draw of this distribution.
-- **Encoder CIs overlap PCA CIs on 4/4 cells.** Feb H100: enc [0.488, 0.579] vs pca [0.502, 0.594]; Feb H500: enc [0.442, 0.538] vs pca [0.474, 0.561]; Mar H100: enc [0.467, 0.562] vs pca [0.452, 0.534]; Mar H500: enc [0.410, 0.510] vs pca [0.507, 0.604]. **Only Mar H500 is a non-overlap** (encoder CI hi 0.5104 < pca CI lo 0.5066, a 0.4pp gap — and the sign is "PCA beats encoder", not the other way). Everywhere else the encoder cannot be statistically distinguished from PCA.
+- **Encoder CIs overlap PCA CIs on 4/4 cells.** Feb H100: enc [0.488, 0.579] vs pca [0.502, 0.594]; Feb H500: enc [0.442, 0.538] vs pca [0.474, 0.561]; Mar H100: enc [0.467, 0.562] vs pca [0.452, 0.534]; Mar H500: enc [0.410, 0.510] vs pca [0.507, 0.604]. **The narrowest overlap is Mar H500** (encoder CI hi 0.5104 vs pca CI lo 0.5066, overlap only 0.0038 wide — the sign is "PCA beats encoder"). Everywhere else the encoder cannot be statistically distinguished from PCA.
 - **Encoder vs majority (chance 0.5)**: Feb H100 encoder CI includes 0.5; Feb H500 includes 0.5 (and point estimate below it); Mar H100 includes 0.5; Mar H500 CI is entirely below 0.5 (encoder does *worse* than flipping a coin, a sign of label mismatch at long horizon). **Not a single cell places encoder_lr significantly above chance.**
 - **51.4% threshold**: encoder point estimate hits it only on Feb H100 (0.5313); CI lower bound never clears 51.4%. The pre-registered Gate 3 criterion is not met at CI-aware rigor.
 
@@ -109,7 +109,7 @@ AAVE behaves like AVAX: encoder passes 51.4% only on Feb H100 (0.5228), its CI c
 
 ### Q1: Does the AVAX failure survive bootstrap scrutiny (encoder CI clearly below PCA CI)?
 
-**No.** Encoder vs PCA CIs overlap on 4/4 AVAX cells (the only non-overlap is Mar H500 at a 0.4pp gap, and in the direction PCA > encoder). The stride=50 result is consistent with "encoder and PCA are both around chance on AVAX-only windows, with PCA slightly ahead by a margin smaller than the sampling-variance bar." It is NOT a clean CI-based falsifier that the encoder transfers worse than PCA to AVAX specifically. It IS a clean falsifier of the stride=200 Feb H100 "pass" (0.575 is now inside [0.488, 0.579] at stride=50 — i.e., the previous point estimate was at the upper percentile of the new CI, confirming the stride=200 result was overoptimistic).
+**No.** Encoder vs PCA CIs overlap on 4/4 AVAX cells (the narrowest is Mar H500 at a 0.4pp overlap, and in the direction PCA > encoder). The stride=50 result is consistent with "encoder and PCA are both around chance on AVAX-only windows, with PCA slightly ahead by a margin smaller than the sampling-variance bar." It is NOT a clean CI-based falsifier that the encoder transfers worse than PCA to AVAX specifically. It IS a clean falsifier of the stride=200 Feb H100 "pass" (0.575 is now inside [0.488, 0.579] at stride=50 — i.e., the previous point estimate was at the upper percentile of the new CI, confirming the stride=200 result was overoptimistic).
 
 ### Q2: Do in-sample symbols LINK + LTC pass Gate 3 criteria on the same methodology?
 
