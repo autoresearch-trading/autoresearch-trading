@@ -5,7 +5,8 @@ sources:
   - docs/council-reviews/2026-04-10-round5-council-6-pretraining-mechanics.md
   - docs/council-reviews/2026-04-10-round5-council-5-impl-risks.md
   - docs/council-reviews/repr-learning-synthesis.md
-last_updated: 2026-04-10
+  - docs/council-reviews/council-6-step3-model-size.md
+last_updated: 2026-04-24
 ---
 
 # Masked Event Modeling (MEM)
@@ -45,6 +46,15 @@ mem_target = x_normalized[:, mask, :][:, :, non_carryforward_idx]
 If BN runs AFTER masking, running statistics are contaminated by 15-20%
 artificial zeros → systematic miscalibration at inference (no masking).
 
+**Identity-task bug corrected in commit `29f23c0` (2026-04-23).** Step 3 run-0
+passed the FULL, UNMASKED view to `enc(v1)`, then applied the mask only to
+select which positions contributed to the MSE loss. The encoder saw ground
+truth at masked positions → MEM became a trivial identity task. Council-6
+identified this as bug #1 in the pretrain_step review. Fix: build `pos_mask`
+before the forward pass; replace masked positions in `v1_normalized` with 0
+(BN training mean); pass the masked tensor as encoder input. See
+[step3 run-0 collapse diagnosis](../experiments/step3-run0-collapse-diagnosis.md).
+
 Optional: learnable mask tokens (17 parameters, free from budget).
 
 ## Key Decisions
@@ -79,3 +89,4 @@ Optional: learnable mask tokens (17 parameters, free from budget).
 
 - [Contrastive Learning](contrastive-learning.md) — the other pretraining objective
 - [Self-Labels](self-labels.md) — evaluation targets, not training targets
+- [Step 3 Run-0 Collapse Diagnosis](../experiments/step3-run0-collapse-diagnosis.md) — the identity-task bug that invalidated run-0 MEM trajectory

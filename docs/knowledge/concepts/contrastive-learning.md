@@ -4,7 +4,9 @@ topics: [pretraining, self-supervised, architecture]
 sources:
   - docs/council-reviews/2026-04-10-round5-council-6-pretraining-mechanics.md
   - docs/council-reviews/repr-learning-synthesis.md
-last_updated: 2026-04-10
+  - docs/experiments/step5-cluster-cohesion.md
+  - docs/council-reviews/council-5-gate3-avax-falsifiability.md
+last_updated: 2026-04-24
 ---
 
 # SimCLR Contrastive Learning
@@ -54,6 +56,29 @@ encoder. Target: 0.7-0.85. If > 0.95, augmentations too weak (trivial task).
 - **Gradient clipping:** max_norm=1.0 (prevents projection head instability)
 - **If collapse detected:** increase τ by 2x, reduce lr by 2x. Do NOT restart.
 
+## Measured Cross-Symbol Invariance (step3-r2, 2026-04-24)
+
+The SimCLR objective targets cross-symbol invariance on 6 liquid anchors
+(BTC/ETH/SOL/BNB/LINK/LTC). Measured on Feb held-out:
+
+| Population | Mean cosine |
+|---|---|
+| within_symbol | 0.8948 |
+| same_symbol_diff_hour | 0.8361 |
+| cross_symbol_same_hour | 0.7339 |
+| cross_symbol_diff_hour | 0.6967 |
+
+**Cross-symbol same-hour delta = +0.037**, below council-5's +0.10
+`some_invariance` threshold. Symbol-identity signal = +0.139 (4× stronger).
+The current recipe (6-of-24 anchors, soft-positive weight 0.5) learned
+per-symbol feature quality, not universal tape geometry. See
+[cross-symbol invariance concept](cross-symbol-invariance.md).
+
+This does not invalidate the Gate 1 pass (encoder > PCA on the pretrained
+universe) — it qualifies the kind of signal the encoder learned. A future
+universality-targeting run would need LIQUID_CONTRASTIVE_SYMBOLS widened to
+12–15 and soft-positive weight annealed 0.5 → 1.0.
+
 ## Gotchas
 
 1. τ=0.1 (ImageNet default) is too cold for financial data — causes spurious feature learning.
@@ -65,3 +90,5 @@ encoder. Target: 0.7-0.85. If > 0.95, augmentations too weak (trivial task).
 
 - [MEM Pretraining](mem-pretraining.md) — the primary pretraining objective
 - [Self-Labels](self-labels.md) — contrastive pair construction for labeled windows
+- [Cross-Symbol Invariance](cross-symbol-invariance.md) — measured invariance outcome on step3-r2
+- [Cluster Cohesion Experiment](../experiments/cluster-cohesion-diagnostic.md)

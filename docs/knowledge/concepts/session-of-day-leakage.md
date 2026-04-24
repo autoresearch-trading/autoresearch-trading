@@ -4,7 +4,8 @@ topics: [leakage, evaluation, features, pretraining]
 sources:
   - docs/council-reviews/council-5-gate0-falsifiability.md
   - docs/council-reviews/council-6-gate0-impact-on-pretraining.md
-last_updated: 2026-04-15
+  - docs/experiments/step3-session-confound-check.md
+last_updated: 2026-04-24
 ---
 
 # Session-of-Day Leakage
@@ -58,8 +59,19 @@ a direction probe where morning-up-bias makes the probe work.
 
 Before launching pretraining, train LR on a single feature — hour-of-day
 (4-hour bins, one-hot) — against the same Gate 0 walk-forward folds. If this
-one-feature model beats PCA+LR on the 85-dim flat features by > 0.5pp on 5+
+one-feature model beats PCA+LR on the 83-dim flat features by > 0.5pp on 5+
 symbols, the `_last` block is leaking and must be pruned. Cost: < 5 minutes.
+
+**Executed 2026-04-23 (commit `a6845de`).** Triggered on exactly 5 symbols
+(LTC +1.63pp, HYPE +1.17pp, WLFI +1.12pp, BNB +0.74pp, PENGU +0.62pp). Both
+`time_delta_last` and `prev_seq_time_span_last` pruned from
+`tape/flat_features.py` in commit `800d1a2`; **FLAT_DIM reduced 85 → 83.**
+Gate 0 baselines re-run on 83-dim in commits `ea4f6f4` + `04a9283`
+(qualitative result unchanged: PCA ≈ Majority ≈ RP at all horizons).
+
+Note: the CNN encoder still receives the full (200, 17) tensor — the `_last`
+prune only affected the flat-feature baseline grid. Encoder-side session-of-day
+mitigation is via SimCLR timing-noise augmentation (σ=0.10).
 
 ### 2. Stronger SimCLR augmentations (council-6 recipe)
 

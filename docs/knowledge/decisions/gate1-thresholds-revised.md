@@ -1,15 +1,22 @@
 ---
 title: Gate 1 — 4-Condition Dual-Control Threshold
 date: 2026-04-15
-status: accepted
+status: superseded
+superseded_by: decisions/gate1-window-amended-feb-mar-h500.md
 decided_by: council-1 + council-5 + council-6 (round 6)
 sources:
   - docs/council-reviews/council-1-gate0-rp-equivalence.md
   - docs/council-reviews/council-6-gate0-impact-on-pretraining.md
-last_updated: 2026-04-15
+last_updated: 2026-04-24
 ---
 
 # Decision: Gate 1 — 4-Condition Dual-Control Threshold
+
+**Status: SUPERSEDED 2026-04-24** by
+[gate1-window-amended-feb-mar-h500.md](gate1-window-amended-feb-mar-h500.md).
+The 4-condition dual-control structure is preserved in the superseding
+decision; what changed is the held-out window (April 1–13 → Feb + Mar 2026)
+and the primary horizon (H100 → H500). This article is retained for history.
 
 ## What Was Decided
 
