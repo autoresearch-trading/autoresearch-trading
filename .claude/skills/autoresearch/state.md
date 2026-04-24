@@ -8,9 +8,9 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-24, late — post Gate 3 triage + cluster cohesion)
+## Current State (2026-04-24, late — post Gate 3 triage + cluster cohesion + spec amendment v2)
 
-**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar held-out at H500. Gate 3 triage: EXONERATED (inconclusive — AVAX not anomalous, but stride=50 single-symbol probe is underpowered). Cluster cohesion: UNEARNED UNIVERSALITY — SimCLR delta only +0.037 vs random cross-symbol; symbol-ID probe 0.934 on 6 anchors.**
+**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar held-out at H500. Gate 3 triage: EXONERATED. Cluster cohesion: UNEARNED UNIVERSALITY. Gate 1 + Gate 3 spec amendment RATIFIED after council-1 + council-5 review (commits `b1f4065` + `9c91f85`).**
 
 - **Checkpoint:** `runs/step3-r2/encoder-best.pt` (epoch 6, MEM=0.504, 376K params)
 - **Gate 1 pass writeup:** `docs/experiments/step3-run-2-gate1-pass.md`
@@ -78,20 +78,43 @@ Four cosine populations (L2-normalized 256-dim embeddings):
 
 **Interpretation:** unearned universality. SimCLR on 6-of-24 symbols with soft-positive weight 0.5 did NOT force a symbol-invariant tape geometry. The encoder learned symbol-conditional features. The Gate 3 AVAX failure was training-dynamics-overdetermined — the "universal tape representations" spec framing was stronger than the training config actually earned. **Gate 1 pass stands unchallenged** (it's evidence of per-symbol feature quality, not universality).
 
-### Next session priorities (revised post cluster cohesion)
+### Spec amendment v2 (2026-04-24) — RATIFIED
 
-1. **Gate 1 + Gate 3 spec amendment (unblocked).** Evidence-based direction:
-   - Gate 1: H500 + matched-density held-out (Feb+Mar) as binding language; cite `docs/experiments/step3-run-2-gate1-pass.md`.
-   - Gate 3: reframe as informational, not binding pass/fail. Acknowledge that this training config (6-of-24 anchors, soft-positive weight 0.5) did not target universal representations; future runs wanting to test universality would need to widen the anchor set AND raise the contrastive weight. Cite `docs/experiments/step5-cluster-cohesion.md` for evidence.
-   - Update the representation-quality diagnostics: change "symbol-ID probe <20%" from a universal requirement to a pretraining-target (aspirational) with the measured 0.934 recorded as the current state. Council-1 + council-5 review of amendment language.
-2. **Step 4 (Gate 2) fine-tuning** — unblocked after spec amendment. Gate 1 +1.9–2.3pp margin already exceeds Gate 2 +0.5pp threshold; likely passes.
-3. **Knowledge-base compilation** — `compile-knowledge` skill to distill Gate 1 + Gate 3 triage + cluster cohesion into `docs/knowledge/` articles.
+Two-commit amendment series on `docs/superpowers/specs/2026-04-10-*.md`:
+
+- **`b1f4065`** (amendment v1) — initial draft: Gate 1 → H500 + Feb+Mar matched-density; Gate 3 retired to informational; symbol-ID <20% reframed aspirational; stale FLAT_DIM 85→83 + session-of-day check execution record; MPS substitute for H100 noted.
+- **`9c91f85`** (amendment v2) — applied all convergent council-1 + council-5 review fixes. Writeups: `docs/council-reviews/council-1-amendment-2026-04-24.md`, `council-5-amendment-2026-04-24.md`.
+
+v2 closed these loopholes:
+
+| Loophole | Fix |
+|---|---|
+| "matched-density" undefined (5 uses) | Binding definition: 0.7–1.3× training windows-per-symbol-per-day at stride=200 |
+| Feb-AND-Mar re-sampling drift | Months are specifically Feb+Mar 2026; no substitution without re-pre-registration |
+| "This training config" generic escape hatch | Only symbol-ID probe qualifies; all other diagnostics binding unless re-pre-registered |
+| H500 horizon post-hoc | Horizon-selection rule binding on future runs: shortest horizon where PCA+LR ≥ 0.505 |
+| Gate 3 drift-back | Re-activation criteria binding: n_test ≥2000, CI non-overlap, cluster delta ≥+0.10, pre-declared |
+| "Not retroactive rationalization" weak defense | Replaced with honest underpower framing + cite pre-dispatched thresholds |
+| Gate 4 "months 1-4 vs 5-6" drift | Rewritten as Oct-Nov vs Dec-Jan, evaluated on Feb+Mar fold |
+| Horizon drift across gates | Explicit structure: H500 binding (G1, G4), H100 informational, H10/H50 baseline-only |
+| Amendment drift budget | Third binding-gate amendment requires out-of-band review |
+| One-passes-one-fails adjudication | "No adjudication, no averaging, no close enough" |
+| April 1-13 anti-amnesia | Original pre-reg window must be reported alongside amended one forever |
+| 15+/24 mislabeled as loosening | Noted as mechanically tighter (60.0% → 62.5%) |
+| AVAX exclusion non-transitive | Extended to any future run citing this program's pre-registration |
+| Per-symbol surrogate sweep | Pre-committed as Step-6 interpretation diagnostic (n=1 → n=5 on transfer claim) |
+
+### Next session priorities (post-amendment)
+
+1. **Step 4 (Gate 2) fine-tuning** — unblocked. Freeze encoder 5 epochs → unfreeze at lr=5e-5, add 4 direction heads, walk-forward eval on Feb+Mar held-out at H500. Gate 2 threshold: ≥0.5pp over flat LR on 15+/24 symbols (amended count). The Gate 1 +1.9–2.3pp margin already exceeds this floor, so Gate 2 is likely to pass — but fine-tuning has its own failure modes (catastrophic forgetting at freeze→unfreeze transition).
+2. **Knowledge-base compilation** — `compile-knowledge` skill to distill Gate 1 pass + Gate 3 triage + cluster cohesion + amendment into `docs/knowledge/` articles. Captures the methodological story end-to-end for next session.
+3. **Step-6 per-symbol surrogate sweep (pre-committed diagnostic)** — run `scripts/avax_gate3_probe.py --target-symbols` individually against {ASTER, LDO, DOGE, PENGU, UNI}, same Feb+Mar matched-density protocol. Converts the transfer claim from n=1 to n=5. Est. ~3 hours. Can be deferred to Step 6 interpretation phase.
 4. **(Optional) R2 upload of encoder-best.pt** — rclone CreateBucket 403; needs bucket-level perms on pacifica-models.
-5. **(Future) training-dynamics research question:** can cross-symbol invariance be raised by (a) widening LIQUID_CONTRASTIVE_SYMBOLS to 12-15 anchors, (b) annealing soft-positive weight from 0.5 → 1.0, (c) training longer past epoch 6? Parked — not a blocker for current research program.
+5. **(Future) training-dynamics research question parked:** can cross-symbol invariance be raised by widening LIQUID_CONTRASTIVE_SYMBOLS 6→12-15, annealing soft-positive weight 0.5→1.0, training longer? Not a blocker for current research program; would require a new pre-registered experiment under the amendment-budget clause.
 
 ### Entry prompt for next session
 
-> Resume tape representation learning on `main`. Gate 1 passes (commit `96722b4`). Gate 3 triage: EXONERATED (`2c7ebc2`). Cluster cohesion: **UNEARNED UNIVERSALITY** (`5e13e7e`) — SimCLR delta only +0.037 cross-symbol; symbol-ID probe 0.934 on 6 liquid anchors; encoder learned symbol-conditional features. The evidence base for the spec amendment is now complete. Checkpoint: `runs/step3-r2/encoder-best.pt`. Decide: (1) Gate 1 + Gate 3 spec amendment (unblocked, council-1 + council-5 review), (2) Step 4 fine-tuning launch (waits on amendment), (3) knowledge-base compilation.
+> Resume tape representation learning on `main`. Spec amendment v2 ratified (commits `b1f4065` + `9c91f85`) after council-1 + council-5 review. Gate 1 PASSES on Feb + Mar H500. Gate 3 retired to informational with binding numerical re-activation criteria. Gate 4 rewritten for coherence with amended Gate 1. Checkpoint: `runs/step3-r2/encoder-best.pt` (376K params). Decide: (1) Step 4 fine-tuning launch, (2) knowledge-base compilation, (3) pre-committed per-symbol surrogate sweep (Step-6 diagnostic, ~3h MPS). The amendment-budget clause is live — further binding-gate amendments without new pre-registered experiments require out-of-band council review.
 
 ### Completed steps
 - **Step 0** — data validation, label validation, falsifiability prereqs, base-rate stationarity measurements. Spec amendments applied.
