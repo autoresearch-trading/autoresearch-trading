@@ -238,9 +238,7 @@ def _symbol_id_probe(embeddings: np.ndarray, symbols: np.ndarray, seed: int) -> 
         embeddings, y, test_size=0.2, random_state=seed, stratify=y
     )
     scaler = StandardScaler().fit(Xtr)
-    lr = LogisticRegression(max_iter=1_000, multi_class="auto").fit(
-        scaler.transform(Xtr), ytr
-    )
+    lr = LogisticRegression(max_iter=1_000).fit(scaler.transform(Xtr), ytr)
     pred = lr.predict(scaler.transform(Xte))
     return float(balanced_accuracy_score(yte, pred))
 
