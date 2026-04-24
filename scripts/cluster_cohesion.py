@@ -155,8 +155,6 @@ def _summarize(vals: np.ndarray) -> dict:
 
 
 def _sample_pairs(
-    mask_i: np.ndarray,
-    mask_j: np.ndarray,
     *,
     same_symbol: bool,
     same_hour: bool,
@@ -169,12 +167,9 @@ def _sample_pairs(
 ) -> np.ndarray:
     """Compute cosines over pairs satisfying the requested (symbol, hour) criteria.
 
-    We vectorize by building the full pairwise cosine matrix on the L2-normalized
-    embeddings (N <~ 10k), then masking the upper-triangle region by the criteria.
-    If the passing-mask cardinality exceeds `max_pairs`, subsample uniformly.
-
-    mask_i/mask_j are ignored for now — we always use all embeddings; the
-    criteria are encoded in same_symbol/same_hour.
+    Vectorized: build the full pairwise cosine matrix on the L2-normalized
+    embeddings (N <~ 10k), then mask the upper-triangle region by the criteria.
+    If the passing-mask cardinality exceeds ``max_pairs``, subsample uniformly.
     """
     n = len(embeddings)
     # Pairwise cosine: (N, N), but we only look at i < j upper triangle.
@@ -316,8 +311,6 @@ def main() -> int:
     t0 = time.time()
     populations = {
         "within_symbol": _sample_pairs(
-            None,
-            None,
             same_symbol=True,
             same_hour=True,
             symbols=symbols,
@@ -328,8 +321,6 @@ def main() -> int:
             max_pairs=MAX_PAIRS_PER_POPULATION,
         ),
         "cross_symbol_same_hour": _sample_pairs(
-            None,
-            None,
             same_symbol=False,
             same_hour=True,
             symbols=symbols,
@@ -340,8 +331,6 @@ def main() -> int:
             max_pairs=MAX_PAIRS_PER_POPULATION,
         ),
         "cross_symbol_diff_hour": _sample_pairs(
-            None,
-            None,
             same_symbol=False,
             same_hour=False,
             symbols=symbols,
@@ -352,8 +341,6 @@ def main() -> int:
             max_pairs=MAX_PAIRS_PER_POPULATION,
         ),
         "same_symbol_diff_hour": _sample_pairs(
-            None,
-            None,
             same_symbol=True,
             same_hour=False,
             symbols=symbols,
