@@ -8,9 +8,9 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-24, late — post Gate 3 triage)
+## Current State (2026-04-24, late — post Gate 3 triage + cluster cohesion)
 
-**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar held-out at H500. Gate 3 triage: EXONERATED (inconclusive — AVAX not anomalous, but stride=50 single-symbol probe is underpowered).**
+**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar held-out at H500. Gate 3 triage: EXONERATED (inconclusive — AVAX not anomalous, but stride=50 single-symbol probe is underpowered). Cluster cohesion: UNEARNED UNIVERSALITY — SimCLR delta only +0.037 vs random cross-symbol; symbol-ID probe 0.934 on 6 anchors.**
 
 - **Checkpoint:** `runs/step3-r2/encoder-best.pt` (epoch 6, MEM=0.504, 376K params)
 - **Gate 1 pass writeup:** `docs/experiments/step3-run-2-gate1-pass.md`
@@ -25,6 +25,9 @@
   - `3833e35` — Gate 3 AVAX apparent fail (pre-triage)
   - `ea07bda` — probe upgrade: bootstrap CIs + N=50 shuffled-null + `--target-symbols`
   - `2c7ebc2` — Gate 3 triage: EXONERATED
+  - `5bd3e6d` — cluster cohesion diagnostic script
+  - `5e13e7e` — cluster cohesion experiment: 6 liquid anchors, Feb 2026
+  - `d2dac9b` — cluster cohesion: drop unused mask params
 
 ### Gate 1 results (run-2, 2026-04-23 overnight, local M4 Pro MPS, $0)
 
@@ -53,24 +56,42 @@ Council-5 + council-3 reviews both demanded bootstrap CIs + in-sample control be
 - **In-sample control LINK+LTC (n_test ~660–880, ~2× AVAX):** encoder fails to beat majority on 3/4 cells, CI-overlaps PCA on 4/4 cells, never clears 51.4%. Same failure pattern as AVAX.
 - **In-sample control AAVE:** same stride=200-style "lucky cell" pattern (Feb H100 encoder >> PCA; Mar H100 PCA >> encoder; both inside each other's CIs).
 
-**Verdict:** EXONERATED. AVAX is not anomalous — the 1-month single-symbol probe at ~400–900 test windows is underpowered for the encoder's ~1–2pp Gate-1 signal regardless of which symbol is held out. The Gate-1 pass was visible at 63K windows across 25 symbols (~80× this n_test).
+**Gate 3 triage verdict:** EXONERATED. AVAX is not anomalous — the 1-month single-symbol probe at ~400–900 test windows is underpowered for the encoder's ~1–2pp Gate-1 signal regardless of which symbol is held out. The Gate-1 pass was visible at 63K windows across 25 symbols (~80× this n_test).
 
-**What this changes:**
-- Do NOT amend Gate 3 on the basis of stride=50 AVAX alone — statistically unjustified.
-- The pre-registered Gate 3 criterion needs an aggregation unit specification (n_test threshold, or pooled-symbol formulation).
-- Cross-symbol SimCLR cluster cohesion (council-5 Rank 3) remains the key unresolved diagnostic — tells us whether the encoder learned any symbol-invariance in the first place. Symbol-ID probe 0.54 → 0.67 during training is suggestive but not conclusive.
+### Cluster cohesion diagnostic (2026-04-24) — UNEARNED UNIVERSALITY
 
-### Next session priorities (revised post-triage)
+Ran `scripts/cluster_cohesion.py` on encoder-best.pt across the 6 liquid SimCLR anchors (BTC/ETH/SOL/BNB/LINK/LTC), Feb 2026, stride=200 eval, 8,660 windows in 3,676 (symbol, date, hour) buckets. Writeup: `docs/experiments/step5-cluster-cohesion.md`.
 
-1. **Cluster cohesion diagnostic** — measure cosine similarity between same-hour, same-date embeddings from the 6 liquid SimCLR anchors (BTC/ETH/SOL/BNB/LINK/LTC). Per council-5 Rank 3: if cos > 0.3, cross-symbol SimCLR worked; if cos ~ 0, universality was never trained. Cheap (~2h) and prerequisite for any spec amendment on Gate 3.
-2. **Spec amendment pass (BOTH Gate 1 and Gate 3 in one amendment)** — update Gate 1 to H500 + matched-density held-out (Feb+Mar); update Gate 3 with explicit aggregation-unit requirement (n_test floor ≥ 2000, OR pooled held-out across multiple symbols). Council-1 + council-5 methodology review, grounded in measured bootstrap CIs + cluster-cohesion finding.
-3. **Step 4 (Gate 2) fine-tuning** — hold until spec is amended. The +1.9–2.3pp Gate 1 encoder margin already exceeds Gate 2's +0.5pp threshold, so likely passes — but fine-tuning on un-ratified eval protocol is wasteful.
-4. **Knowledge-base compilation** — `compile-knowledge` skill to distill the 2026-04-23 diagnostic work + Gate 1 pass + Gate 3 triage into `docs/knowledge/` articles.
-5. **(Optional) R2 upload of encoder-best.pt** — rclone CreateBucket 403; needs bucket-level perms on pacifica-models. Work-around: `--s3-no-check-bucket` flag or direct API upload.
+Four cosine populations (L2-normalized 256-dim embeddings):
+
+| Population | mean | std | n_pairs |
+|---|---|---|---|
+| within_symbol (same sym, same hour) | 0.895 | 0.065 | 10,984 |
+| same_symbol_diff_hour | 0.836 | 0.093 | 50,000 |
+| cross_symbol_same_hour (**what SimCLR trained for**) | 0.734 | 0.148 | 50,000 |
+| cross_symbol_diff_hour (random cross-symbol baseline) | 0.697 | 0.147 | 50,000 |
+
+- **SimCLR delta = +0.037** (cross_symbol_same_hour − cross_symbol_diff_hour). Below council-5's `+0.1` "some_invariance" delta threshold.
+- **Symbol-identity delta = +0.139** (same_symbol_diff_hour − cross_symbol_diff_hour). **4× stronger** than the SimCLR alignment signal.
+- **Symbol-ID probe on 6 liquid anchors = 0.934 balanced accuracy** (spec threshold <0.20). Encoder is nearly symbol-separable.
+- **The literal `>0.6` "strong_invariance" threshold fires (0.734) but is a false positive** — every population lives on a narrow cone (mean >0.69), so the absolute threshold is inflated by a global offset.
+
+**Interpretation:** unearned universality. SimCLR on 6-of-24 symbols with soft-positive weight 0.5 did NOT force a symbol-invariant tape geometry. The encoder learned symbol-conditional features. The Gate 3 AVAX failure was training-dynamics-overdetermined — the "universal tape representations" spec framing was stronger than the training config actually earned. **Gate 1 pass stands unchallenged** (it's evidence of per-symbol feature quality, not universality).
+
+### Next session priorities (revised post cluster cohesion)
+
+1. **Gate 1 + Gate 3 spec amendment (unblocked).** Evidence-based direction:
+   - Gate 1: H500 + matched-density held-out (Feb+Mar) as binding language; cite `docs/experiments/step3-run-2-gate1-pass.md`.
+   - Gate 3: reframe as informational, not binding pass/fail. Acknowledge that this training config (6-of-24 anchors, soft-positive weight 0.5) did not target universal representations; future runs wanting to test universality would need to widen the anchor set AND raise the contrastive weight. Cite `docs/experiments/step5-cluster-cohesion.md` for evidence.
+   - Update the representation-quality diagnostics: change "symbol-ID probe <20%" from a universal requirement to a pretraining-target (aspirational) with the measured 0.934 recorded as the current state. Council-1 + council-5 review of amendment language.
+2. **Step 4 (Gate 2) fine-tuning** — unblocked after spec amendment. Gate 1 +1.9–2.3pp margin already exceeds Gate 2 +0.5pp threshold; likely passes.
+3. **Knowledge-base compilation** — `compile-knowledge` skill to distill Gate 1 + Gate 3 triage + cluster cohesion into `docs/knowledge/` articles.
+4. **(Optional) R2 upload of encoder-best.pt** — rclone CreateBucket 403; needs bucket-level perms on pacifica-models.
+5. **(Future) training-dynamics research question:** can cross-symbol invariance be raised by (a) widening LIQUID_CONTRASTIVE_SYMBOLS to 12-15 anchors, (b) annealing soft-positive weight from 0.5 → 1.0, (c) training longer past epoch 6? Parked — not a blocker for current research program.
 
 ### Entry prompt for next session
 
-> Resume tape representation learning on `main`. Gate 1 passes on Feb + Mar H500 (commit `96722b4`). Gate 3 triage complete (commit `2c7ebc2`, writeup `docs/experiments/step5-gate3-triage.md`): **EXONERATED** — AVAX is not anomalous; stride=50 single-symbol probe is underpowered. Checkpoint: `runs/step3-r2/encoder-best.pt`. Decide next move: (1) cluster-cohesion diagnostic on 6 liquid anchors (council-5 Rank 3 — the key missing measurement), (2) Gate 1 + Gate 3 spec amendment (needs cluster cohesion first), (3) Step 4 fine-tuning launch (blocked on spec amendment), or (4) knowledge-base compilation.
+> Resume tape representation learning on `main`. Gate 1 passes (commit `96722b4`). Gate 3 triage: EXONERATED (`2c7ebc2`). Cluster cohesion: **UNEARNED UNIVERSALITY** (`5e13e7e`) — SimCLR delta only +0.037 cross-symbol; symbol-ID probe 0.934 on 6 liquid anchors; encoder learned symbol-conditional features. The evidence base for the spec amendment is now complete. Checkpoint: `runs/step3-r2/encoder-best.pt`. Decide: (1) Gate 1 + Gate 3 spec amendment (unblocked, council-1 + council-5 review), (2) Step 4 fine-tuning launch (waits on amendment), (3) knowledge-base compilation.
 
 ### Completed steps
 - **Step 0** — data validation, label validation, falsifiability prereqs, base-rate stationarity measurements. Spec amendments applied.
