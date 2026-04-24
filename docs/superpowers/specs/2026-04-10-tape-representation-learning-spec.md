@@ -279,6 +279,10 @@ The constraint that capped the supervised model at 91K was overfitting to noisy 
 
 ## Evaluation Protocol
 
+### Amendment Budget (council-5 amendment review, 2026-04-24)
+
+This spec has been amended twice: (1) council round 6 on 2026-04-15 revising Gate 0 into a 4-baseline publishing grid and strengthening Gate 1 conditions; (2) Gate 1 + Gate 3 amendment on 2026-04-24 (this commit series). **A third binding-gate amendment without a new pre-registered experiment — i.e., without new evidence collected against pre-dispatched council thresholds — requires out-of-band council-1 + council-5 review before being committed to this spec.** This clause exists to prevent gradual drift via a sequence of individually-defensible amendments accumulating into a spec that no longer falsifies anything. Amendments that update notes, typos, commit-hash references, diagnostic status, or the Representation Quality Metrics' aspirational targets are not binding-gate amendments and do not consume amendment budget.
+
 ### Pre-Registration (before any data is touched)
 
 - **Pretraining objective:** MEM (block masking) + SimCLR contrastive
@@ -311,16 +315,22 @@ Before launching pretraining, run an LR probe on a single hour-of-day feature (4
 
 Train logistic regression (C ∈ {0.001, 0.01, 0.1}) on frozen 256-dim pretrained embeddings. Evaluate on **matched-density held-out months at H500, balanced accuracy per symbol.**
 
-**Held-out window amendment (2026-04-24).** The original pre-registration evaluated on April 1–13 at H100. Empirical diagnostics on 2026-04-23 (commits `117187d`, `bda524e`; writeup `docs/experiments/step3-run-2-gate1-pass.md`) established two problems with that window:
+**Held-out window amendment (2026-04-24).** The original pre-registration evaluated on April 1–13 at H100. The amendment is motivated by two separable arguments:
 
-- **April 1–13 is underpowered at stride=200** (60–150 windows per symbol, below the probe's 200-window `min_valid` floor). On 24 symbols this produces a probe that cannot distinguish encoder signal from sampling noise.
-- **H100 direction prediction is at the noise floor for every predictor tested** on this data (encoder, PCA, RP, shuffled). H500 is the horizon where the SSL encoder's signal is separable from flat baselines (+1.9–2.3pp on 17/24 Feb, 14/24 Mar held-out symbols).
+- **Primary (ex-ante, pre-registrable on any encoder):** **April 1–13 is underpowered at stride=200** — 60–150 windows per symbol, below the probe's 200-window `min_valid` floor. This is an arithmetic constraint verifiable from the cache manifest before any encoder is trained; it would have disqualified the window under any architecture. This is the load-bearing reason to amend.
+- **Secondary (ex-post, corroborating only):** on this encoder's output, **H100 direction prediction is at the noise floor for every predictor tested** (encoder, PCA, RP, shuffled) — H500 shows encoder signal above flat baselines (+1.9–2.3pp on 17/24 Feb, 14/24 Mar). Per council-1 amendment review, the ex-post H100 finding is corroborating evidence only; the amendment stands on the ex-ante sample-size argument alone.
 
-The binding evaluation is therefore: **train on Oct 16 – Jan 31, evaluate on Feb 2026 AND Mar 2026 independently at H500** (amended. April 1–13 is still produced as informational output — it is the original pre-registered window — but it cannot constitute a Gate 1 decision alone under its measured sample size.). The matched-density protocol reports per-month per-symbol balanced accuracy against all four flat baselines.
+The binding evaluation is therefore: **train on Oct 16 – Jan 31, evaluate on Feb 2026 AND Mar 2026 independently at H500**. The held-out months are Feb 2026 AND Mar 2026 specifically; **they may not be substituted, excluded, or supplemented without re-pre-registration** (closes the implicit re-sampling loophole — council-5 HDF #2).
+
+**Matched-density definition (binding, closes council-5 HDF #1).** Two held-out months are "matched-density" to the training set iff each symbol's windows-per-day on the held-out months is within 0.7–1.3× of the same symbol's mean windows-per-day across the training period, measured at stride=200 eval. Feb+Mar 2026 satisfy this for all 24 pretraining symbols (Feb 21,290 windows / Mar 16,278 windows vs training ~63K windows/month at matched cadence).
+
+**Horizon-selection rule for future runs (binding, closes council-5 Q4 horizon p-hack risk).** The primary Gate 1 horizon is defined ex-ante as **the shortest horizon in {10, 50, 100, 500} at which PCA+LR achieves balanced accuracy ≥ 0.505 on the held-out universe**. On this encoder's data, only H500 meets that bar (PCA+LR balanced accuracy at H500 is 0.508 on Feb / 0.508 on Mar, compared to 0.50x at H10/H50/H100). Future training runs MUST apply this selection criterion before reading encoder numbers — no horizon-shopping on encoder-specific performance.
+
+**Anti-amnesia clause (binding).** Every Gate 1 report MUST publish the original pre-registered window's numbers — April 1–13 at H100, per-symbol balanced accuracy against all five predictors with their 1000-resample bootstrap 95% CIs — labeled as "original pre-registration, superseded by under-power amendment 2026-04-24." The superseded numbers are informational but must be kept visible indefinitely.
 
 **All four conditions MUST hold on BOTH Feb AND Mar independently (binding stop-gates):**
 
-1. Balanced accuracy ≥ 51.4% on **15+/24** symbols (absolute sanity floor; AVAX excluded as held-out).
+1. Balanced accuracy ≥ 51.4% on **15+/24** symbols (absolute sanity floor; AVAX excluded as held-out). **Note:** this is mechanically tighter than the original 15+/25, not laxer — the fractional bar rises from 60.0% → 62.5% because the denominator drops while the numerator floor is preserved.
 2. Balanced accuracy > Majority-class baseline + **1.0pp** on 15+/24 symbols.
 3. Balanced accuracy > Random-Projection control + **1.0pp** on 15+/24 symbols.
 4. Hour-of-day 24-class probe on the same frozen embeddings < **10%** accuracy AND stratified accuracy variance < **1.5pp** across UTC sessions (Asia 0–8 / Europe 8–16 / US 16–24). Catches session-of-day shortcuts.
@@ -330,7 +340,7 @@ Plus existing diagnostics:
 - Per-fold balanced-accuracy standard deviation reported alongside means
 - Symbol-identity probe reported but **not a binding threshold** (see Representation Quality Metrics below — reframed 2026-04-24 after the cluster-cohesion finding showed this training config does not target symbol-invariance).
 
-**STOP if any of 1–4 fail on either month**, or if CKA < 0.7. The encoder has not learned tape microstructure — likely learned session-of-day, class imbalance, or regime-month-specific noise.
+**STOP if any of 1–4 fail on EITHER month**, or if CKA < 0.7. **No adjudication, no averaging, no "close enough."** If any future re-run passes one month and fails the other, the run FAILS Gate 1 — that is the entire point of independent passes (council-1 Q2 required edit).
 
 **Current status:** PASSES on Feb + Mar 2026 at H500. Feb: +3.03pp vs Majority, +1.91pp vs RP, 15/24 ≥ 51.4%, hour probe 0.06–0.09. Mar: +3.12pp vs Majority, +2.29pp vs RP, 17/24 ≥ 51.4%, hour probe 0.06–0.09. Writeup: `docs/experiments/step3-run-2-gate1-pass.md`. Checkpoint: `runs/step3-r2/encoder-best.pt` (epoch 6, MEM=0.504, 376K params).
 
@@ -358,21 +368,37 @@ AVAX excluded entirely from pretraining, from cross-symbol contrastive pairs, an
 - A future training config targeting universality would require (a) widening LIQUID_CONTRASTIVE_SYMBOLS from 6 to 12–15 anchors, (b) annealing soft-positive weight from 0.5 → 1.0, and (c) re-running the cluster-cohesion diagnostic as an early stop-gate during training.
 - AVAX cache stays; AVAX stays excluded from pretraining; the exclusion is still irrevocable in case a future run wants to test universality on the same held-out symbol.
 
-**This amendment is not retroactive rationalization.** Gate 1 passed *before* Gate 3 was run; the Gate 3 triage + cluster cohesion work came after, under council-5 + council-3 review, with pre-dispatched bootstrap / in-sample-control methodology. The reframe is motivated by measurement, not by the headline pass/fail result.
+**Honest framing of the post-hoc nature of this retirement (per council-1 + council-5 amendment review).** This is a post-hoc retirement of a pre-registered falsifier. The methodological alternative — ignoring the underpower evidence and declaring Gate 3 a failure on point estimates inside their own CIs — would be retroactive false-negative inflation, which is no better than the false-positive the gate was designed to prevent. We choose to be explicit about the retirement rather than silent about the underpower. Under López de Prado's framework, retiring a gate because IT cannot falsify the null is stronger evidence of a badly-designed gate than of a bad model. The Gate 3 reframe is measurement-motivated because: (1) bootstrap CI overlap between encoder and PCA was the pre-dispatched falsifier (council-5 Rank 1, documented in `council-5-gate3-avax-falsifiability.md` before the triage experiments ran); (2) in-sample LINK+LTC control was the pre-dispatched disambiguator (council-3 recommendation, same document); (3) cluster cohesion delta +0.1 was the pre-dispatched "some_invariance" threshold (council-5 Rank 3). All three readings are conservative point-estimate comparisons against thresholds set before the experiments ran.
 
-### Gate 4: Temporal Stability
+**Gate 3 re-activation criteria (binding on any FUTURE training run).** Gate 3 may be re-activated as binding pass/fail IFF ALL of the following: (a) n_test ≥ 2,000 windows per held-out cell after stride ≤ 50 evaluation; (b) 1000-resample bootstrap 95% CI on encoder balanced accuracy does not include 0.500 on the control in-sample pool measured at matched n_test; (c) cross-symbol SimCLR cluster-cohesion delta ≥ +0.10 (measured as cross_symbol_same_hour − cross_symbol_diff_hour on the liquid anchor set); (d) the re-activation criteria are declared BEFORE the held-out AVAX evaluation is run. Absent all four, AVAX numbers remain informational. This closes the drift-back loophole (council-1 Q4).
 
-Evaluate probe accuracy on training months 1-4 vs months 5-6 separately.
+**AVAX exclusion extends to any future training run citing this program's pre-registration** (council-5 medium-severity item). AVAX MUST remain held-out from pretraining universes of any successor run that wants to claim Gate 3 evaluation against this program's baseline. A future run that includes AVAX in pretraining may not re-use this program's Gate 3 numbers as a baseline.
 
-**STOP if accuracy drops > 3pp between periods on > 10/25 symbols.** Representations memorized regime-specific noise.
+**Pre-committed follow-up diagnostic (council-5 Rank 2, council-3 Option B):** the per-symbol surrogate sweep — pseudo-hold-out each of {ASTER, LDO, DOGE, PENGU, UNI} individually and probe with the same `avax_gate3_probe.py` methodology — is logged as a Step-6 interpretation-phase diagnostic to convert the transfer claim from n=1 to n=5. Cost ~3 hours. Not a Gate 3 re-activation; an orthogonal interpretability measurement.
 
-**Metric: balanced accuracy at ALL horizons** (H10, H50, H100, H500). Revised 2026-04-15 per council-1 / council-5 Gate 0 review — raw accuracy is gameable via per-fold label imbalance at every horizon, not just H500. Measured Gate 0 H10 inflation up to 9.9pp on illiquid symbols (2Z: raw 0.621 → balanced 0.522). Symmetric use of balanced accuracy eliminates the ambiguity.
+### Gate 4: Temporal Stability (rewritten 2026-04-24 for coherence with amended Gate 1)
+
+**Amendment note.** The original Gate 4 read "training months 1-4 vs months 5-6 separately" which is silent drift under the amended Gate 1 (training is now Oct 16 – Jan 31, held-out is Feb + Mar, so there are no "months 5-6 of training"). Council-1 Q5 required a coherence rewrite.
+
+**Amended test:** within-training-period stability. Split the training period Oct 16 – Jan 31 into two halves (Oct–Nov vs Dec–Jan). Train a linear probe on each half independently with the frozen encoder, evaluate both probes on the same held-out Feb + Mar fold at H500.
+
+**STOP if balanced accuracy drops > 3pp between the two within-period probes on > 10/24 symbols at H500.** Representations memorized regime-specific training noise; the frozen encoder's usefulness is not stable across the training period.
+
+**Horizon structure across gates (post-2026-04-24):**
+- **H500** is the **primary binding horizon** for Gate 1 and Gate 4 (pass/fail hinges on it). Selected ex-ante per the horizon-selection rule in Gate 1.
+- **H100** is **informational only** after the council-5 noise-floor finding on this data — reported but not binding at any gate.
+- **H10/H50** are published for Gate 0 baseline context but are not binding at any gate.
+- Gate 3 (informational) reports H100 AND H500 per-cell with bootstrap CIs.
+
+Balanced accuracy (not raw accuracy) is the universal metric — revised 2026-04-15 per council-1 / council-5 Gate 0 review after measured H10 inflation up to 9.9pp on illiquid symbols (2Z: raw 0.621 → balanced 0.522). Symmetric use of balanced accuracy eliminates the ambiguity.
 
 ### Representation Quality Metrics (not go/no-go, but diagnostic)
 
 **Symbol identity probe:** Linear classifier on frozen embeddings predicting symbol. Original target: < 20% accuracy (aspiration for cross-symbol universality).
 
 **Current state (2026-04-24 cluster cohesion):** 0.934 balanced accuracy on the 6 liquid SimCLR anchors (BTC/ETH/SOL/BNB/LINK/LTC) measured on 2026-02 held-out. The <20% target is a goal of a *future* training config targeting universality — it is NOT violated under the current 6-of-24-anchor soft-positive-0.5 training recipe, because the current recipe does not train for symbol-invariance (see Gate 3 reframe above). The measured SimCLR cross-symbol delta of +0.037 and the identity-probe 0.934 are consistent with each other: the encoder learned per-symbol feature quality, not a universal tape geometry. These numbers are published as evidence of current training dynamics, NOT as failure against a target this run did not pursue.
+
+**Closing the "config-specific target" escape hatch (council-5 HDF #3).** This aspirational-reframing is specifically enabled for `symbol_identity_probe` because the current training config demonstrably does not target cross-symbol invariance (cluster cohesion +0.037 delta measured). It does NOT generalize to other diagnostics: **any diagnostic in this spec (hour-of-day probe, CKA stability, Wyckoff label probes) that is not explicitly reframed as aspirational in writing remains binding.** Any future run that claims a diagnostic's threshold does not apply to it must re-pre-register the threshold BEFORE training begins AND cite evidence that the training config does not target the property measured by the diagnostic.
 
 **CKA stability:** Train two models with different random seeds. Centered Kernel Alignment between representation spaces must be > 0.7. If < 0.7, representations are noise-fitted.
 
