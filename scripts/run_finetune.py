@@ -484,7 +484,13 @@ def run_finetune(
 
         for epoch in range(epochs):
             phase = "frozen" if epoch < frozen_epochs else "unfrozen"
-            train_dataset_for_sampler.set_epoch(epoch)
+            # IMPORTANT: do NOT call train_dataset_for_sampler.set_epoch() —
+            # that would rebuild _refs with a fresh random offset over the FULL
+            # shard list, undoing the train/val split done above (val_idx /
+            # train_idx index into the original _refs ordering). Per-epoch
+            # window offset randomization is a pretraining augmentation; for
+            # fine-tuning the plan keeps the same windows fixed across epochs
+            # so the val set stays consistent with the snapshot.
             sampler.set_epoch(epoch)
 
             # Transition: at the start of Phase B, unfreeze + new optimizer/scheduler.
