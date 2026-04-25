@@ -127,7 +127,9 @@ def _filter_train_shards(
     return shards
 
 
-def _collate(batch_items: list[dict]) -> tuple[torch.Tensor, dict]:
+def _collate(
+    batch_items: list[dict],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
     """Stack features + labels + masks into per-horizon tensors.
 
     The dataset emits per-horizon labels as separate keys label_h{H} / label_h{H}_mask;
@@ -467,6 +469,11 @@ def run_finetune(
 
     abort_reason: str | None = None
 
+    # Bind the Phase-A optimizer/scheduler before the loop so they are always
+    # in scope for the first iteration. Phase B re-binds at epoch==frozen_epochs.
+    opt: torch.optim.Optimizer = opt_a
+    sched: object = sched_a
+
     with log_path.open("w") as logf:
         # Log the initial pre-training row so the abort criteria have a reference.
         _log_row(
@@ -513,10 +520,7 @@ def run_finetune(
                     pct_start=0.05,
                 )
                 opt = opt_b
-                sched: object = sched_b
-            elif epoch == 0:
-                opt = opt_a
-                sched = sched_a
+                sched = sched_b
 
             # Training pass
             model.train()

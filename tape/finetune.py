@@ -29,6 +29,8 @@ Public surface:
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from torch import nn
 
@@ -92,7 +94,8 @@ class DirectionHead(nn.Module):
         nn.init.kaiming_uniform_(self.trunk.weight, a=0.0, nonlinearity="relu")
         nn.init.zeros_(self.trunk.bias)
         # Small Gaussian on per-horizon heads → output near 0.5 at init.
-        for head in self.heads:
+        for module in self.heads:
+            head = cast(nn.Linear, module)
             nn.init.normal_(head.weight, mean=0.0, std=0.02)
             nn.init.zeros_(head.bias)
 

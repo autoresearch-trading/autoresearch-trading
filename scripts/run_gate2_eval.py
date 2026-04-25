@@ -49,6 +49,7 @@ import argparse
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -140,7 +141,7 @@ def _forward_and_extract(
     device: torch.device,
     batch_size: int,
     horizon: int,
-) -> dict:
+) -> dict[str, Any]:
     """Forward `dataset` through both models; return per-window features + labels.
 
     Returns dict with:
@@ -532,13 +533,19 @@ def main() -> int:
                 "class_prior": cnn["class_prior"] if cnn else None,
                 "elapsed_s": elapsed,
             }
-            print(
-                f"[gate2-eval] {month_prefix} {sym:<8s}: "
-                f"flat={flat['balanced_acc']:.4f} "
-                f"gate1={gate1['balanced_acc']:.4f} "
-                f"cnn={cnn['balanced_acc']:.4f}  "
-                f"(n_te={cnn['n_test']}, prior={cnn['class_prior']:.3f})"
-            )
+            if flat is None or gate1 is None or cnn is None:
+                print(
+                    f"[gate2-eval] {month_prefix} {sym:<8s}: "
+                    "underpowered (single-class fold or insufficient windows)"
+                )
+            else:
+                print(
+                    f"[gate2-eval] {month_prefix} {sym:<8s}: "
+                    f"flat={flat['balanced_acc']:.4f} "
+                    f"gate1={gate1['balanced_acc']:.4f} "
+                    f"cnn={cnn['balanced_acc']:.4f}  "
+                    f"(n_te={cnn['n_test']}, prior={cnn['class_prior']:.3f})"
+                )
 
         months_results[month_prefix] = month_entry
 
