@@ -87,6 +87,63 @@ def test_freeze_encoder_toggles_requires_grad():
     assert all(p.requires_grad for p in model.head.parameters())
 
 
+def test_phase_b_optimizer_attaches_encoder_params():
+    """Reviewer-10 G2 — guard against silent 'encoder never unfreezes' bug.
+
+    The Phase A → Phase B transition in run_finetune.py builds the new optimizer
+    via `[p for p in model.parameters() if p.requires_grad]` AFTER calling
+    `unfreeze_encoder()`. If those two operations were ever reordered, the new
+    optimizer would silently train heads only — burning 3.5h before Gate 2 eval
+    revealed it. This test pins the contract: after unfreeze, an optimizer
+    constructed from the requires_grad-filtered param list MUST contain BOTH
+    encoder and head params, and a backward pass must produce non-zero grads
+    on both.
+    """
+    model = _make_finetuned_model()
+    encoder_param_ids = {id(p) for p in model.encoder.parameters()}
+    head_param_ids = {id(p) for p in model.head.parameters()}
+
+    # Phase A: build opt_a after freeze. Should contain ONLY head params.
+    model.freeze_encoder()
+    opt_a_params = [p for p in model.parameters() if p.requires_grad]
+    opt_a_ids = {id(p) for p in opt_a_params}
+    assert opt_a_ids == head_param_ids, (
+        "Phase A optimizer must include only head params; "
+        f"unexpected encoder params: {opt_a_ids & encoder_param_ids}"
+    )
+
+    # Phase B: unfreeze, then build opt_b. Both encoder AND head params must be present.
+    model.unfreeze_encoder()
+    opt_b_params = [p for p in model.parameters() if p.requires_grad]
+    opt_b_ids = {id(p) for p in opt_b_params}
+    assert encoder_param_ids.issubset(opt_b_ids), (
+        "Phase B optimizer must include all encoder params after unfreeze; "
+        f"missing: {encoder_param_ids - opt_b_ids}"
+    )
+    assert head_param_ids.issubset(opt_b_ids), (
+        "Phase B optimizer must continue to include head params; "
+        f"missing: {head_param_ids - opt_b_ids}"
+    )
+
+    # End-to-end: a backward pass through the assembled opt_b must produce
+    # non-zero gradients on both encoder and head params.
+    opt_b = torch.optim.AdamW(opt_b_params, lr=5e-5)
+    features = torch.randn(2, 200, 17)
+    logits = model(features)
+    loss = logits.pow(2).sum()  # any scalar loss touching all heads
+    opt_b.zero_grad(set_to_none=True)
+    loss.backward()
+    encoder_grads_present = any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.encoder.parameters()
+    )
+    head_grads_present = any(
+        p.grad is not None and p.grad.abs().sum() > 0 for p in model.head.parameters()
+    )
+    assert encoder_grads_present, "Encoder params must receive gradient in Phase B"
+    assert head_grads_present, "Head params must receive gradient in Phase B"
+
+
 # ---------------------------------------------------------------------------
 # weighted_bce_loss — numerics, masking, label smoothing
 # ---------------------------------------------------------------------------
