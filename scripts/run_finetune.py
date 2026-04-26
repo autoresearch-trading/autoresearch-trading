@@ -21,11 +21,14 @@ Per-epoch monitoring (training-log.jsonl):
 Every 5 epochs (0, 5, 10, 15, end):
   - Hour-of-day probe on 256-dim live embeddings (24-class LR)
 
-Numeric abort criteria (plan §"Numeric abort criteria"):
+Numeric abort criteria (plan §"Numeric abort criteria"; patched 2026-04-26
+per `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`):
   - Epoch 3: H500 val BCE > training-init BCE → heads aren't learning
-  - Epoch 5: H500 val BCE has not dropped below 0.95 × initial_random_BCE
+  - Epoch 5: H500 val BCE not monotone-decreasing through Phase A
+  - Epoch 5: H500 val balanced acc < 0.510 (Gate 1 linear-probe-quality floor)
   - Any epoch: embedding std < 0.05
-  - Any epoch ≥ 8: CKA-vs-frozen < 0.3
+  - Any epoch ≥ 8: CKA-vs-frozen < 0.3 (Phase B destroyed pretraining)
+  - Any epoch ≥ 8: CKA-vs-frozen > 0.95 (Phase B did nothing — council-5)
   - Any epoch ≥ 8 (after epoch 8): H100 val balanced accuracy < 0.50
   - Any 5-epoch checkpoint: hour-of-day probe > 0.12
 
@@ -90,10 +93,16 @@ SNAPSHOT_VAL_SIZE: int = 1024  # fixed deterministic subset for CKA / collapse
 PROBE_EVERY_EPOCHS: int = 5
 
 ABORT_EMBED_STD: float = 0.05
-ABORT_CKA: float = 0.3
+ABORT_CKA_LOWER: float = 0.3
+ABORT_CKA_UPPER: float = (
+    0.95  # council-5 demand 2026-04-26: catch "Phase B did nothing"
+)
 ABORT_HOUR_PROBE: float = 0.12
 ABORT_H100_VAL_BAL_ACC: float = 0.50
-ABORT_EPOCH_5_FACTOR: float = 0.95
+# Replaced 0.95×init BCE clause (math-bug fix 2026-04-26). New criterion:
+# H500 val BCE strictly monotone-decreasing through Phase A AND H500 val balanced
+# acc ≥ ABORT_EPOCH_5_MIN_BAL_ACC_H500 (Gate 1 linear-probe-quality floor).
+ABORT_EPOCH_5_MIN_BAL_ACC_H500: float = 0.510
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +348,7 @@ def run_finetune(
     seed: int,
     train_end_date: str,
     max_hours: float,
+    resume_from_checkpoint: Path | None = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / "training-log.jsonl"
@@ -350,6 +360,31 @@ def run_finetune(
     # --- 1. Load encoder + wrap ---
     encoder = _load_encoder(checkpoint)
     model = FineTunedModel(encoder, head=DirectionHead(embed_dim=encoder.global_dim))
+
+    # If resuming from a Phase A checkpoint, overwrite encoder + head weights with
+    # the ones from the resume checkpoint (encoder weights are byte-identical to
+    # the pretraining checkpoint when Phase A was frozen, but loading them is
+    # safer than assuming).
+    start_epoch = 0
+    if resume_from_checkpoint is not None:
+        resume_path = Path(resume_from_checkpoint)
+        if not resume_path.exists():
+            raise FileNotFoundError(
+                f"--resume-from-checkpoint not found: {resume_path}"
+            )
+        payload = torch.load(resume_path, map_location="cpu", weights_only=False)
+        if "encoder_state_dict" not in payload or "head_state_dict" not in payload:
+            raise RuntimeError(
+                f"--resume-from-checkpoint must contain 'encoder_state_dict' AND "
+                f"'head_state_dict'; got keys={list(payload.keys())}"
+            )
+        model.encoder.load_state_dict(payload["encoder_state_dict"])
+        model.head.load_state_dict(payload["head_state_dict"])
+        start_epoch = frozen_epochs  # skip Phase A — start at Phase B
+        print(
+            f"[finetune] RESUME from {resume_path}: skipping Phase A, "
+            f"start_epoch={start_epoch} (Phase B)"
+        )
 
     device = _pick_device()
     print(f"[finetune] device={device}")
@@ -452,9 +487,22 @@ def run_finetune(
 
     # --- 6. Compute initial random BCE for abort criteria (epoch 0, step 0). ---
     # We do this BEFORE any optimizer step so heads are at their σ=0.02 init.
-    init_eval = _val_loss_and_balanced_acc(model, dataset, val_idx, device, batch_size)
-    initial_h500_val_bce = init_eval["val_per_horizon_bce"][HORIZONS.index(500)]
-    print(f"[finetune] initial H500 val BCE (random init) = {initial_h500_val_bce:.4f}")
+    # Skip when resuming from Phase A — heads are already trained, so the
+    # "random init reference" doesn't apply, and the epoch+1==3 / ==5 aborts
+    # cannot fire when start_epoch=frozen_epochs (loop starts at epoch=5).
+    if resume_from_checkpoint is None:
+        init_eval = _val_loss_and_balanced_acc(
+            model, dataset, val_idx, device, batch_size
+        )
+        initial_h500_val_bce = init_eval["val_per_horizon_bce"][HORIZONS.index(500)]
+        print(
+            f"[finetune] initial H500 val BCE (random init) = "
+            f"{initial_h500_val_bce:.4f}"
+        )
+    else:
+        init_eval = None
+        initial_h500_val_bce = float("nan")
+        print("[finetune] resume mode: skipping init_eval reference computation")
 
     started = time.time()
     cap_seconds = max_hours * 3_600
@@ -474,22 +522,40 @@ def run_finetune(
     opt: torch.optim.Optimizer = opt_a
     sched: object = sched_a
 
-    with log_path.open("w") as logf:
+    # When resuming, append to the existing log to keep a single contiguous
+    # forensic trail across the original run + resume.
+    log_mode = "a" if resume_from_checkpoint is not None else "w"
+    with log_path.open(log_mode) as logf:
         # Log the initial pre-training row so the abort criteria have a reference.
-        _log_row(
-            {
-                "phase": "init",
-                "epoch": 0,
-                "initial_h500_val_bce": initial_h500_val_bce,
-                "val_per_horizon_bce_init": init_eval["val_per_horizon_bce"],
-                "val_balanced_acc_per_horizon_init": init_eval[
-                    "val_balanced_acc_per_horizon"
-                ],
-            },
-            logf,
-        )
+        # Skip on resume — heads are already trained, init reference doesn't apply.
+        if init_eval is not None:
+            _log_row(
+                {
+                    "phase": "init",
+                    "epoch": 0,
+                    "initial_h500_val_bce": initial_h500_val_bce,
+                    "val_per_horizon_bce_init": init_eval["val_per_horizon_bce"],
+                    "val_balanced_acc_per_horizon_init": init_eval[
+                        "val_balanced_acc_per_horizon"
+                    ],
+                },
+                logf,
+            )
+        else:
+            _log_row(
+                {
+                    "phase": "resume",
+                    "epoch": start_epoch,
+                    "resumed_from": str(resume_from_checkpoint),
+                    "note": (
+                        "Phase A skipped — encoder + head loaded from checkpoint. "
+                        "epoch+1==3 and epoch+1==5 abort checks inert by construction."
+                    ),
+                },
+                logf,
+            )
 
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             phase = "frozen" if epoch < frozen_epochs else "unfrozen"
             # IMPORTANT: do NOT call train_dataset_for_sampler.set_epoch() —
             # that would rebuild _refs with a fresh random offset over the FULL
@@ -616,28 +682,61 @@ def run_finetune(
             h500_val_bce = val_eval["val_per_horizon_bce"][h500_idx]
             h100_val_bal = val_eval["val_balanced_acc_per_horizon"][h100_idx]
 
-            if epoch + 1 == 3 and h500_val_bce > initial_h500_val_bce:
+            if (
+                epoch + 1 == 3
+                and not math.isnan(initial_h500_val_bce)
+                and h500_val_bce > initial_h500_val_bce
+            ):
                 abort_reason = (
                     f"epoch=3 H500 val BCE ({h500_val_bce:.4f}) > initial "
                     f"({initial_h500_val_bce:.4f}); heads not learning"
                 )
-            elif (
-                epoch + 1 == 5
-                and h500_val_bce > ABORT_EPOCH_5_FACTOR * initial_h500_val_bce
-            ):
-                abort_reason = (
-                    f"epoch=5 H500 val BCE ({h500_val_bce:.4f}) > "
-                    f"{ABORT_EPOCH_5_FACTOR}× initial ({initial_h500_val_bce:.4f}); "
-                    "linear-probe warmup failed"
+            elif epoch + 1 == 5:
+                # Patched 2026-04-26 (council-5 + council-6 triage). Old criterion
+                # `BCE > 0.95×init` required β-balanced-acc ≈ 0.632 from a frozen
+                # encoder Gate 1 measured ceiling at 0.514 — abort was guaranteed.
+                # New: monotone BCE descent + Gate 1 linear-probe-quality bal-acc.
+                h500_history = [
+                    r["val_per_horizon_bce"][h500_idx]
+                    for r in epoch_records
+                    if "val_per_horizon_bce" in r
+                ] + [h500_val_bce]
+                # Tiny tolerance for fp noise; require strictly non-increasing.
+                bce_descended = all(
+                    h500_history[i + 1] <= h500_history[i] + 1e-5
+                    for i in range(len(h500_history) - 1)
                 )
+                h500_val_bal_seq = val_eval["val_balanced_acc_per_horizon"]
+                h500_val_bal = h500_val_bal_seq[h500_idx]
+                if not bce_descended:
+                    history_str = ", ".join(f"{x:.5f}" for x in h500_history)
+                    abort_reason = (
+                        f"epoch=5 H500 val BCE not monotone-decreasing "
+                        f"[{history_str}]; linear-probe warmup failed"
+                    )
+                elif (
+                    h500_val_bal is None
+                    or h500_val_bal < ABORT_EPOCH_5_MIN_BAL_ACC_H500
+                ):
+                    bal_str = "None" if h500_val_bal is None else f"{h500_val_bal:.4f}"
+                    abort_reason = (
+                        f"epoch=5 H500 val balanced acc ({bal_str}) < "
+                        f"{ABORT_EPOCH_5_MIN_BAL_ACC_H500}; head failed to extract "
+                        f"Gate-1 separability"
+                    )
             elif embed_std < ABORT_EMBED_STD:
                 abort_reason = (
                     f"embedding std collapse: {embed_std:.4f} < {ABORT_EMBED_STD}"
                 )
-            elif epoch + 1 >= 8 and cka_val < ABORT_CKA:
+            elif epoch + 1 >= 8 and cka_val < ABORT_CKA_LOWER:
                 abort_reason = (
-                    f"CKA-vs-frozen drift: {cka_val:.4f} < {ABORT_CKA} "
-                    f"after epoch {epoch + 1}"
+                    f"CKA-vs-frozen drift: {cka_val:.4f} < {ABORT_CKA_LOWER} "
+                    f"after epoch {epoch + 1} (Phase B destroyed pretraining)"
+                )
+            elif epoch + 1 >= 8 and cka_val > ABORT_CKA_UPPER:
+                abort_reason = (
+                    f"CKA-vs-frozen frozen: {cka_val:.4f} > {ABORT_CKA_UPPER} "
+                    f"after epoch {epoch + 1} (Phase B did nothing)"
                 )
             elif (
                 epoch + 1 > 8
@@ -764,6 +863,18 @@ def main() -> int:
         ),
     )
     ap.add_argument("--max-hours", type=float, default=6.0)
+    ap.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a Phase A checkpoint (must contain 'encoder_state_dict' and "
+            "'head_state_dict'). Skips Phase A entirely and starts at "
+            "epoch=frozen_epochs (Phase B). Used to recover from misspecified "
+            "abort criteria — see "
+            "docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md."
+        ),
+    )
     args = ap.parse_args()
 
     res = run_finetune(
@@ -779,6 +890,7 @@ def main() -> int:
         seed=args.seed,
         train_end_date=args.train_end_date,
         max_hours=args.max_hours,
+        resume_from_checkpoint=args.resume_from_checkpoint,
     )
     print(json.dumps(res, indent=2))
     return 1 if res.get("aborted", False) else 0

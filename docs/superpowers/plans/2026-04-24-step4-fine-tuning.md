@@ -98,13 +98,24 @@ Note in the writeup that Gate 2 pass/fail must be interpreted in the light of th
 - Linear probe on frozen-snapshot embeddings against H500 Feb (lagging indicator of forgetting; the per-symbol regression check is computed end-of-training only)
 - Hour-of-day probe (must stay <10%; ABORT at >0.12 at any 5-epoch checkpoint)
 
-### Numeric abort criteria (council-6 Q6 #2 required edit)
+### Numeric abort criteria (council-6 Q6 #2 required edit; patched 2026-04-26)
+
+**Patch — 2026-04-26 (mechanical alignment, NOT a binding-gate amendment).** Council-5 + council-6 triage of the aborted run-1 (`runs/step4-r1/`) found the original epoch-5 BCE-relative criterion was mathematically guaranteed to fire: `H500 val BCE < 0.95 × initial_random_BCE` requires β-balanced-acc ≈ 0.632 at calibrated p ≈ 0.55, but Gate 1 measured the SAME frozen encoder's H500 ceiling at β = 0.514 mean / 0.535 best. Phase A was being asked to exceed Gate 1's measurement of its own structural upper bound. See `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`. Replacement criteria below are arithmetic-grounded against measured Gate 1 baselines.
+
+**Going-forward rule for any future `BCE × init_factor` threshold:** pre-derive via
+```
+required_β = 0.5 + sqrt((1 − factor) · log(2) / 2)
+```
+and reject the criterion if `required_β > Gate-1-measured-β-ceiling`.
 
 **ABORT and stop training if any of:**
 - End of epoch 3: H500 val BCE > training-init BCE → heads aren't learning
-- End of epoch 5: H500 val BCE has not dropped below `0.95 × initial_random_BCE` → linear-probe warmup failed
+- ~~End of epoch 5: H500 val BCE has not dropped below `0.95 × initial_random_BCE`~~ **REPLACED 2026-04-26 with:**
+  - End of epoch 5: H500 val BCE not strictly monotone-decreasing through Phase A → linear-probe warmup failed
+  - End of epoch 5: H500 val balanced acc < 0.510 (Gate 1 linear-probe-quality floor; equivalent to "head failed to extract any of the encoder's measured separability")
 - Any epoch: embedding std drops below 0.05 → collapse
 - Any epoch ≥ 8: CKA-vs-frozen drops below 0.3 → catastrophic geometry drift
+- **Any epoch ≥ 8: CKA-vs-frozen exceeds 0.95 → Phase B did nothing (council-5 demand 2026-04-26; complements the < 0.3 lower bound)**
 - Any epoch after 8: H100 val balanced accuracy drops below 0.50 → shared trunk anti-fitting H100 (council-6 Q4 replacement for original "H100 val loss > 1.5× train loss")
 - Any 5-epoch checkpoint: hour-of-day probe > 0.12 → session leakage re-emergence
 
@@ -139,7 +150,7 @@ Note in the writeup that Gate 2 pass/fail must be interpreted in the light of th
 | Open question | Resolution | Source |
 |---|---|---|
 | 1. Loss-weight schedule | **Pre-committed: `0.10/0.20/0.20/0.50` (clean swap, Option A)** | council-6 Q1, council-5 Q1 |
-| 2. Freeze duration | **5 epochs + abort criterion (H500 val BCE < 0.95× random-init by end of epoch 5)** | council-6 Q2 |
+| 2. Freeze duration | **5 epochs + abort criterion (~~H500 val BCE < 0.95× random-init by end of epoch 5~~ patched 2026-04-26 → H500 val BCE strictly monotone-decreasing AND H500 val balanced acc ≥ 0.510 at end of epoch 5; see `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`)** | council-6 Q2; patched per council-5 + council-6 triage |
 | 3. Per-symbol regression threshold | **`max(1.0pp, 1× bootstrap CI half-width)` on CI lower bound, AND ≥1.0pp on point estimate** | council-5 Q2 / required edit #2 |
 | 4. Eval data overlap | **Trial-count log in writeup (no Bonferroni). Discriminating power added via Criterion 3 (fine-tuned CNN vs frozen-encoder LR).** | council-5 Q3 / required edits #3 + #4 |
 

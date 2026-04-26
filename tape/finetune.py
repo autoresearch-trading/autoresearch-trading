@@ -50,9 +50,24 @@ EMBED_DIM: int = 256
 # Numeric abort criteria (plan §"Numeric abort criteria"). Flags here are
 # documentation-only — `scripts/run_finetune.py` consults them at runtime.
 ABORT_EPOCH_3_H500_VAL_BCE_GT_INIT: bool = True
-ABORT_EPOCH_5_H500_VAL_BCE_GT_0_95X_INIT: bool = True
+# Patched 2026-04-26 (council-5 + council-6 triage,
+# `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`):
+# original `BCE > 0.95×init` was mathematically guaranteed to fire — required
+# β-balanced-acc ≈ 0.632 from a frozen encoder Gate 1 measured ceiling at 0.514.
+# Replaced with two arithmetic-grounded checks at epoch 5: (a) monotone-decreasing
+# H500 val BCE through Phase A, and (b) H500 val balanced acc ≥ 0.510 (Gate 1
+# linear-probe-quality-or-better). Going-forward rule for any future
+# `BCE × init_factor` threshold: pre-derive via
+#     required_β = 0.5 + sqrt((1 − factor) · log(2) / 2)
+# against measured Gate-1-style baselines.
+ABORT_EPOCH_5_H500_VAL_BCE_NOT_MONOTONE: bool = True
+ABORT_EPOCH_5_H500_VAL_BAL_ACC_LT_0_510: bool = True
 ABORT_EMBED_STD_LT_0_05: bool = True
 ABORT_CKA_LT_0_3_AFTER_EPOCH_8: bool = True
+# Council-5 demand (same triage doc): also catch "Phase B did nothing" — encoder
+# barely moved at lr=5e-5. CKA ≈ 1.0 in Phase A by construction (encoder frozen);
+# in Phase B at epoch 8+ (3+ epochs into unfreeze) we expect CKA in [0.7, 0.9].
+ABORT_CKA_GT_0_95_AFTER_EPOCH_8: bool = True
 ABORT_H100_VAL_BAL_ACC_LT_0_50_AFTER_EPOCH_8: bool = True
 ABORT_HOUR_PROBE_GT_0_12_AT_5EPOCH_CHECKPOINT: bool = True
 
@@ -129,8 +144,9 @@ class FineTunedModel(nn.Module):
         self.head = head
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        # features: (B, 200, 17) → 256-dim global embedding → (B, 4) logits
-        _per_pos, global_emb = self.encoder(features)
+        # features: (B, 200, 17) → 256-dim global embedding → (B, 4) logits.
+        # Encoder emits (per-position, global); only global is used here.
+        _, global_emb = self.encoder(features)
         return self.head(global_emb)
 
     def freeze_encoder(self) -> None:
