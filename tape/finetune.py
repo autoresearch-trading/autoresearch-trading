@@ -64,11 +64,28 @@ ABORT_EPOCH_5_H500_VAL_BCE_NOT_MONOTONE: bool = True
 ABORT_EPOCH_5_H500_VAL_BAL_ACC_LT_0_510: bool = True
 ABORT_EMBED_STD_LT_0_05: bool = True
 ABORT_CKA_LT_0_3_AFTER_EPOCH_8: bool = True
-# Council-5 demand (same triage doc): also catch "Phase B did nothing" — encoder
-# barely moved at lr=5e-5. CKA ≈ 1.0 in Phase A by construction (encoder frozen);
-# in Phase B at epoch 8+ (3+ epochs into unfreeze) we expect CKA in [0.7, 0.9].
-ABORT_CKA_GT_0_95_AFTER_EPOCH_8: bool = True
-ABORT_H100_VAL_BAL_ACC_LT_0_50_AFTER_EPOCH_8: bool = True
+# Patched 2026-04-26 second-time (council-5 + council-6 Phase B triage,
+# `docs/council-reviews/2026-04-26-step4-phase-b-cka-abort-triage.md`):
+# original `ABORT_CKA_GT_0_95_AFTER_EPOCH_8` was lead-0's heuristic pick during
+# the morning Phase A patch, NOT a derived value. OneCycleLR pct_start=0.05 puts
+# peak lr at epoch 5.75 (0.75 epochs into Phase B), so by epoch 8 we've consumed
+# ~42% of integrated lr — observed CKA 0.957 sits exactly on the linear-regime
+# trajectory 1−CKA ≈ c·integrated_lr_fraction. Threshold 0.95 demanded ~3× faster
+# encoder rotation than the schedule supports. Replaced with two arithmetic-grounded
+# checks: (a) end-of-Phase-B CKA > 0.95 (intent moved to where data lives),
+# (b) rate-of-change check (CKA must drop ≥ 0.005/epoch on 3-epoch trailing window).
+ABORT_CKA_GT_0_95_AT_END_OF_PHASE_B: bool = True
+ABORT_CKA_RATE_TOO_SLOW_AFTER_EPOCH_8: bool = True
+# Council-5 predicted bug #3: H100 was at noise floor at Gate 1; ABS threshold of
+# 0.50 has zero margin against bootstrap CI half-width (~0.5-1.5pp). Replaced
+# with trailing-5-epoch comparison vs Phase-A-end reference.
+ABORT_H100_TRAILING_5_DEGRADATION_VS_PHASE_A_END: bool = True
+# Phase B SUCCESS criterion (both councils demand): bind the eventual Gate 2
+# requirement at training time so we abort if Phase B isn't moving the H500
+# balanced acc the metric we actually care about.
+ABORT_PHASE_B_NO_H500_BAL_ACC_GAIN_AT_EPOCH_15: bool = True
+# Council-6 insurance: catch catastrophic rank collapse during Phase B.
+ABORT_EFF_RANK_LT_50_AFTER_EPOCH_8: bool = True
 ABORT_HOUR_PROBE_GT_0_12_AT_5EPOCH_CHECKPOINT: bool = True
 
 

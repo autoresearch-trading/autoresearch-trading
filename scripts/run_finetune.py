@@ -94,11 +94,24 @@ PROBE_EVERY_EPOCHS: int = 5
 
 ABORT_EMBED_STD: float = 0.05
 ABORT_CKA_LOWER: float = 0.3
-ABORT_CKA_UPPER: float = (
-    0.95  # council-5 demand 2026-04-26: catch "Phase B did nothing"
-)
+# Patched 2026-04-26 (Phase B triage). End-of-Phase-B CKA upper bound (replaces
+# the earlier epoch-8 0.95 heuristic which was math-bug — encoder hadn't had time
+# to rotate by epoch 8 at lr=5e-5 OneCycleLR pct_start=0.05).
+ABORT_CKA_END_OF_PHASE_B: float = 0.95
+# Rate-of-change "encoder is stuck" check. Active after epoch 8 (post-warmup);
+# fires if max(ΔCKA over last 3 epochs) < this value, i.e., encoder has been
+# moving by less than 0.5pp/epoch for 3 consecutive epochs. Tuned against
+# observed healthy trajectory (E6→E7: 0.004; E7→E8: 0.023; both above 0.005).
+ABORT_CKA_RATE_DELTA_MIN: float = 0.005
 ABORT_HOUR_PROBE: float = 0.12
-ABORT_H100_VAL_BAL_ACC: float = 0.50
+# H100 floor replaced with trailing-5-epoch degradation comparison (council-5
+# predicted bug #3 if absolute floor stayed at 0.50 — Gate 1 H100 was at noise
+# floor, zero margin from threshold).
+ABORT_H100_TRAILING_5_MAX_DEGRADATION: float = 0.010  # 1.0pp from Phase-A-end
+# Phase B success criterion: H500 bal_acc at epoch 15 must be ≥ Phase-A-end + this.
+ABORT_PHASE_B_MIN_H500_GAIN_E15: float = 0.010  # 1.0pp; ~3σ given val-fold noise
+# Effective rank collapse floor (council-6 insurance).
+ABORT_EFF_RANK_FLOOR_AFTER_EPOCH_8: int = 50
 # Replaced 0.95×init BCE clause (math-bug fix 2026-04-26). New criterion:
 # H500 val BCE strictly monotone-decreasing through Phase A AND H500 val balanced
 # acc ≥ ABORT_EPOCH_5_MIN_BAL_ACC_H500 (Gate 1 linear-probe-quality floor).
@@ -490,6 +503,13 @@ def run_finetune(
     # Skip when resuming from Phase A — heads are already trained, so the
     # "random init reference" doesn't apply, and the epoch+1==3 / ==5 aborts
     # cannot fire when start_epoch=frozen_epochs (loop starts at epoch=5).
+    # Phase A end references — used by Phase B trailing-degradation and gain
+    # checks (council triage 2026-04-26 PM). Set at end of Phase A in the loop
+    # for non-resume runs; computed up-front from the resumed state for resume
+    # runs (heads are already Phase-A-trained).
+    phase_a_end_h500_bal_acc: float | None = None
+    phase_a_end_h100_bal_acc: float | None = None
+
     if resume_from_checkpoint is None:
         init_eval = _val_loss_and_balanced_acc(
             model, dataset, val_idx, device, batch_size
@@ -502,7 +522,23 @@ def run_finetune(
     else:
         init_eval = None
         initial_h500_val_bce = float("nan")
-        print("[finetune] resume mode: skipping init_eval reference computation")
+        # Resume mode: the loaded model IS the Phase-A-end state. Compute the
+        # H500/H100 references now so the Phase B abort checks have a valid
+        # baseline before the first Phase B optimizer step.
+        phase_a_eval = _val_loss_and_balanced_acc(
+            model, dataset, val_idx, device, batch_size
+        )
+        phase_a_end_h500_bal_acc = phase_a_eval["val_balanced_acc_per_horizon"][
+            HORIZONS.index(500)
+        ]
+        phase_a_end_h100_bal_acc = phase_a_eval["val_balanced_acc_per_horizon"][
+            HORIZONS.index(100)
+        ]
+        print(
+            f"[finetune] resume mode: Phase-A-end refs — "
+            f"H500 bal_acc={phase_a_end_h500_bal_acc}, "
+            f"H100 bal_acc={phase_a_end_h100_bal_acc}"
+        )
 
     started = time.time()
     cap_seconds = max_hours * 3_600
@@ -680,7 +716,24 @@ def run_finetune(
             h500_idx = HORIZONS.index(500)
             h100_idx = HORIZONS.index(100)
             h500_val_bce = val_eval["val_per_horizon_bce"][h500_idx]
-            h100_val_bal = val_eval["val_balanced_acc_per_horizon"][h100_idx]
+            # h100_val_bal is now consumed via trailing-5 logic below — the
+            # absolute-floor check that used a single-epoch value was removed
+            # in the 2026-04-26 PM patch (council-5 predicted bug #3).
+
+            # Capture Phase-A-end references for Phase B abort checks (only on
+            # the non-resume path; resume populates these up-front).
+            if epoch + 1 == frozen_epochs and phase_a_end_h500_bal_acc is None:
+                phase_a_end_h500_bal_acc = val_eval["val_balanced_acc_per_horizon"][
+                    h500_idx
+                ]
+                phase_a_end_h100_bal_acc = val_eval["val_balanced_acc_per_horizon"][
+                    h100_idx
+                ]
+                print(
+                    f"[finetune] Phase A end refs: H500 bal_acc="
+                    f"{phase_a_end_h500_bal_acc}, H100 bal_acc="
+                    f"{phase_a_end_h100_bal_acc}"
+                )
 
             if (
                 epoch + 1 == 3
@@ -733,20 +786,94 @@ def run_finetune(
                     f"CKA-vs-frozen drift: {cka_val:.4f} < {ABORT_CKA_LOWER} "
                     f"after epoch {epoch + 1} (Phase B destroyed pretraining)"
                 )
-            elif epoch + 1 >= 8 and cka_val > ABORT_CKA_UPPER:
-                abort_reason = (
-                    f"CKA-vs-frozen frozen: {cka_val:.4f} > {ABORT_CKA_UPPER} "
-                    f"after epoch {epoch + 1} (Phase B did nothing)"
-                )
             elif (
-                epoch + 1 > 8
-                and h100_val_bal is not None
-                and h100_val_bal < ABORT_H100_VAL_BAL_ACC
+                # End-of-Phase-B CKA upper bound (council triage 2026-04-26 PM):
+                # original `cka > 0.95 after epoch 8` was math-bug; intent is
+                # "Phase B finished with no encoder movement" — placed at last
+                # two epochs of training so the threshold has trajectory backing.
+                epoch + 1 >= epochs - 1
+                and cka_val > ABORT_CKA_END_OF_PHASE_B
             ):
                 abort_reason = (
-                    f"H100 val balanced acc {h100_val_bal:.4f} < "
-                    f"{ABORT_H100_VAL_BAL_ACC} after epoch {epoch + 1}"
+                    f"CKA-vs-frozen at end of training {cka_val:.4f} > "
+                    f"{ABORT_CKA_END_OF_PHASE_B} (Phase B did nothing — "
+                    f"encoder failed to adapt)"
                 )
+            elif epoch + 1 >= 8:
+                # CKA rate-of-change check: encoder must move at least
+                # ABORT_CKA_RATE_DELTA_MIN per epoch on a 3-epoch trailing
+                # window. Catches "encoder is stuck" without false-aborting on
+                # "encoder hasn't moved YET" (which the old upper-bound did).
+                cka_history = [
+                    r["cka_vs_frozen"]
+                    for r in epoch_records
+                    if "cka_vs_frozen" in r and r["cka_vs_frozen"] is not None
+                ] + [cka_val]
+                if len(cka_history) >= 4:
+                    last_3_deltas = [
+                        cka_history[-i - 1] - cka_history[-i] for i in range(1, 4)
+                    ]
+                    # Healthy: at least one of the last 3 epoch-deltas exceeded
+                    # ABORT_CKA_RATE_DELTA_MIN. Stuck: all 3 below threshold.
+                    if max(last_3_deltas) < ABORT_CKA_RATE_DELTA_MIN:
+                        deltas_str = ", ".join(f"{d:+.5f}" for d in last_3_deltas)
+                        abort_reason = (
+                            f"CKA rate too slow at epoch {epoch + 1}: last 3 "
+                            f"deltas [{deltas_str}] all < {ABORT_CKA_RATE_DELTA_MIN}; "
+                            f"encoder is stuck"
+                        )
+            elif (
+                # Effective rank floor (council-6 insurance 2026-04-26 PM).
+                epoch + 1 >= 8
+                and eff_rank < ABORT_EFF_RANK_FLOOR_AFTER_EPOCH_8
+            ):
+                abort_reason = (
+                    f"effective rank collapse at epoch {epoch + 1}: "
+                    f"{eff_rank} < {ABORT_EFF_RANK_FLOOR_AFTER_EPOCH_8}"
+                )
+            elif (
+                # H100 trailing-5 degradation (council-5 predicted bug #3 fix
+                # 2026-04-26 PM). Reference: end of Phase A H100 bal_acc.
+                # Active only after we have ≥5 Phase B records.
+                epoch + 1 >= max(8, frozen_epochs + 5)
+                and phase_a_end_h100_bal_acc is not None
+            ):
+                trailing_5_h100 = [
+                    r["val_balanced_acc_per_horizon"][h100_idx]
+                    for r in epoch_records[-5:]
+                    if "val_balanced_acc_per_horizon" in r
+                    and r["val_balanced_acc_per_horizon"][h100_idx] is not None
+                ]
+                if len(trailing_5_h100) >= 5:
+                    trailing_mean = sum(trailing_5_h100) / len(trailing_5_h100)
+                    if (
+                        phase_a_end_h100_bal_acc - trailing_mean
+                        > ABORT_H100_TRAILING_5_MAX_DEGRADATION
+                    ):
+                        abort_reason = (
+                            f"H100 trailing-5-epoch mean {trailing_mean:.4f} "
+                            f"degraded by "
+                            f"{phase_a_end_h100_bal_acc - trailing_mean:.4f} "
+                            f"vs Phase-A-end {phase_a_end_h100_bal_acc:.4f} "
+                            f"(threshold {ABORT_H100_TRAILING_5_MAX_DEGRADATION})"
+                        )
+            elif (
+                # Phase B success criterion at epoch 15 (10 epochs into Phase B).
+                # H500 bal_acc must improve by ≥1.0pp vs Phase-A-end.
+                epoch + 1 == 15
+                and phase_a_end_h500_bal_acc is not None
+            ):
+                h500_bal_now = val_eval["val_balanced_acc_per_horizon"][h500_idx]
+                if h500_bal_now is not None:
+                    gain = h500_bal_now - phase_a_end_h500_bal_acc
+                    if gain < ABORT_PHASE_B_MIN_H500_GAIN_E15:
+                        abort_reason = (
+                            f"epoch 15 H500 bal_acc gain "
+                            f"{gain:+.4f} (now {h500_bal_now:.4f}, "
+                            f"Phase-A-end {phase_a_end_h500_bal_acc:.4f}) < "
+                            f"{ABORT_PHASE_B_MIN_H500_GAIN_E15}; Phase B failed "
+                            f"to improve H500 (the metric Phase B is justified by)"
+                        )
             elif (
                 do_hour_probe
                 and row["hour_of_day_acc"] is not None

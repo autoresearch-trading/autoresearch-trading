@@ -108,16 +108,25 @@ required_β = 0.5 + sqrt((1 − factor) · log(2) / 2)
 ```
 and reject the criterion if `required_β > Gate-1-measured-β-ceiling`.
 
+**Patch 2 — 2026-04-26 PM (mechanical alignment, NOT a binding-gate amendment).** Council-5 + council-6 Phase B triage of the resumed run-1-phase-b (`runs/step4-r1-phase-b/`, aborted at epoch 8) found the morning's CKA upper-bound was misspecified. OneCycleLR with `pct_start=0.05` puts peak lr at epoch 5.75 (just 0.75 epochs into Phase B), so by epoch 8 we've consumed ~42% of integrated lr — observed CKA 0.957 sits exactly on the linear-regime trajectory. Threshold 0.95 demanded ~3× faster encoder rotation than the schedule supports. See `docs/council-reviews/2026-04-26-step4-phase-b-cka-abort-triage.md`.
+
+**Generalized going-forward rule (supersedes morning's narrower BCE-only rule):** every abort threshold MUST be accompanied by a written one-paragraph trajectory model — known-good behavior at the check epoch, failure-mode behavior, the gap, and the threshold's position with ≥1 trajectory-step margin from known-good. If no trajectory model can be written, the check belongs at end-of-training, not mid-training.
+
 **ABORT and stop training if any of:**
 - End of epoch 3: H500 val BCE > training-init BCE → heads aren't learning
-- ~~End of epoch 5: H500 val BCE has not dropped below `0.95 × initial_random_BCE`~~ **REPLACED 2026-04-26 with:**
+- ~~End of epoch 5: H500 val BCE has not dropped below `0.95 × initial_random_BCE`~~ **REPLACED 2026-04-26 (morning) with:**
   - End of epoch 5: H500 val BCE not strictly monotone-decreasing through Phase A → linear-probe warmup failed
   - End of epoch 5: H500 val balanced acc < 0.510 (Gate 1 linear-probe-quality floor; equivalent to "head failed to extract any of the encoder's measured separability")
 - Any epoch: embedding std drops below 0.05 → collapse
 - Any epoch ≥ 8: CKA-vs-frozen drops below 0.3 → catastrophic geometry drift
-- **Any epoch ≥ 8: CKA-vs-frozen exceeds 0.95 → Phase B did nothing (council-5 demand 2026-04-26; complements the < 0.3 lower bound)**
-- Any epoch after 8: H100 val balanced accuracy drops below 0.50 → shared trunk anti-fitting H100 (council-6 Q4 replacement for original "H100 val loss > 1.5× train loss")
-- Any 5-epoch checkpoint: hour-of-day probe > 0.12 → session leakage re-emergence
+- ~~Any epoch ≥ 8: CKA-vs-frozen exceeds 0.95~~ **REPLACED 2026-04-26 PM with:**
+  - **End of training (epoch ≥ epochs−1): CKA-vs-frozen > 0.95 → Phase B finished without encoder movement** (intent moved to where the data lives — predicted end-of-PB CKA ≈ 0.82-0.90)
+  - **Epoch ≥ 8: max(ΔCKA over last 3 epochs) < 0.005 → encoder is stuck** (rate-based check; complements the absolute end-of-training check)
+- ~~Any epoch after 8: H100 val balanced accuracy drops below 0.50~~ **REPLACED 2026-04-26 PM with:**
+  - **Epoch ≥ max(8, frozen_epochs+5): H100 val bal_acc trailing-5-mean drops by > 1.0pp from Phase-A-end H100 reference** (council-5 predicted bug #3 — Gate 1 H100 was at noise floor, so 0.50 absolute floor had zero margin against bootstrap CI half-width ~0.5-1.5pp)
+- **Epoch == 15: H500 val bal_acc has not gained ≥ 1.0pp vs Phase-A-end** → Phase B failed to improve the metric Phase B is justified by (council-5 + council-6 demand 2026-04-26 PM; ~3σ given val-fold bal_acc noise of ~0.3pp)
+- **Epoch ≥ 8: effective rank < 50** → catastrophic rank collapse (council-6 insurance 2026-04-26 PM; baseline value ~200)
+- Any 5-epoch checkpoint: hour-of-day probe > 0.12 → session leakage re-emergence (extends to all PB checkpoints by existing implementation)
 
 ## Failure modes guarded
 
