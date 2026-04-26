@@ -80,6 +80,17 @@ Use `runpod-7` when:
 - Wall-clock needs to be <4h (e.g. ablation sweep)
 - CUDA-specific validation is the point of the run
 
+## Infrastructure tooling
+
+**Cloudflare MCP** (`mcp__cloudflare-api__*`) is available in the main thread for R2 bucket operations. Tape data lives in R2 (`r2:pacifica-trading-data`, synced via `rclone --size-only`).
+
+Use it for:
+- Inspecting R2 partitions (per `symbol=/date=`) without a full rclone listing
+- Pre-flight integrity checks before runpod-7 kicks off a job (verify expected shard count exists remotely)
+- Storage cost/usage monitoring as data grows
+
+Do NOT use it for: pretraining checkpoint routing, orchestration, or anything outside the R2 data-availability envelope. Subagents don't have the MCP tools — if an R2 check is needed, do it in the main thread before dispatching a worker.
+
 ## How to Dispatch
 
 For design reviews, dispatch council members in parallel:
@@ -132,6 +143,22 @@ Use analyst-9 to run cluster analysis on pretrained embeddings
 4. Collect summaries
 5. Present unified recommendation with dissenting opinions noted
 6. User makes final call
+
+## Abort criterion taxonomy (binding from 2026-04-26 onwards)
+
+After the Step 4 Phase B "three-bug day" (`docs/experiments/step4-phase-b-third-strike-postmortem.md`), the falsifiability discipline distinguishes two abort-criterion classes:
+
+- **Class A — binding-science abort:** the pre-committed success criteria themselves are at stake. Threshold misspecification = the success criterion was wrong. Limit: **one Class A bug per run** before STOP-and-redesign.
+- **Class B — redundant guard:** a path-property check that's already covered by a binding success criterion (e.g., a mid-run rate-of-change check that's redundant with an end-of-run absolute check). Limit: **three Class B bugs per run** before mandatory process review.
+
+**Pre-launch obligation for any future training run:**
+1. Every abort criterion classified A or B before launch
+2. Every Class B criterion explicitly states which Class A criterion subsumes it
+3. Any Class A threshold derived from an lr-schedule-dependent quantity (CKA, BCE, embed_std, gradient norm) must be checked against a deterministic trajectory simulation under the lr schedule — if simulation says the threshold cannot be reached, the threshold is wrong and must be re-derived BEFORE launch
+
+**Going-forward rule for `BCE × init_factor` thresholds (from morning's bug #1):** pre-derive via `required_β = 0.5 + sqrt((1 − factor) · log(2) / 2)` against measured Gate-1-style baselines.
+
+**Audit trail rule (from afternoon's bug #3):** if a Class B bug fires, document in a postmortem committed BEFORE downstream evaluation reads numbers; retired guards must be published alongside downstream results (anti-amnesia).
 
 ## Git Workflow
 
