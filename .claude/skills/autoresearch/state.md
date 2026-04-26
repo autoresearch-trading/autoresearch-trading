@@ -8,9 +8,55 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-24, late — post Gate 3 triage + cluster cohesion + spec amendment v2)
+## Current State (2026-04-26, PM — post Step 4 Gate 2 FAIL)
 
-**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar held-out at H500. Gate 3 triage: EXONERATED. Cluster cohesion: UNEARNED UNIVERSALITY. Gate 1 + Gate 3 spec amendment RATIFIED after council-1 + council-5 review (commits `b1f4065` + `9c91f85`).**
+**Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar H500. Gate 3 triage: EXONERATED. Cluster cohesion: UNEARNED UNIVERSALITY. Spec amendment v2 RATIFIED. Step 4 fine-tuning FAILED Gate 2 on all three binding criteria, both held-out months.**
+
+### Step 4 Gate 2 verdict (2026-04-26 PM) — FAIL
+
+`runs/step4-r1-phase-b-v2/finetuned-best.pt` (E18, val_total_bce=0.6906) failed Gate 2:
+
+| Criterion | Threshold | Feb 2026 | Mar 2026 |
+|-----------|-----------|----------|----------|
+| C1: vs flat-LR ≥0.5pp on 15+/24 | 15+/24 | **7/24 FAIL** | **10/24 FAIL** |
+| C2: no per-symbol regression > 1pp | 0 violations | **16/24 FAIL** | **12/24 FAIL** |
+| C3: vs frozen-encoder LR ≥0.3pp on 13+/24 | 13+/24 | **8/24 FAIL** | **12/24 FAIL** |
+
+Aggregate H500 bal_acc (mean across 48 cells):
+- flat-LR: 0.5115
+- frozen-encoder LR (Gate 1 protocol): 0.5061
+- fine-tuned CNN: **0.4947** (underperforms flat-LR by 1.7pp)
+
+**Diagnostic pattern:** CNN regresses to 0.50. Liquid symbols where flat-LR was high (SUI 0.626, LTC 0.595, 2Z 0.633, ETH 0.543, LINK 0.605) lost 7-15pp under fine-tuning. Illiquid alts where flat-LR was below random (KPEPE, KBONK, AAVE, FARTCOIN) gained 6-9pp — but those are mean-reversion to chance, not signal extraction. The +1.2pp val-fold gain (random 90/10 split, in-distribution) was overfitting to training-period label imbalance. Walk-forward held-out evaluation correctly falsified.
+
+**Gate 1 (frozen encoder) remains valid.** Pretraining is not falsified — only the fine-tuning approach as configured.
+
+**Three abort-criterion math bugs** during Phase A + Phase B of run #1:
+- **Bug #1 (Class A):** AM Phase A `BCE > 0.95×init` required β=0.632 from frozen encoder Gate 1 measured at 0.514. Patched in commit `8149aa8`. Triage: `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`.
+- **Bug #2 (Class A):** PM Phase B `CKA > 0.95 after epoch 8` demanded ~3× faster encoder rotation than the lr schedule supports. Patched in commit `322ab50`. Triage: `docs/council-reviews/2026-04-26-step4-phase-b-cka-abort-triage.md`.
+- **Bug #3 (Class B redundant guard):** Phase B `max(ΔCKA over last 3) < 0.005` fired during scheduled OneCycleLR cosine cooldown. Council-5 + council-6 jointly adjudicated as Class B (structurally subsumed by end-of-Phase-B CKA<0.95 upper bound, which the run passed). Pre-Gate-2 postmortem committed BEFORE eval (commit `f2f50dc`). New abort taxonomy added to `lead-0.md`.
+
+**Per pre-committed audit trail, no retry of Phase B with different hyperparameters.** Next move: council to determine whether the encoder pretraining itself is the bottleneck OR whether fine-tuning is the wrong downstream task for this representation.
+
+### Open questions for council (post-Gate-2 FAIL)
+
+1. **Architecture wrong?** Linear-trunk-then-per-horizon-head may be the wrong inductive bias for tape data.
+2. **Loss-weight schedule wrong?** H10's 9.9pp class-imbalance inflation potential may have dominated the gradient signal even at weight 0.10.
+3. **Encoder too symbol-specific?** Phase B showed +1.2pp on in-distribution val fold; same encoder loses 1.7pp on Feb+Mar held-out. Encoder may be memorizing per-symbol artifacts rather than transferable signal.
+4. **Different downstream task?** Clustering, retrieval, regime classification — tasks where the encoder's representation quality can be assessed without temporal-transfer constraint.
+
+### Step 4 deliverables (committed)
+
+- **Code:** `tape/finetune.py` (DirectionHead + FineTunedModel + weighted_bce_loss + cka_torch), `scripts/run_finetune.py` (two-phase trainer with patched abort criteria + `--resume-from-checkpoint`), `scripts/run_gate2_eval.py` (three-comparator eval with bootstrap CIs).
+- **Tests:** 17/17 passing in `tests/tape/test_finetune.py`.
+- **Plan:** `docs/superpowers/plans/2026-04-24-step4-fine-tuning.md` (ratified, then patched twice with mechanical alignments).
+- **Pre-Gate-2 postmortem:** `docs/experiments/step4-phase-b-third-strike-postmortem.md`.
+- **Gate 2 results writeup:** `docs/experiments/step4-gate2-finetune.md` (with anti-amnesia + honest framing).
+- **Process update:** `lead-0.md` now has the Class A / Class B abort taxonomy.
+
+### Entry prompt for next session
+
+> Resume tape representation learning on `main`. Step 4 (Gate 2) FAILED on 2026-04-26 PM — fine-tuned CNN underperformed flat-LR by 1.7pp on Feb+Mar held-out at H500 (mean bal_acc 0.4947 vs 0.5115). Diagnostic: CNN regresses to 0.50 — liquid symbols with high flat-LR baselines lost 7-15pp under fine-tuning. The +1.2pp val-fold gain was overfitting to in-distribution label imbalance, falsified by walk-forward held-out eval. Per pre-committed audit trail, no retry. Three abort-criterion math bugs on the way to Gate 2 (two Class A patched, one Class B retired); new Class A/Class B taxonomy in `lead-0.md`. Gate 1 (frozen encoder) remains valid. **Next move: council to determine whether the encoder pretraining itself is the bottleneck, or whether fine-tuning is the wrong downstream approach for this representation.** Reference `docs/experiments/step4-gate2-finetune.md` for the full Gate 2 writeup. Open questions: (a) architecture wrong, (b) loss-weight schedule wrong, (c) encoder too symbol-specific to transfer, (d) move to a different downstream task (clustering/retrieval/regime classification).
 
 - **Checkpoint:** `runs/step3-r2/encoder-best.pt` (epoch 6, MEM=0.504, 376K params)
 - **Gate 1 pass writeup:** `docs/experiments/step3-run-2-gate1-pass.md`
