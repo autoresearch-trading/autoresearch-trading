@@ -22,14 +22,21 @@ Every 5 epochs (0, 5, 10, 15, end):
   - Hour-of-day probe on 256-dim live embeddings (24-class LR)
 
 Numeric abort criteria (plan §"Numeric abort criteria"; patched 2026-04-26
-per `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`):
+twice — see `docs/council-reviews/2026-04-26-step4-phase-a-abort-triage.md`
+and `2026-04-26-step4-phase-b-cka-abort-triage.md`):
   - Epoch 3: H500 val BCE > training-init BCE → heads aren't learning
   - Epoch 5: H500 val BCE not monotone-decreasing through Phase A
   - Epoch 5: H500 val balanced acc < 0.510 (Gate 1 linear-probe-quality floor)
   - Any epoch: embedding std < 0.05
   - Any epoch ≥ 8: CKA-vs-frozen < 0.3 (Phase B destroyed pretraining)
-  - Any epoch ≥ 8: CKA-vs-frozen > 0.95 (Phase B did nothing — council-5)
-  - Any epoch ≥ 8 (after epoch 8): H100 val balanced accuracy < 0.50
+  - End of training (epoch ≥ epochs-1): CKA-vs-frozen > 0.95 (Phase B did nothing)
+  - Any epoch ≥ 8: max(ΔCKA over last 3 epochs) < 0.005 (encoder is stuck)
+  - Any epoch ≥ 8: effective rank < 50 (catastrophic rank collapse)
+  - Any epoch ≥ max(8, frozen_epochs+5): H100 trailing-5 mean degraded > 1.0pp
+    from Phase-A-end reference (replaces absolute < 0.50 floor; council-5
+    predicted bug #3 since H100 was at Gate 1 noise floor)
+  - Epoch == 15: H500 val bal_acc gain < 1.0pp vs Phase-A-end (Phase B success
+    criterion: must improve the metric Phase B is justified by)
   - Any 5-epoch checkpoint: hour-of-day probe > 0.12
 
 Usage (local smoke):
