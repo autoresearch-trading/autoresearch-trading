@@ -59,7 +59,32 @@ Reported as point estimates; **NO pass/fail threshold attached** — this is des
 
 The spec asked whether self-supervised pretraining on DEX perpetual tape data produces meaningful representations — measured downstream by direction prediction, with multi-probe phenomenology as the secondary validator.
 
-The honest answer this program supports: **YES on direction (linearly, +1pp, temporally stable), and UNDETERMINED on phenomenology (the secondary validator was operationally undefinable).** This is a narrower positive claim than the spec's intent and does not establish a tradeable edge. It also leaves the most interesting question — does the encoder actually read tape state? — open.
+The honest answer this program supports: **YES on direction (linearly, +1pp, temporally stable), and UNDETERMINED on phenomenology (the secondary validator was operationally undefinable).** This is a narrower positive claim than the spec's intent and does not establish a tradeable edge.
+
+### Calibrated interpretation of the representation (added 2026-04-27)
+
+The interpretation question — does the encoder read tape volume-price phenomenology, or does it read per-symbol direction priors? — is adjudicated **softly** by the existing diagnostics and **not** by a new probe.
+
+**Reading from existing measurements:**
+
+| Diagnostic | Value | Interpretation |
+|---|---|---|
+| Symbol-identity probe (6 liquid anchors) | 0.934 bal_acc | Encoder is nearly symbol-separable |
+| Same-symbol-diff-hour vs cross-symbol-diff-hour cosine delta | +0.139 | Strong per-symbol clustering inside the embedding |
+| Cross-symbol-same-hour vs cross-symbol-diff-hour cosine delta (the SimCLR-trained-for axis) | +0.037 | SimCLR alignment signal is **3.8× weaker** than the per-symbol clustering |
+| Per-symbol RankMe (median 41.4) vs pooled RankMe (64.2) | ratio 0.65 | Each symbol uses fewer directions than the pool — consistent with per-symbol-clustered geometry |
+
+**Calibrated claim (replaces prior "undetermined" framing):** The encoder produces a **per-symbol-clustered representation with linearly-extractable directional signal** (+1pp at H500, temporally stable). The +0.037 cross-symbol same-hour cosine delta indicates a weak shared geometry — most plausibly the universal sign-of-flow predicate (consistent with council-2's Cont-de Larrard symbol-specific OFI framing). The +0.139 same-symbol delta and 0.934 symbol-ID probe indicate the dominant geometric structure is per-symbol clustering, not Wyckoff-phenomenological tape state.
+
+**What this rules out:** A strong "encoder reads universal tape phenomenology that transfers across symbols" claim. The cross-symbol invariance the spec hoped for was not earned.
+
+**What this does NOT rule out:** Per-symbol tape-reading. The encoder may represent tape state *within each symbol's local geometry*, with the +1pp linear-probe signal being the in-symbol-readable component. This residual question is consistent with the program's own evidence and would require a different evaluation rubric to adjudicate.
+
+**Diagnostic considered and declined (anti-amnesia disclosure):** A bucketed-cohesion paired probe (effort_vs_result × is_open tertiles, encoder vs restricted-PCA cosine within tape-state cells) was designed by council-4 and reviewed by council-5 on 2026-04-27. Council-5 rejected the design as proposed pre-commit on falsifiability grounds (symbol-confound abort risk ~30-40%, multiple-comparisons inflation, marginal power for effects below +0.05) unless council-4 committed to a binding pre-registration with: chi-square symbol-confound abort, 5/9-buckets-with-high-effort-row pass rule, (symbol, date)-blocked bootstrap with 99.44% Bonferroni-corrected CI, and pre-published per-bucket effective block count. Council-5's recommendation: take the off-ramp because the diagnostic had ~80% probability of confirming what existing evidence already showed or aborting on confound grounds, with only ~15% probability of meaningful new information. Lead-0 took the off-ramp on EV grounds. Reviews preserved at:
+- `docs/council-reviews/2026-04-27-tape-state-paired-probe-c4-design.md`
+- `docs/council-reviews/2026-04-27-tape-state-paired-probe-c5-falsifiability.md`
+
+The interpretation framing above does NOT depend on running this diagnostic; it is grounded in the cohesion + RankMe + symbol-ID evidence already collected. If a future program revisits this question on a different stack (different objective, different data, different architecture), c-4's bucket fix and c-5's falsifiability spine are the starting point.
 
 ## Open questions and what would close them
 
@@ -84,6 +109,8 @@ This writeup is consistent with:
 - `docs/council-reviews/2026-04-26-prepublication-strengthening-c2.md` (publish-as-is from OFI lens; per-symbol cohesion is expected)
 - `docs/council-reviews/2026-04-26-prepublication-strengthening-c3.md` (publish + per-horizon table on April 1-13)
 - `docs/council-reviews/2026-04-26-prepublication-strengthening-c6.md` (publish + RankMe + headline reframe)
+- `docs/council-reviews/2026-04-27-tape-state-paired-probe-c4-design.md` (diagnostic design, declined for execution; preserved for institutional memory)
+- `docs/council-reviews/2026-04-27-tape-state-paired-probe-c5-falsifiability.md` (diagnostic falsifiability rejection + off-ramp recommendation)
 - `runs/step4-r1-perhorizon/` — per-horizon table (`h{10,50,100,500}-april-stride50.json`) and RankMe (`rankme-feb-mar.json`) artifacts
 
 ## Anti-amnesia clause
@@ -93,8 +120,9 @@ Future writeups citing this program's results MUST disclose:
 2. Gate 4 PASS on temporal stability of the frozen encoder
 3. Multi-probe battery dropped without measurement, with reference to commit `6fab561` and the three council reviews
 4. The DSR effective N=3 (Gates 1, 2, 4) for any statistical-significance claim on the +1pp Gate 1 result
+5. Tape-state-paired-probe diagnostic considered 2026-04-27 and declined pre-commit on falsifiability grounds (council-5 review); calibrated interpretation in §"Calibrated interpretation" rests on existing cohesion + RankMe + symbol-ID evidence, not on a new measurement
 
-The Gate 1 +1pp result is small enough that publishing it as headline without these disclosures is misleading. The headline of any external writeup MUST be *"+1pp linearly-extractable direction signal at H500, stable across training-period halves but not amplifiable by supervised fine-tuning, with phenomenological richness not tested due to operational label calibration failure"* — not *"SSL learns tape representations on DEX perpetual data."*
+The Gate 1 +1pp result is small enough that publishing it as headline without these disclosures is misleading. The headline of any external writeup MUST be *"+1pp linearly-extractable direction signal at H500 within a per-symbol-clustered representation, stable across training-period halves but not amplifiable by supervised fine-tuning, with phenomenological richness untested due to operational label calibration failure"* — not *"SSL learns tape representations on DEX perpetual data."*
 
 ## End-state
 
