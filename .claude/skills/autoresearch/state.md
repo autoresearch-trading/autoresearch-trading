@@ -8,7 +8,56 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-27 — PROGRAM AT END-STATE; user goal = useful tape repr → A; cross-symbol re-pretrain is the load-bearing experiment)
+## Current State (2026-04-27 PM — PROGRAM CLOSED, Path A executed)
+
+**Status: FROZEN.** Tag: `v1-program-closed` (created 2026-04-27 PM after council-1 final QA).
+
+**Path A executed.** User chose close + publish over Path β (cross-symbol re-pretrain) on EV grounds. Goal-A (profitable paper trading on this stack) abandoned — fee-blocked at every horizon, ~10-25% odds Path β ladders.
+
+**Publishable artifact:** `docs/experiments/step4-program-end-state.md` (commit `30bbc3b` after c-1 QA edits applied).
+
+**Final headline (mandated for any external writeup):**
+> *"+1pp linearly-extractable direction signal at H500 within a per-symbol-clustered representation, stable across training-period halves but not amplifiable by supervised fine-tuning, with phenomenological richness untested due to operational label calibration failure."*
+
+**Calibrated interpretation (replaces prior "undetermined"):**
+> Encoder produces a per-symbol-clustered representation with linearly-extractable directional signal. +0.139 same-symbol cohesion delta vs +0.037 cross-symbol-same-hour delta (3.8× ratio); symbol-ID probe 0.934; per-symbol RankMe 41.4 vs pooled 64.2. The +0.037 delta is "possibly the universal sign-of-flow predicate (untested at the +0.037 magnitude against an appropriate null distribution)." Per council-1 QA edit.
+
+**Diagnostics declined pre-commit (anti-amnesia documented):**
+- Multi-probe battery (C1/C3/C4) — Path D, dropped 2026-04-26: climax_score threshold 3.0 vs empirical max 0.256 (~30× over). Council-1/4/5 unanimous.
+- Tape-state-paired probe (effort_vs_result × is_open buckets) — off-ramp 2026-04-27: c-5 rejected pre-commit on falsifiability; ~80% confirm-or-abort odds; soft adjudication via existing cohesion/RankMe/symbol-ID won.
+
+**DSR effective N = 3** (Gates 1, 2, 4). Calibrated interpretation does NOT add a 4th probe per c-1 (re-uses pre-registered diagnostic numbers in new narrative frame).
+
+**What's reusable for any future Goal-A pursuit:**
+- `tape/` package (289 tests, 4003 cached shards, 641K windows at stride=50)
+- Methodology: pre-registration discipline, Class A/B abort taxonomy, bootstrap CIs, multi-month walk-forward eval, 4-baseline Gate 0 grid
+- Load-bearing features: `effort_vs_result`, `climax_score`, `is_open` (DEX-specific Composite Operator footprint)
+- Knowledge base: `docs/knowledge/INDEX.md` (15 concepts, 25 decisions, 13 experiments — compiled 2026-04-27)
+
+**What future Goal-A pursuit should change (per program's own findings):**
+1. Different objective — drop direction prediction; predict execution-aware quantities (signed mid-move conditional on tradeable size, time-to-fill, slippage cost)
+2. Different data — orderbook L2 changes, not just trades + 24s OB context
+3. Different evaluation — backtested PnL net of fees + slippage as primary metric
+4. Architecture is less load-bearing — bottleneck is signal-to-fee ratio, not architecture
+
+**Final gate scoreboard:**
+
+| Gate | Verdict |
+|---|---|
+| 0 (4-baseline grid) | Published — pipeline clean (shuffled 0.500±0.003) |
+| 1 (frozen probe, Feb+Mar H500) | **PASS** — +1.0-1.9pp on 15+/24 |
+| 2 (fine-tuned CNN) | **FAIL** — -1.7pp vs flat-LR, all 3 binding criteria |
+| 3 (AVAX held-out) | Deferred (Gate 2 failed); triage exonerated underpowered probe |
+| 4 (temporal stability) | **PASS** — <3pp drop on 19/24 |
+| Multi-probe battery | DROPPED without measurement (Path D) |
+
+No further measurement authorized without a new pre-registration document.
+
+## Previous state — 2026-04-27 AM (preserved for audit)
+
+**Goal (user-stated 2026-04-27):** "figure out a model that learns useful tape representations and leads to A" where A = profitable paper-trading.
+
+**Where we are:** Program reaches publishable end-state. Current encoder cannot ladder to A (council unanimous: +1pp at H500 against 6bp Pacifica fees + N=5 DSR is fee-blocked at every horizon). **Two clean options:**
 
 **Goal (user-stated 2026-04-27):** "figure out a model that learns useful tape representations and leads to A" where A = profitable paper-trading.
 

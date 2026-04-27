@@ -2,13 +2,13 @@
 
 Auto-maintained by the compile-knowledge skill. Do not edit manually.
 
-Last compiled: 2026-04-24
+Last compiled: 2026-04-27 (program freeze)
 
 ## Concepts
 
 - [Book Walk](concepts/book-walk.md) — spread-normalized order aggressiveness (feature 6); unsigned
 - [Bootstrap Methodology](concepts/bootstrap-methodology.md) — 1000-resample CI + N=50 shuffled null + class-prior; required on small-n probes
-- [Climax Score](concepts/climax-score.md) — Wyckoff climax via min(z_qty, z_return); rolling 1000-event sigma
+- [Climax Score](concepts/climax-score.md) — Wyckoff climax via min(z_qty, z_return); rolling 1000-event sigma; max 0.256 ≪ pre-reg threshold 3.0
 - [Contrastive Learning](concepts/contrastive-learning.md) — SimCLR NT-Xent; τ=0.5→0.3; measured cross-symbol delta +0.037 on step3-r2
 - [Cross-Symbol Invariance](concepts/cross-symbol-invariance.md) — SimCLR cluster geometry; +0.037 delta vs +0.1 threshold; 4× weaker than symbol-ID
 - [Cumulative OFI](concepts/cum-ofi.md) — piecewise Cont 2014 OFI over 5 snapshots (~120s); naive formula has wrong sign
@@ -24,9 +24,11 @@ Last compiled: 2026-04-24
 
 ## Decisions
 
+- [Abort Criterion Taxonomy (Class A/B)](decisions/abort-criterion-taxonomy.md) — 1 Class A bug = STOP-and-redesign; 3 Class B before process review (binding 2026-04-26)
 - [Amendment Budget Clause](decisions/amendment-budget-clause.md) — 3rd binding-gate amendment without new experiment requires out-of-band review
 - [April Hold-Out Window](decisions/april-holdout-window.md) — April 14+ untouched; March test set contaminated
 - [Balanced Accuracy at ALL Horizons](decisions/balanced-accuracy-all-horizons.md) — removes H10/H50/H100 raw-accuracy carve-out; raw is gameable
+- [Calibrated Interpretation — Per-Symbol-Clustered](decisions/calibrated-interpretation-per-symbol-clustered.md) — adopts +1pp + per-symbol-clustering claim grounded in cohesion + RankMe + symbol-ID; council-1 QA approved
 - [cum_ofi 5 Not 20](decisions/cum-ofi-5-not-20.md) — 5 snapshots (~120s) matches prediction horizon per Cont 2014
 - [Drop is_buy](decisions/drop-is-buy.md) — removed: 59% ambiguous, half-life 1, distributional discontinuity
 - [Gate 1 Thresholds Revised (SUPERSEDED)](decisions/gate1-thresholds-revised.md) — original 4-condition structure; superseded by Feb+Mar H500 window
@@ -42,6 +44,8 @@ Last compiled: 2026-04-24
 - [NT-Xent Temperature](decisions/ntxent-temperature.md) — τ=0.5→0.3; ImageNet default 0.1 too cold for financial data
 - [OB Cadence 24s](decisions/ob-cadence-24s.md) — measured ~24s not ~3s; cascading impact on kyle_lambda, cum_ofi
 - [OB Level Zero-Fill](decisions/ob-level-zero-fill.md) — `np.zeros`, not `np.full(nan)`; missing levels = zero liquidity, not unknown
+- [Path A Program Closure](decisions/path-a-program-closure.md) — close + publish on 2026-04-27; Goal-A abandoned for this stack; reusable pipeline + methodology + features carry over
+- [Path D — Drop Battery](decisions/path-d-drop-battery.md) — multi-probe battery dropped without measurement (climax threshold 30× empirical max); anti-amnesia disclosure pattern
 - [Per-Snapshot Kyle Lambda](decisions/per-snapshot-kyle-lambda.md) — 50 snapshots (~20 min) not 50 events; fixes 10x variance inflation
 - [Pivot to Representation Learning](decisions/pivot-to-representation-learning.md) — from supervised Sortino to self-supervised MEM+contrastive
 - [SimCLR Augmentations Strengthened](decisions/simclr-augmentations-strengthened.md) — jitter ±10→±25; new σ=0.10 timing-feature noise for session decorrelation
@@ -53,8 +57,12 @@ Last compiled: 2026-04-24
 - [Cluster Cohesion Diagnostic](experiments/cluster-cohesion-diagnostic.md) — 6 anchors, cross-sym same-hour delta +0.037, symbol-ID 0.934: unearned universality
 - [Gate 0 4-Baseline Grid](experiments/gate0-4baseline-grid.md) — PCA ≈ Majority ≈ RP on balanced acc; pipeline clean; raw-vs-balanced inflated H10 up to 9.9pp
 - [Gate 1 Pass — Feb+Mar H500](experiments/gate1-pass-feb-mar-h500.md) — +3.03/+3.12pp vs Majority; 15/24, 17/24 clear 51.4%; hour probe clean
+- [Gate 2 Fine-Tuning FAIL](experiments/gate2-finetune-fail.md) — fine-tuned CNN -1.7pp vs flat-LR; 3 abort-criterion bugs en route; per-symbol geometry breaks fine-tuning
 - [Gate 3 AVAX Triage](experiments/gate3-avax-triage.md) — bootstrap CIs overlap 4/4 cells; in-sample LINK+LTC fails identically: EXONERATED
+- [Gate 4 Temporal Stability PASS](experiments/gate4-temporal-stability-pass.md) — Oct-Nov vs Dec-Jan probes both eval'd on Feb+Mar; <3pp drop on 19/24; +0.6pp mean drift
+- [Multi-Probe Battery Path D](experiments/multi-probe-battery-path-d.md) — climax label fires 0% on held-out (max 0.256 ≪ threshold 3.0); dropped without measurement
 - [Per-Symbol Surrogate Sweep](experiments/per-symbol-surrogate-sweep.md) — 5 in-sample symbols, 1/20 CI separations = chance rate, validates reframe
 - [Step 3 Run-0 Collapse Diagnosis](experiments/step3-run0-collapse-diagnosis.md) — three probe bugs + MEM identity-task bug invalidated run-0 signal
+- [Tape-State Diagnostic Off-Ramp](experiments/tape-state-diagnostic-off-ramp.md) — c-4 designed, c-5 rejected pre-commit; ~80% confirm-or-abort odds; soft adjudication wins
 - [v11 MLP Baseline](experiments/v11-baseline.md) — Sortino=0.353, walk-forward=0.261; MLP ceiling reached, motivated pivot
 - [v11 Prior Architecture Reference](experiments/v11-prior-architecture-reference.md) — main-branch v11 architecture summary for context
