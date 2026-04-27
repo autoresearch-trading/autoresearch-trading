@@ -154,8 +154,49 @@ Cells that pass `frac_positive_headroom > 0.55`:
 ## Files written
 
 - `docs/experiments/goal-a-feasibility/README.md` — this file
-- `docs/experiments/goal-a-feasibility/headroom_table.csv` — 300 cells, summary statistics
+- `docs/experiments/goal-a-feasibility/headroom_table.csv` — 300 cells, summary statistics (now augmented with per-accuracy stats — see below)
 - `docs/experiments/goal-a-feasibility/per_window.parquet` — 1.93M rows, full per-window detail (preserved for follow-up slicing)
-- `scripts/goal_a_feasibility.py` — book-walk simulator + aggregation
-- `tests/scripts/test_goal_a_feasibility.py` — 7 unit tests, all green
+- `docs/experiments/goal-a-feasibility/survivors.md` — accuracy-regime survivor tables (added 2026-04-27)
+- `scripts/goal_a_feasibility.py` — book-walk simulator + aggregation + accuracy stress
+- `tests/scripts/test_goal_a_feasibility.py` — 19 unit tests, all green
 - `docs/implementation/goal_a_feasibility_run.log` — run log (tee'd from full job)
+
+---
+
+## Survivors at realistic directional accuracy (added 2026-04-27)
+
+The oracle verdict above (`gross_edge_bps = |return| × 1e4`) overstates feasibility because it assumes a perfect direction signal. v1's encoder hit ~+1pp at H500 (~51.4% balanced accuracy); realistic models on this data top out around 55–60%. **Expected per-round-trip PnL at directional accuracy `p`** is `(2p − 1) × |edge| − cost`, not `|edge| − cost`. We re-aggregate the same 1.93M per-window parquet under three regimes — 55% / 57.5% / 60% — and define a survivor as a `(symbol, size, horizon)` cell with `frac_pos_acc_X > 0.55` AND `headroom_X_median_bps > 0`. Full per-cell stats are appended to `headroom_table.csv` (12 new columns); survivor sub-tables and near-miss top-5s are in `survivors.md`.
+
+### Headline verdict
+
+**At 55% accuracy: nothing survives.** The strongest cell is HYPE $1k H500 with median headroom **−8.2 bp**, frac_pos **15.6%**. The 0.10× discount on the 62 bp HYPE edge yields 6.2 bp expected gross — short of the 14.5 bp round-trip cost band by ~8 bp. Same picture at PUMP/SOL/ENA/BNB. **A 55%-accurate model on this universe loses money on every name at every size at every horizon.**
+
+**At 57.5% accuracy: still nothing survives.** Best cell PUMP $1k H500: median **−4.4 bp**, frac_pos **40.2%**. The 0.15× discount gives 15.1 bp expected gross vs ~21 bp round-trip cost. Even the fattest cell in the entire 300-grid is still under water at 57.5%.
+
+**At 60% accuracy: zero strict survivors, exactly one near-miss.** PUMP $1k H500 produces a positive median headroom of **+0.51 bp** with frac_pos **51.1%** — but fails the `frac_pos > 0.55` floor by 4pp. Every other cell is negative-median. **Goal A requires a directional model materially better than 60% to be feasible at any size at any horizon, and even then only on a single illiquid name (PUMP) at a $1k position.**
+
+### Modelling caveats (read before scoping anything from this)
+
+1. **First-order accuracy calc.** `(2p − 1) × |edge|` treats `p` as iid and uses realized `|edge|` as the magnitude. It does not model the **joint distribution** of (signal-correctness, edge-size) — a model that's right 60% on average might be right *less* than 60% on the largest moves (regime-conditional skill). A more honest sim would condition on a model output ↔ realized-return joint, which we do not have. **Direction**: this calc is probably *optimistic* — real models tend to be worse on tail moves where most of the available edge lives.
+
+2. **Slippage is decoupled from signal selectivity.** The same slip-bps applies to a perfect-oracle round trip and a 60%-accurate one. In reality, a 60%-accurate model that *also* trades when the book is thin is paying *more* slip than the book-snapshot estimate, because it picks up trades during stress where depth has already degraded. The slip column here is ~book-walk-at-anchor; real execution would face **adverse selection in book regime**.
+
+3. **Stationarity flag (PUMP $1k H500 @ 0.60).** Quick check: 167 days of data, 103/167 days (61.7%) have positive median headroom on this cell — *not* outlier-driven, the cell median holds at 0.32 bp after dropping the top-5 days. But the per-day frac-positive distribution has σ=17pp and a min of 0% (a non-trivial slice of days is fully dead). **This means the +0.51 bp universe median is real but high-variance; days-of-week or volatility-regime conditioning would be the next slice.**
+
+4. **Fees.** Same 6 bp/side flat fee assumption as the oracle table. Maker rebates would push the bar lower; we do not model them.
+
+### What this means for next steps
+
+- **Goal A as scoped (any-symbol, any-size, any-horizon, 55%-accurate model) is dead.** No cell in the 300-grid survives the basic `frac_pos > 0.55 AND median > 0` gate.
+- **One cell could survive a stronger directional model**: PUMP $1k H500 at ≥60% accuracy. Before any program-shape commitment, the next investigation should be **per-day stationarity of that single cell's headroom** (volatility regime, day-of-week, time-of-day) — to determine whether the +0.51 bp median is a tradeable signal or an artifact of a few high-vol days. v1's CNN hit ~51% at H500 on the universe; whether per-symbol fine-tune can push PUMP to 60% is a separate empirical question that this analysis does *not* answer.
+- **The 25-symbol universe assumption is the hidden killer.** v1 spread compute across 25 symbols looking for universal direction skill. The accuracy-stressed feasibility says: *no universe-level program is viable*; the only path is **single-name, $1k-scale, H500-only, with a model strong enough to clear 60% balanced accuracy on PUMP**. That is not a representation-learning program; it is a single-symbol direction-prediction problem at small notional.
+
+### Reproducibility
+
+Re-run the accuracy stress (does not re-walk the book, ~15s):
+
+```bash
+uv run python scripts/goal_a_feasibility.py --accuracy-stress-only
+```
+
+This regenerates `per_window.parquet` (with 3 new columns), `headroom_table.csv` (with 12 new columns), and `survivors.md` from the existing parquet. To rebuild from cache shards (slow), drop the `--accuracy-stress-only` flag.

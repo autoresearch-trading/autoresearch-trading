@@ -39,7 +39,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -64,6 +64,13 @@ NOTIONAL_SIZES_USD: tuple[float, ...] = (1_000.0, 10_000.0, 100_000.0)
 TAKER_FEE_BPS_PER_SIDE: float = 6.0  # Pacifica taker, per task spec
 N_LEVELS: int = 10
 WINDOWS_PER_SHARD_CAP: int = 200  # subsample cap to keep runtime bounded
+
+# Accuracy stress regimes — directional skill levels at which to evaluate
+# expected per-round-trip PnL. 0.55 / 0.575 / 0.60 bracket the upper end of
+# what realistic models on this data have produced (v1 hit ~51.4% at H500).
+ACCURACY_REGIMES: tuple[float, ...] = (0.55, 0.575, 0.60)
+SURVIVOR_FRAC_POS_THRESHOLD: float = 0.55
+SURVIVOR_HEADROOM_THRESHOLD_BPS: float = 0.0
 
 # Index of log_return in the cached features tensor (col 0 per FEATURE_NAMES)
 _LOG_RETURN_IDX = FEATURE_NAMES.index("log_return")
@@ -172,28 +179,34 @@ def headroom_bps(*, edge_bps: float, slip_bps: float, fees_bps: float) -> float:
     return abs(edge_bps) - (2.0 * fees_bps + 2.0 * abs(slip_bps))
 
 
+def headroom_at_accuracy_bps(
+    *, edge_bps: float, slip_bps: float, fees_bps: float, accuracy: float
+) -> float:
+    """Expected per-round-trip PnL in bps under iid directional accuracy `p`.
+
+    Math: when the model is right with probability p and wrong with (1-p),
+    expected gross PnL per trip = p · |edge| + (1-p) · (-|edge|)
+                                = (2p - 1) · |edge|.
+    Subtract the round-trip cost band (2 fees + 2 |slip|).
+
+    p=1.0 → recovers headroom_bps (perfect oracle).
+    p=0.5 → -(cost) (pure cost; no signal).
+    p=0.55, 0.575, 0.60 → 0.10 / 0.15 / 0.20 × edge − cost.
+
+    Caveat (documented in README): this is a first-order calc that treats
+    realized |edge| as the magnitude and accuracy `p` as iid. It does NOT
+    model the joint distribution of (signal-correctness, edge-size). A more
+    honest sim would condition on a model output ↔ realized-return joint,
+    which we do not have. Slippage scaling-with-thinness is also not modelled.
+    """
+    edge_signal = (2.0 * accuracy - 1.0) * abs(edge_bps)
+    cost = 2.0 * fees_bps + 2.0 * abs(slip_bps)
+    return edge_signal - cost
+
+
 # ---------------------------------------------------------------------------
 # Shard processing
 # ---------------------------------------------------------------------------
-
-
-def _expand_snap_levels(
-    snap_row: pd.Series,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Pull the 10 bid/ask prices+qtys out of a flat snap row (post-expand)."""
-    bp = np.array(
-        [snap_row[f"bid{i}_price"] for i in range(1, N_LEVELS + 1)], dtype=float
-    )
-    bq = np.array(
-        [snap_row[f"bid{i}_qty"] for i in range(1, N_LEVELS + 1)], dtype=float
-    )
-    ap = np.array(
-        [snap_row[f"ask{i}_price"] for i in range(1, N_LEVELS + 1)], dtype=float
-    )
-    aq = np.array(
-        [snap_row[f"ask{i}_qty"] for i in range(1, N_LEVELS + 1)], dtype=float
-    )
-    return bp, bq, ap, aq
 
 
 def _list_window_starts(n_events: int, stride: int = STRIDE_EVAL) -> np.ndarray:
@@ -357,65 +370,317 @@ def process_shard(
 # ---------------------------------------------------------------------------
 
 
-def aggregate_cells(per_window_df: pd.DataFrame) -> pd.DataFrame:
-    """Per-(symbol, size, horizon) summary."""
+def _accuracy_suffix(accuracy: float) -> str:
+    """'_55', '_575', '_60' for 0.55, 0.575, 0.60 — used in column names.
+
+    Encodes accuracy as percent with no decimal point: 0.55→55, 0.575→575,
+    0.60→60. Stable for the three regimes we use; not a general-purpose helper.
+    """
+    return "_" + ("{:g}".format(accuracy * 100)).replace(".", "")
+
+
+def add_accuracy_stress_columns(
+    per_window_df: pd.DataFrame,
+    *,
+    accuracies: Iterable[float] = ACCURACY_REGIMES,
+    fees_bps: float = TAKER_FEE_BPS_PER_SIDE,
+) -> pd.DataFrame:
+    """Append `headroom_acc_<X>_bps` columns for each accuracy level.
+
+    Vectorised over the parquet. NaN propagates from edge_bps / slip_avg_bps.
+    Cost band uses the same fee + |slip| as the oracle column.
+    """
+    df = per_window_df.copy()
+    edge = df["edge_bps"].to_numpy(dtype=np.float64)
+    slip = np.abs(df["slip_avg_bps"].to_numpy(dtype=np.float64))
+    cost = 2.0 * fees_bps + 2.0 * slip
+    for acc in accuracies:
+        suffix = _accuracy_suffix(acc)
+        col = f"headroom_acc{suffix}_bps"
+        df[col] = (2.0 * acc - 1.0) * np.abs(edge) - cost
+    return df
+
+
+def aggregate_cells(
+    per_window_df: pd.DataFrame,
+    *,
+    accuracies: Iterable[float] = ACCURACY_REGIMES,
+) -> pd.DataFrame:
+    """Per-(symbol, size, horizon) summary.
+
+    Preserves the original oracle (perfect-direction) columns and appends
+    per-accuracy regime stats `headroom_<X>_{median,p75,p90}_bps` and
+    `frac_pos_acc_<X>` for each `X` in `accuracies` if the corresponding
+    `headroom_acc<X>_bps` column is present in the input.
+    """
+    accuracy_list = list(accuracies)
     rows: list[dict] = []
-    for (sym, size, h), g in per_window_df.groupby(
-        ["symbol", "size_usd", "horizon"], sort=True
-    ):
+    for key, g in per_window_df.groupby(["symbol", "size_usd", "horizon"], sort=True):
+        sym, size, h = cast(tuple[str, float, int], key)
         n_total = len(g)
         if n_total == 0:
             continue
-        fillable_frac = g["fillable"].mean()
+        fillable_frac = float(g["fillable"].to_numpy().astype(float).mean())
         # All slip / edge / headroom stats: condition on rows with finite values
         slips = g["slip_avg_bps"].dropna().to_numpy()
         edges = g["edge_bps"].dropna().to_numpy()
         # headroom requires both fillable AND finite edge
-        head_g = g[g["fillable"] & np.isfinite(g["headroom_bps"])]
+        fill_mask = g["fillable"].to_numpy()
+        head_mask = fill_mask & np.isfinite(g["headroom_bps"].to_numpy())
+        head_g = g.loc[head_mask]
         heads = head_g["headroom_bps"].to_numpy()
         n_head = len(heads)
-        rows.append(
-            {
-                "symbol": sym,
-                "size_usd": float(size),
-                "horizon": int(h),
-                "n_windows": int(n_total),
-                "n_fillable_with_edge": int(n_head),
-                "fillable_frac": float(fillable_frac),
-                "slip_median_bps": (
-                    float(np.median(slips)) if len(slips) else float("nan")
-                ),
-                "slip_p90_bps": (
-                    float(np.quantile(slips, 0.90)) if len(slips) else float("nan")
-                ),
-                "edge_median_bps": (
-                    float(np.median(edges)) if len(edges) else float("nan")
-                ),
-                "edge_p75_bps": (
-                    float(np.quantile(edges, 0.75)) if len(edges) else float("nan")
-                ),
-                "edge_p90_bps": (
-                    float(np.quantile(edges, 0.90)) if len(edges) else float("nan")
-                ),
-                "headroom_median_bps": (
-                    float(np.median(heads)) if n_head else float("nan")
-                ),
-                "headroom_p75_bps": (
-                    float(np.quantile(heads, 0.75)) if n_head else float("nan")
-                ),
-                "headroom_p90_bps": (
-                    float(np.quantile(heads, 0.90)) if n_head else float("nan")
-                ),
-                "frac_positive_headroom": (
-                    float((heads > 0).mean()) if n_head else float("nan")
-                ),
-            }
-        )
+        row: dict[str, float | int | str] = {
+            "symbol": sym,
+            "size_usd": float(size),
+            "horizon": int(h),
+            "n_windows": int(n_total),
+            "n_fillable_with_edge": int(n_head),
+            "fillable_frac": fillable_frac,
+            "slip_median_bps": (
+                float(np.median(slips)) if len(slips) else float("nan")
+            ),
+            "slip_p90_bps": (
+                float(np.quantile(slips, 0.90)) if len(slips) else float("nan")
+            ),
+            "edge_median_bps": (
+                float(np.median(edges)) if len(edges) else float("nan")
+            ),
+            "edge_p75_bps": (
+                float(np.quantile(edges, 0.75)) if len(edges) else float("nan")
+            ),
+            "edge_p90_bps": (
+                float(np.quantile(edges, 0.90)) if len(edges) else float("nan")
+            ),
+            "headroom_median_bps": (
+                float(np.median(heads)) if n_head else float("nan")
+            ),
+            "headroom_p75_bps": (
+                float(np.quantile(heads, 0.75)) if n_head else float("nan")
+            ),
+            "headroom_p90_bps": (
+                float(np.quantile(heads, 0.90)) if n_head else float("nan")
+            ),
+            "frac_positive_headroom": (
+                float((heads > 0).mean()) if n_head else float("nan")
+            ),
+        }
+        # Per-accuracy regime stats — same fillable+finite filter
+        for acc in accuracy_list:
+            suffix = _accuracy_suffix(acc)
+            src_col = f"headroom_acc{suffix}_bps"
+            if src_col not in g.columns:
+                continue
+            acc_vals_full = g[src_col].to_numpy(dtype=np.float64)
+            mask_acc = fill_mask & np.isfinite(acc_vals_full)
+            acc_vals = acc_vals_full[mask_acc]
+            n_acc = len(acc_vals)
+            row[f"headroom{suffix}_median_bps"] = (
+                float(np.median(acc_vals)) if n_acc else float("nan")
+            )
+            row[f"headroom{suffix}_p75_bps"] = (
+                float(np.quantile(acc_vals, 0.75)) if n_acc else float("nan")
+            )
+            row[f"headroom{suffix}_p90_bps"] = (
+                float(np.quantile(acc_vals, 0.90)) if n_acc else float("nan")
+            )
+            row[f"frac_pos_acc{suffix}"] = (
+                float((acc_vals > 0).mean()) if n_acc else float("nan")
+            )
+        rows.append(row)
     return (
         pd.DataFrame(rows)
         .sort_values(["symbol", "size_usd", "horizon"])
         .reset_index(drop=True)
     )
+
+
+# ---------------------------------------------------------------------------
+# Survivors emission
+# ---------------------------------------------------------------------------
+
+
+def survivors_for_accuracy(
+    cell_df: pd.DataFrame,
+    *,
+    accuracy: float,
+    frac_pos_threshold: float = SURVIVOR_FRAC_POS_THRESHOLD,
+    headroom_threshold_bps: float = SURVIVOR_HEADROOM_THRESHOLD_BPS,
+) -> pd.DataFrame:
+    """Filter aggregated cells to those that survive at `accuracy`.
+
+    Survivor = `frac_pos_acc_<X> > frac_pos_threshold` AND
+               `headroom_<X>_median_bps > headroom_threshold_bps`.
+    Returns a copy with normalised column names: `headroom_median_bps`,
+    `headroom_p75_bps`, `headroom_p90_bps`, `frac_pos`.
+    """
+    suffix = _accuracy_suffix(accuracy)
+    med_col = f"headroom{suffix}_median_bps"
+    p75_col = f"headroom{suffix}_p75_bps"
+    p90_col = f"headroom{suffix}_p90_bps"
+    frac_col = f"frac_pos_acc{suffix}"
+    if frac_col not in cell_df.columns or med_col not in cell_df.columns:
+        return pd.DataFrame()
+    mask = (cell_df[frac_col] > frac_pos_threshold) & (
+        cell_df[med_col] > headroom_threshold_bps
+    )
+    out = cell_df.loc[mask, :].copy()
+    out["headroom_median_bps_at_acc"] = out[med_col]
+    out["headroom_p75_bps_at_acc"] = out[p75_col]
+    out["headroom_p90_bps_at_acc"] = out[p90_col]
+    out["frac_pos_at_acc"] = out[frac_col]
+    out["accuracy"] = accuracy
+    cols = [
+        "symbol",
+        "size_usd",
+        "horizon",
+        "n_windows",
+        "n_fillable_with_edge",
+        "fillable_frac",
+        "edge_median_bps",
+        "slip_median_bps",
+        "headroom_median_bps_at_acc",
+        "headroom_p75_bps_at_acc",
+        "headroom_p90_bps_at_acc",
+        "frac_pos_at_acc",
+        "accuracy",
+    ]
+    return (
+        out[cols].sort_values(["horizon", "size_usd", "symbol"]).reset_index(drop=True)
+    )
+
+
+def _format_survivors_table(df: pd.DataFrame) -> str:
+    """Render a survivors sub-table as a markdown grouped block by horizon."""
+    if df.empty:
+        return "_No cells survive at this accuracy._\n"
+    lines: list[str] = []
+    horizons = sorted({int(v) for v in df["horizon"].tolist()})
+    for h_int in horizons:
+        g = df.loc[df["horizon"] == h_int]
+        lines.append(f"\n#### H{h_int}\n")
+        lines.append(
+            "| symbol | size | n_windows | fillable | edge_med | slip_med "
+            "| headroom_med | headroom_p75 | frac_pos |"
+        )
+        lines.append(
+            "|--------|------|-----------|----------|----------|----------"
+            "|--------------|--------------|----------|"
+        )
+        # Iterate via tolist() for properly typed scalars (not Series)
+        symbols = g["symbol"].tolist()
+        sizes = g["size_usd"].tolist()
+        nwin = g["n_windows"].tolist()
+        fillable_fracs = g["fillable_frac"].tolist()
+        edge_meds = g["edge_median_bps"].tolist()
+        slip_meds = g["slip_median_bps"].tolist()
+        head_meds = g["headroom_median_bps_at_acc"].tolist()
+        head_p75s = g["headroom_p75_bps_at_acc"].tolist()
+        frac_poses = g["frac_pos_at_acc"].tolist()
+        for sym, sz, nw, ff, em, sm, hm, hp75, fp in zip(
+            symbols,
+            sizes,
+            nwin,
+            fillable_fracs,
+            edge_meds,
+            slip_meds,
+            head_meds,
+            head_p75s,
+            frac_poses,
+            strict=True,
+        ):
+            size_label = f"${int(float(sz)) // 1000}k"
+            lines.append(
+                f"| {sym} | {size_label} | "
+                f"{int(float(nw))} | "
+                f"{float(ff):.1%} | "
+                f"{float(em):.2f} bp | "
+                f"{float(sm):.2f} bp | "
+                f"{float(hm):.2f} bp | "
+                f"{float(hp75):.2f} bp | "
+                f"{float(fp):.1%} |"
+            )
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def write_survivors_md(
+    cell_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    accuracies: Iterable[float] = ACCURACY_REGIMES,
+) -> dict[float, pd.DataFrame]:
+    """Emit `survivors.md` with per-accuracy sub-tables. Returns the
+    dict {accuracy: DataFrame} for downstream programmatic use.
+    """
+    survivors_by_acc: dict[float, pd.DataFrame] = {}
+    body: list[str] = []
+    body.append("# Goal-A Survivors at Realistic Directional Accuracy\n")
+    body.append(
+        "Cells that satisfy `frac_pos_acc_X > "
+        f"{SURVIVOR_FRAC_POS_THRESHOLD:.2f}` AND "
+        f"`headroom_X_median_bps > {SURVIVOR_HEADROOM_THRESHOLD_BPS:.0f}`, "
+        "where X is the directional accuracy regime.\n"
+    )
+    body.append(
+        "**Cost band**: 2 × 6 bp fee + 2 × |slip| (round-trip). "
+        "**Edge math**: expected gross PnL per round trip = (2p − 1) × |edge|. "
+        "Headroom = expected gross − cost. See README §"
+        "Survivors at realistic directional accuracy for the modelling caveats.\n"
+    )
+    for acc in accuracies:
+        df = survivors_for_accuracy(cell_df, accuracy=acc)
+        survivors_by_acc[acc] = df
+        body.append(f"\n## Accuracy = {acc:.3f} ({acc*100:g}%)\n")
+        body.append(f"_Survivor count: **{len(df)}** of 300 cells._\n")
+        body.append(_format_survivors_table(df))
+        # Near-misses: top-5 by median headroom even if they fail the gate.
+        # Useful for diagnosing how far off the universe is.
+        suffix = _accuracy_suffix(acc)
+        med_col = f"headroom{suffix}_median_bps"
+        frac_col = f"frac_pos_acc{suffix}"
+        if med_col in cell_df.columns:
+            top = (
+                cell_df.sort_values(med_col, ascending=False)
+                .head(5)
+                .reset_index(drop=True)
+            )
+            body.append(f"\n### Top 5 cells by median headroom@{acc:g} (gate-aware)\n")
+            body.append(
+                "| symbol | size | horizon | edge_med | slip_med "
+                "| headroom_med | frac_pos | gate? |"
+            )
+            body.append(
+                "|--------|------|---------|----------|----------"
+                "|--------------|----------|-------|"
+            )
+            symbols = top["symbol"].tolist()
+            sizes = top["size_usd"].tolist()
+            horizons_l = top["horizon"].tolist()
+            edges = top["edge_median_bps"].tolist()
+            slips = top["slip_median_bps"].tolist()
+            meds = top[med_col].tolist()
+            fracs = top[frac_col].tolist()
+            for sym, sz, ho, em, sm, hm, fp in zip(
+                symbols, sizes, horizons_l, edges, slips, meds, fracs, strict=True
+            ):
+                gate = (
+                    "PASS"
+                    if (
+                        float(fp) > SURVIVOR_FRAC_POS_THRESHOLD
+                        and float(hm) > SURVIVOR_HEADROOM_THRESHOLD_BPS
+                    )
+                    else "fail"
+                )
+                size_label = f"${int(float(sz)) // 1000}k"
+                body.append(
+                    f"| {sym} | {size_label} | H{int(float(ho))} | "
+                    f"{float(em):.2f} bp | {float(sm):.2f} bp | "
+                    f"{float(hm):.2f} bp | {float(fp):.1%} | {gate} |"
+                )
+            body.append("")
+    out_path.write_text("\n".join(body))
+    return survivors_by_acc
 
 
 # ---------------------------------------------------------------------------
@@ -441,9 +706,56 @@ def main() -> None:
         help="If set, sample up to N shards per symbol (uniform).",
     )
     parser.add_argument("--seed", type=int, default=0xCAFE)
+    parser.add_argument(
+        "--accuracy-stress-only",
+        action="store_true",
+        help=(
+            "Skip the book-walk pipeline and operate on an existing "
+            "per_window.parquet under --out-dir. Re-emits the parquet with "
+            "headroom_acc_<X>_bps columns appended, regenerates the summary "
+            "CSV with per-accuracy stats, and writes survivors.md."
+        ),
+    )
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
+
+    if args.accuracy_stress_only:
+        per_window_path = args.out_dir / "per_window.parquet"
+        if not per_window_path.exists():
+            raise FileNotFoundError(
+                f"--accuracy-stress-only requires {per_window_path} to exist. "
+                "Run the full pipeline first."
+            )
+        print(f"Loading {per_window_path}...", flush=True)
+        per_window_df = pd.read_parquet(per_window_path)
+        print(
+            f"  Loaded {len(per_window_df)} rows. Adding accuracy-stress "
+            f"columns for {ACCURACY_REGIMES}...",
+            flush=True,
+        )
+        per_window_df = add_accuracy_stress_columns(per_window_df)
+        per_window_df.to_parquet(per_window_path, index=False)
+        print(f"  Re-emitted {per_window_path}", flush=True)
+
+        summary_df = aggregate_cells(per_window_df)
+        csv_path = args.out_dir / "headroom_table.csv"
+        summary_df.to_csv(csv_path, index=False, float_format="%.6g")
+        print(
+            f"  Wrote {len(summary_df)} cells (now with per-acc stats) → "
+            f"{csv_path}",
+            flush=True,
+        )
+
+        survivors_path = args.out_dir / "survivors.md"
+        survivors_by_acc = write_survivors_md(summary_df, survivors_path)
+        for acc, df in survivors_by_acc.items():
+            print(
+                f"  acc={acc:.3f}: {len(df)} survivor cells",
+                flush=True,
+            )
+        print(f"  Wrote {survivors_path}", flush=True)
+        return
 
     cache_dir = args.cache_dir
     all_shards = sorted(cache_dir.glob("*.npz"))
@@ -466,7 +778,7 @@ def main() -> None:
         for p in all_shards:
             by_sym[p.stem.split("__")[0]].append(p)
         capped: list[Path] = []
-        for sym, paths in by_sym.items():
+        for paths in by_sym.values():
             if len(paths) <= args.max_shards_per_symbol:
                 capped.extend(paths)
             else:
@@ -489,6 +801,8 @@ def main() -> None:
         raise RuntimeError("No rows produced — check cache_dir and symbols filter.")
 
     per_window_df = pd.DataFrame(all_rows)
+    # Always compute accuracy-stress columns alongside the oracle headroom.
+    per_window_df = add_accuracy_stress_columns(per_window_df)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     per_window_path = args.out_dir / "per_window.parquet"
     per_window_df.to_parquet(per_window_path, index=False)
@@ -498,6 +812,12 @@ def main() -> None:
     csv_path = args.out_dir / "headroom_table.csv"
     summary_df.to_csv(csv_path, index=False, float_format="%.6g")
     print(f"Wrote {len(summary_df)} (sym,size,horizon) cells → {csv_path}", flush=True)
+
+    survivors_path = args.out_dir / "survivors.md"
+    survivors_by_acc = write_survivors_md(summary_df, survivors_path)
+    for acc, df in survivors_by_acc.items():
+        print(f"  acc={acc:.3f}: {len(df)} survivor cells", flush=True)
+    print(f"Wrote {survivors_path}", flush=True)
 
 
 if __name__ == "__main__":
