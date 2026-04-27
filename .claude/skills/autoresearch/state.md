@@ -103,7 +103,58 @@ budget unlocked only if Phase 0 result is actionable per decision tree.
 - Goal-A v2 feasibility chain at `docs/experiments/goal-a-feasibility/` — 8 artifacts above plus per-window parquets (gitignored).
 - Pacifica fee schedule research: `docs/research/pacifica-fee-schedule-2026-04-27.md` (4bp taker, +1.5bp maker, post-only TIF=ALO/TOB available).
 
-## Open question (2026-04-27 PM-late) — Pretrain vs End-to-End given 18pp gap
+## Council round 2 (2026-04-27 PM-late) — Three-voice synthesis
+
+Council-4, council-5, council-6 weighed in on pretrain vs end-to-end. They
+ANSWER DIFFERENT QUESTIONS, layered rather than conflicting:
+
+- **Council-5: STOP.** Both pretrain-first and end-to-end-first are
+  unfalsifiable at n=169 with consumed holdout, AND the **Maker's Dilemma is
+  the actual blocker** (E[realized|filled] = -7.89bp; encoder cannot solve
+  adverse selection regardless of AUC).
+- **Council-6: Run 5b first** — non-linear adapter on frozen random-init
+  encoder. $0, < 1 CPU-hour. Cleanly arbitrates whether the 18pp gap is a
+  linearity artifact (cheap fix) or manifold deficiency (justifies
+  cascade-aware MEM).
+- **Council-4 (phenomenology):** the cascade signature is a "liquidity-depletion
+  ramp punctuated by a Composite Operator exit" — SLOW summary-statistic
+  regime change with FAST trigger. Hand features (mean/last/max) capture this
+  trivially; CNN claw-back expected at 3-8pp at most. **MEM is genuinely
+  hobbled** (excludes kyle_lambda/cum_ofi_5/delta_imbalance_L1 — the
+  cascade-relevant axes); **SimCLR ±25 jitter is actively harmful** for
+  right-edge cascade detection. Recommends cascade-aware pretexts: re-include
+  OFI features in MEM, drop SimCLR, custom "distance-to-climax regression".
+
+Synthesis: `docs/council-reviews/2026-04-27-pretrain-vs-endtoend-synthesis.md`.
+
+## Next concrete move (revised 2026-04-27 PM-late)
+
+**Phase 1: 5b adapter test** (council-6's recipe). $0, < 1 CPU-hour.
+
+- Reuse the random-init `TapeEncoder` embeddings from Phase 0 (3 seeds).
+- Train a small adapter head: `Linear(256→64) + ReLU + Dropout(0.2) + Linear(64→1)`,
+  ~16K params, BCEWithLogitsLoss(pos_weight=15.7), AdamW(lr=1e-3, wd=1e-3),
+  50 epochs, batch 256, early stop on pooled val AUC patience 5.
+- Same 5-fold day-blocked CV + 600-event embargo as Phase 0.
+- Paired day-clustered bootstrap on (adapter − flat-LR) delta.
+
+**Pre-registered outcomes (council-5 falsifiability):**
+- **GREENLIGHT** Tier A: adapter ≥ flat-LR + 0.02 AND paired-delta CI excludes 0
+  → cascade-aware MEM justified, but ONLY if Goal-A v3 has a TAKER-side or
+  non-Maker-fee downstream framing the user wants to pursue.
+- **MATCHED** Tier B: adapter ≈ flat-LR (delta CI overlaps 0) → manifold
+  neutral. STOP encoder retrain.
+- **KILL** Tier C: adapter < flat-LR by > 0.02 → STOP and pivot.
+
+**Strategy-economics audit (in parallel):** validate council-5's "encoder
+cannot solve Maker's Dilemma" claim. Revisit
+`docs/experiments/goal-a-feasibility/maker_adverse_selection.md`. If 5b's
+pass case lands, the user makes the research-direction call (Goal-A v3
+TAKER-side framing vs wind down).
+
+**Owner:** builder-8 implements; reviewer-10 audits; validator-11 grades.
+
+## Open question (2026-04-27 PM-late) — Pretrain vs End-to-End given 18pp gap (DEFERRED — see council round 2 synthesis above)
 
 ARCH_BOTTLENECK fired with delta = −0.1812. The plan's decision tree leaves
 "pretrain vs end-to-end" as a council decision parameterized on gap size. 18pp
