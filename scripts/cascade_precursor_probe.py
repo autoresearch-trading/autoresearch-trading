@@ -1016,6 +1016,138 @@ def _run_symbol(
     return per_window_rows, per_cell_rows
 
 
+# ---------------------------------------------------------------------------
+# Cascade-direction probe helpers (--cascade-direction flag)
+# ---------------------------------------------------------------------------
+#
+# Given the stage-2 cascade-onset model's per-window predicted probability,
+# we ask: *conditional on a cascade firing*, can we predict its direction
+# (long vs short) from the same 83-dim flat baseline + the cascade-onset
+# confidence?
+#
+# Two operationalizations of "direction":
+#   a) Realized direction at horizon H — sign(forward_log_return_h500).
+#   b) Overshoot peak direction — sign(first_liq_price - anchor_mid) for the
+#      first liquidation fill in (anchor_ts, ts_at(anchor + h500)].  Captures
+#      the cascade-overshoot direction before any subsequent reversion.
+#
+# Multiple-comparisons guardrail: H500 ONLY (n_cascades_h500 ~ 73; H100 has
+# n=20, too underpowered for direction prediction).
+
+
+def _realized_direction_label(fwd_ret: np.ndarray) -> np.ndarray:
+    """Realized direction: 1 if forward_log_return > 0, 0 if <= 0, -1 if NaN.
+
+    The -1 sentinel signals 'invalid' for callers that need to drop windows
+    with horizon-overrun forward returns.
+    """
+    arr = np.asarray(fwd_ret, dtype=np.float64)
+    out = np.full(arr.shape, -1, dtype=np.int8)
+    finite = np.isfinite(arr)
+    out[finite & (arr > 0)] = 1
+    out[finite & (arr <= 0)] = 0
+    return out
+
+
+def _top_pct_mask(proba: np.ndarray, *, top_pct: float) -> np.ndarray:
+    """Boolean mask selecting the top-`top_pct` of `proba` by rank.
+
+    Top-k size is `max(1, floor(n * top_pct))`.  Ties broken in stable order.
+    """
+    n = len(proba)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    k = max(1, int(np.floor(n * top_pct)))
+    order = np.argsort(-np.asarray(proba, dtype=np.float64), kind="stable")
+    mask = np.zeros(n, dtype=bool)
+    mask[order[:k]] = True
+    return mask
+
+
+def _marginal_direction_asymmetry(
+    fwd_ret: np.ndarray, cascade_label: np.ndarray
+) -> float:
+    """P(forward_return > 0 | cascade_label == 1).  NaN if no cascades."""
+    fwd = np.asarray(fwd_ret, dtype=np.float64)
+    cas = np.asarray(cascade_label, dtype=np.int64)
+    valid = np.isfinite(fwd) & (cas == 1)
+    if not valid.any():
+        return float("nan")
+    return float((fwd[valid] > 0).mean())
+
+
+def _overshoot_direction_for_window(
+    *,
+    anchor_ts: int,
+    end_ts: int,
+    anchor_mid: float,
+    liq_ts: np.ndarray,
+    liq_price: np.ndarray,
+) -> int:
+    """Overshoot direction for one window.
+
+    Returns +1 if first_liq_price > anchor_mid, -1 if <, 0 if no liquidation
+    fill in (anchor_ts, end_ts] OR if first_liq_price == anchor_mid.
+    """
+    if len(liq_ts) == 0:
+        return 0
+    lo = int(np.searchsorted(liq_ts, anchor_ts, side="right"))
+    hi = int(np.searchsorted(liq_ts, end_ts, side="right"))
+    if hi <= lo:
+        return 0
+    first_price = float(liq_price[lo])
+    if first_price > anchor_mid:
+        return 1
+    if first_price < anchor_mid:
+        return -1
+    return 0
+
+
+def _majority_class_baseline_auc(y: np.ndarray) -> float:
+    """AUC of a constant majority-class predictor — exactly 0.5 by definition.
+
+    Returns NaN on degenerate single-class label vectors.
+    """
+    arr = np.asarray(y, dtype=np.int64)
+    if len(np.unique(arr)) < 2:
+        return float("nan")
+    return 0.5
+
+
+def _direction_per_day_expected_gross(
+    *,
+    triggers_per_day: float,
+    direction_accuracy: float,
+    mean_abs_fwd_bps: float,
+    fee_bps_per_side: float = TAKER_FEE_BPS_PER_SIDE,
+    slip_bps_per_side: float = DEFAULT_SLIP_BPS_PER_SIDE,
+) -> dict[str, float]:
+    """Per-trigger and per-day headroom math for the direction strategy.
+
+    gross_per_trigger = (2 * direction_accuracy - 1) * mean_abs_fwd_bps
+    cost_per_trigger  = 2 * fee + 2 * slip
+    net_per_trigger   = gross - cost
+    per_day_gross     = triggers_per_day * net_per_trigger
+    """
+    if not (math.isfinite(direction_accuracy) and math.isfinite(mean_abs_fwd_bps)):
+        return {
+            "gross_per_trigger_bps": float("nan"),
+            "cost_per_trigger_bps": float("nan"),
+            "net_per_trigger_bps": float("nan"),
+            "per_day_gross_bps": float("nan"),
+        }
+    gross = (2.0 * direction_accuracy - 1.0) * mean_abs_fwd_bps
+    cost = 2.0 * fee_bps_per_side + 2.0 * slip_bps_per_side
+    net = gross - cost
+    per_day = triggers_per_day * net
+    return {
+        "gross_per_trigger_bps": float(gross),
+        "cost_per_trigger_bps": float(cost),
+        "net_per_trigger_bps": float(net),
+        "per_day_gross_bps": float(per_day),
+    }
+
+
 def _expected_gross_per_day(
     metrics: dict[str, float], n_te: int, *, fold_name: str
 ) -> float:
@@ -2279,6 +2411,630 @@ def _emit_real_markdown(
 
 
 # ---------------------------------------------------------------------------
+# Robustness analysis — day-clustered bootstrap on existing per-window predictions
+# ---------------------------------------------------------------------------
+
+# Robustness defaults
+N_BOOT_ROBUSTNESS: int = 1000
+ROBUSTNESS_HORIZONS: tuple[int, ...] = (100, 500)  # H50 underpowered (n=9)
+
+
+def _precision_at_top_pct_pooled(
+    proba: np.ndarray, labels: np.ndarray, *, top_pct: float
+) -> float:
+    """Pooled precision-at-top-`top_pct`.  Returns NaN on empty input."""
+    n = len(proba)
+    if n == 0:
+        return float("nan")
+    n_top = max(1, int(round(n * top_pct)))
+    order = np.argsort(-np.asarray(proba, dtype=float), kind="stable")
+    top = order[:n_top]
+    return float(np.asarray(labels)[top].sum() / float(n_top))
+
+
+def _day_to_index_map(
+    df: pd.DataFrame, *, date_col: str = "date"
+) -> tuple[list[str], dict[str, np.ndarray]]:
+    """Return (sorted unique day list, dict mapping day → integer row indices)."""
+    dates = sorted(df[date_col].unique().tolist())
+    day_to_idx: dict[str, np.ndarray] = {}
+    arr_dates = df[date_col].to_numpy()
+    for d in dates:
+        day_to_idx[d] = np.flatnonzero(arr_dates == d)
+    return dates, day_to_idx
+
+
+def _day_clustered_bootstrap_iter_indices(
+    days: list[str],
+    day_to_idx: dict[str, np.ndarray],
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """One bootstrap draw: sample len(days) days WITH REPLACEMENT, return the
+    concatenated row indices of ALL windows on those days (no within-day subsampling).
+    """
+    k = len(days)
+    sampled = rng.integers(0, k, size=k)
+    parts = [day_to_idx[days[s]] for s in sampled]
+    if not parts:
+        return np.array([], dtype=np.int64)
+    return np.concatenate(parts).astype(np.int64)
+
+
+def _day_clustered_bootstrap_auc(
+    df: pd.DataFrame,
+    *,
+    proba_col: str,
+    label_col: str = "real_cascade_label",
+    date_col: str = "date",
+    n_boot: int = N_BOOT_ROBUSTNESS,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> tuple[float, float, float]:
+    """Day-clustered bootstrap AUC: resample days with replacement, take ALL
+    windows of each sampled day, compute AUC on the concatenated fold.
+
+    Returns (point, lo, hi) where `point` is the BOOTSTRAP MEAN (not the
+    full-pooled AUC — the prompt asks for "point estimate (mean across bootstrap
+    folds)").
+    """
+    if len(df) == 0:
+        return float("nan"), float("nan"), float("nan")
+    days, day_to_idx = _day_to_index_map(df, date_col=date_col)
+    if len(days) < 2:
+        return float("nan"), float("nan"), float("nan")
+
+    proba = df[proba_col].to_numpy(dtype=np.float64)
+    labels = df[label_col].to_numpy(dtype=np.int64)
+
+    rng = np.random.default_rng(seed)
+    aucs = np.empty(n_boot, dtype=np.float64)
+    aucs[:] = np.nan
+    for b in range(n_boot):
+        idx = _day_clustered_bootstrap_iter_indices(days, day_to_idx, rng=rng)
+        if len(idx) == 0:
+            continue
+        y_b = labels[idx]
+        if len(np.unique(y_b)) < 2:
+            continue
+        try:
+            aucs[b] = roc_auc_score(y_b, proba[idx])
+        except ValueError:
+            continue
+
+    finite = aucs[np.isfinite(aucs)]
+    if len(finite) < 10:
+        return float("nan"), float("nan"), float("nan")
+    point = float(finite.mean())
+    lo = float(np.quantile(finite, alpha / 2.0))
+    hi = float(np.quantile(finite, 1.0 - alpha / 2.0))
+    return point, lo, hi
+
+
+def _day_clustered_bootstrap_precision_at_top(
+    df: pd.DataFrame,
+    *,
+    proba_col: str,
+    label_col: str = "real_cascade_label",
+    date_col: str = "date",
+    top_pct: float = 0.01,
+    n_boot: int = N_BOOT_ROBUSTNESS,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> tuple[float, float, float]:
+    """Day-clustered bootstrap precision-at-top-`top_pct` (mean + 95% CI).
+
+    Each bootstrap draw concatenates ALL windows from sampled days, ranks by
+    `proba_col`, and computes precision over the top `top_pct` slice.
+    """
+    if len(df) == 0:
+        return float("nan"), float("nan"), float("nan")
+    days, day_to_idx = _day_to_index_map(df, date_col=date_col)
+    if len(days) < 2:
+        return float("nan"), float("nan"), float("nan")
+
+    proba = df[proba_col].to_numpy(dtype=np.float64)
+    labels = df[label_col].to_numpy(dtype=np.int64)
+
+    rng = np.random.default_rng(seed)
+    precs = np.empty(n_boot, dtype=np.float64)
+    precs[:] = np.nan
+    for b in range(n_boot):
+        idx = _day_clustered_bootstrap_iter_indices(days, day_to_idx, rng=rng)
+        if len(idx) == 0:
+            continue
+        precs[b] = _precision_at_top_pct_pooled(
+            proba[idx], labels[idx], top_pct=top_pct
+        )
+
+    finite = precs[np.isfinite(precs)]
+    if len(finite) < 10:
+        return float("nan"), float("nan"), float("nan")
+    point = float(finite.mean())
+    lo = float(np.quantile(finite, alpha / 2.0))
+    hi = float(np.quantile(finite, 1.0 - alpha / 2.0))
+    return point, lo, hi
+
+
+def _per_day_attribution(
+    df: pd.DataFrame,
+    *,
+    horizon: int,
+    proba_col: str = "pred_proba",
+    label_col: str = "real_cascade_label",
+    date_col: str = "date",
+    top_pct: float = 0.01,
+) -> pd.DataFrame:
+    """Per-day diagnostics + leave-one-day-out pooled AUC drop.
+
+    For each day d:
+      * n_cascades, n_windows
+      * AUC computed on day d alone (held-out predictions for that day)
+      * precision-at-top-`top_pct` on day d alone
+      * leave_out_pooled_auc_drop = pooled AUC(all days) − pooled AUC(all days \\ d)
+        — POSITIVE values mean removing the day HURT the pooled AUC (day was carrying signal).
+    """
+    sub = pd.DataFrame(df[df["horizon"] == horizon]).copy()
+    if sub.empty:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "horizon",
+                "n_cascades",
+                "n_windows",
+                "auc",
+                "precision_top_1pct",
+                "leave_out_pooled_auc_drop",
+            ]
+        )
+
+    pooled_proba = sub[proba_col].to_numpy(dtype=np.float64)
+    pooled_labels = sub[label_col].to_numpy(dtype=np.int64)
+    if len(np.unique(pooled_labels)) < 2:
+        pooled_auc = float("nan")
+    else:
+        try:
+            pooled_auc = float(roc_auc_score(pooled_labels, pooled_proba))
+        except ValueError:
+            pooled_auc = float("nan")
+
+    arr_dates = sub[date_col].to_numpy()
+    rows: list[dict] = []
+    for d in sorted(sub[date_col].unique().tolist()):
+        mask = arr_dates == d
+        day_proba = pooled_proba[mask]
+        day_labels = pooled_labels[mask]
+        n_windows = int(mask.sum())
+        n_cascades = int(day_labels.sum())
+
+        if n_cascades == 0 or n_cascades == n_windows:
+            auc = float("nan")  # single-class within day → AUC undefined
+        else:
+            try:
+                auc = float(roc_auc_score(day_labels, day_proba))
+            except ValueError:
+                auc = float("nan")
+
+        prec_top = _precision_at_top_pct_pooled(day_proba, day_labels, top_pct=top_pct)
+
+        rest_mask = ~mask
+        rest_labels = pooled_labels[rest_mask]
+        rest_proba = pooled_proba[rest_mask]
+        if len(np.unique(rest_labels)) < 2:
+            rest_auc = float("nan")
+        else:
+            try:
+                rest_auc = float(roc_auc_score(rest_labels, rest_proba))
+            except ValueError:
+                rest_auc = float("nan")
+        if math.isnan(pooled_auc) or math.isnan(rest_auc):
+            drop = float("nan")
+        else:
+            drop = pooled_auc - rest_auc
+
+        rows.append(
+            {
+                "date": d,
+                "horizon": int(horizon),
+                "n_cascades": n_cascades,
+                "n_windows": n_windows,
+                "auc": auc,
+                "precision_top_1pct": prec_top,
+                "leave_out_pooled_auc_drop": drop,
+                "pooled_auc_full": pooled_auc,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _run_robustness_pipeline(
+    per_window_path: Path,
+    out_dir: Path,
+    *,
+    horizons: tuple[int, ...] = ROBUSTNESS_HORIZONS,
+    n_boot: int = N_BOOT_ROBUSTNESS,
+    seed: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Day-clustered bootstrap robustness analysis on the existing per-window
+    parquet from the cascade-real probe.
+
+    Returns (per_horizon_summary_df, per_day_df).  Both are also written to disk
+    as `cascade_precursor_real_robustness_summary.csv` and
+    `cascade_precursor_real_per_day.csv`.
+    """
+    if not per_window_path.exists():
+        raise RuntimeError(
+            f"per-window parquet not found: {per_window_path}.  Run "
+            f"--cascade-real first to generate it."
+        )
+    df = pd.read_parquet(per_window_path)
+    required_cols = {
+        "date",
+        "horizon",
+        "real_cascade_label",
+        "pred_proba",
+        "pred_proba_shuffled",
+    }
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise RuntimeError(
+            f"per-window parquet missing required columns: {missing}.  "
+            f"Expected from cascade_precursor_real_per_window.parquet."
+        )
+
+    # Restrict to pooled scope (cross-symbol pooled rows are how the table is built)
+    if "scope" in df.columns:
+        df = pd.DataFrame(df[df["scope"] == "pooled"]).copy()
+
+    summary_rows: list[dict] = []
+    per_day_frames: list[pd.DataFrame] = []
+    for h in horizons:
+        sub = pd.DataFrame(df[df["horizon"] == h]).copy()
+        if sub.empty:
+            print(f"[robustness] H{h}: no rows in per-window parquet — skipping")
+            continue
+
+        # Real-AUC day-clustered bootstrap
+        real_pt, real_lo, real_hi = _day_clustered_bootstrap_auc(
+            sub,
+            proba_col="pred_proba",
+            n_boot=n_boot,
+            seed=seed,
+        )
+        # Shuffled-AUC day-clustered bootstrap (uses the SAVED shuffled predictions
+        # — does NOT re-shuffle.  Honors the prompt's hard constraint.)
+        shuf_pt, shuf_lo, shuf_hi = _day_clustered_bootstrap_auc(
+            sub,
+            proba_col="pred_proba_shuffled",
+            n_boot=n_boot,
+            seed=seed + 1,
+        )
+        # Real precision-at-top-1% day-clustered bootstrap
+        prec_pt, prec_lo, prec_hi = _day_clustered_bootstrap_precision_at_top(
+            sub,
+            proba_col="pred_proba",
+            n_boot=n_boot,
+            seed=seed + 2,
+        )
+        shuf_prec_pt, shuf_prec_lo, shuf_prec_hi = (
+            _day_clustered_bootstrap_precision_at_top(
+                sub,
+                proba_col="pred_proba_shuffled",
+                n_boot=n_boot,
+                seed=seed + 3,
+            )
+        )
+
+        # Distinguishability: real lo > shuffled hi, on the day-clustered CIs.
+        dist = math.isfinite(real_lo) and math.isfinite(shuf_hi) and (real_lo > shuf_hi)
+
+        summary_rows.append(
+            {
+                "horizon": int(h),
+                "n_total": int(len(sub)),
+                "n_cascades": int(sub["real_cascade_label"].sum()),  # type: ignore[arg-type]
+                "n_days": int(sub["date"].nunique()),  # type: ignore[arg-type]
+                "auc_real_dayboot": real_pt,
+                "auc_real_dayboot_lo": real_lo,
+                "auc_real_dayboot_hi": real_hi,
+                "auc_shuffled_dayboot": shuf_pt,
+                "auc_shuffled_dayboot_lo": shuf_lo,
+                "auc_shuffled_dayboot_hi": shuf_hi,
+                "precision_top_1pct_real_dayboot": prec_pt,
+                "precision_top_1pct_real_dayboot_lo": prec_lo,
+                "precision_top_1pct_real_dayboot_hi": prec_hi,
+                "precision_top_1pct_shuffled_dayboot": shuf_prec_pt,
+                "precision_top_1pct_shuffled_dayboot_lo": shuf_prec_lo,
+                "precision_top_1pct_shuffled_dayboot_hi": shuf_prec_hi,
+                "distinguishable_dayclustered": bool(dist),
+            }
+        )
+
+        # Per-day attribution
+        per_day = _per_day_attribution(sub, horizon=h)
+        per_day_frames.append(per_day)
+
+    summary_df = pd.DataFrame(summary_rows)
+    per_day_df = (
+        pd.concat(per_day_frames, ignore_index=True)
+        if per_day_frames
+        else pd.DataFrame(
+            columns=[
+                "date",
+                "horizon",
+                "n_cascades",
+                "n_windows",
+                "auc",
+                "precision_top_1pct",
+                "leave_out_pooled_auc_drop",
+                "pooled_auc_full",
+            ]
+        )
+    )
+
+    summary_df.to_csv(
+        out_dir / "cascade_precursor_real_robustness_summary.csv", index=False
+    )
+    # Per-day CSV — drop the helper `pooled_auc_full` column to keep the schema
+    # focused on what the prompt's per-day spec asked for.
+    per_day_for_csv = per_day_df.drop(columns=["pooled_auc_full"], errors="ignore")
+    per_day_for_csv.to_csv(out_dir / "cascade_precursor_real_per_day.csv", index=False)
+
+    return summary_df, per_day_df
+
+
+def _emit_robustness_markdown(
+    summary_df: pd.DataFrame,
+    per_day_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    elapsed_sec: float,
+    n_boot: int,
+) -> None:
+    """Render the day-clustered robustness markdown."""
+    lines: list[str] = []
+    lines.append(
+        "# Goal-A cascade-precursor (stage 2) — day-clustered bootstrap robustness"
+    )
+    lines.append("")
+    lines.append(
+        "**Question.** The stage-2 real-cause-flag probe reported pooled AUC = "
+        "0.817 [0.771, 0.858] at H500 with per-window bootstrap.  Cascade events "
+        "cluster intra-day (contagion), so the leave-one-day-out folds may not "
+        "be independent.  This document re-tests the AUC and precision-at-top-1% "
+        "under a **day-clustered bootstrap** (resample the 7 cascade days WITH "
+        "REPLACEMENT, take ALL windows from each sampled day, repeat "
+        f"{n_boot}×).  The binding distinguishability test compares the "
+        "day-clustered real-AUC lower bound against the day-clustered shuffled-"
+        "AUC upper bound."
+    )
+    lines.append("")
+    lines.append(
+        "**Inputs.** Reuses `cascade_precursor_real_per_window.parquet` (held-out "
+        "predictions from the stage-2 LR run).  No re-training; this is a "
+        "bootstrap analysis on existing predictions.  Shuffled-baseline AUC uses "
+        "the saved `pred_proba_shuffled` column — same predictions as the prior "
+        "run, NOT a fresh shuffle."
+    )
+    lines.append("")
+
+    # ---------- Section 1: AUC ----------
+    lines.append("## 1. Day-clustered AUC at H100 and H500")
+    lines.append("")
+    lines.append(
+        "| H | AUC real (mean over boot) | 95% CI (day-clustered) | "
+        "Per-window CI (prior run) |"
+    )
+    lines.append("|---|---|---|---|")
+    prior_ci = {100: "[0.689, 0.870]", 500: "[0.771, 0.858]"}
+    for _, r in summary_df.iterrows():
+        h = int(r["horizon"])  # type: ignore[arg-type]
+        lines.append(
+            f"| H{h} | {float(r['auc_real_dayboot']):.3f} | "  # type: ignore[arg-type]
+            f"[{float(r['auc_real_dayboot_lo']):.3f}, "  # type: ignore[arg-type]
+            f"{float(r['auc_real_dayboot_hi']):.3f}] | "  # type: ignore[arg-type]
+            f"{prior_ci.get(h, '—')} |"
+        )
+    lines.append("")
+
+    # ---------- Section 2: Shuffled baseline ----------
+    lines.append("## 2. Day-clustered shuffled-baseline AUC + distinguishability")
+    lines.append("")
+    lines.append(
+        "| H | AUC shuffled (mean over boot) | 95% CI (day-clustered) | "
+        "real lo > shuffled hi? |"
+    )
+    lines.append("|---|---|---|---|")
+    for _, r in summary_df.iterrows():
+        h = int(r["horizon"])  # type: ignore[arg-type]
+        lines.append(
+            f"| H{h} | {float(r['auc_shuffled_dayboot']):.3f} | "  # type: ignore[arg-type]
+            f"[{float(r['auc_shuffled_dayboot_lo']):.3f}, "  # type: ignore[arg-type]
+            f"{float(r['auc_shuffled_dayboot_hi']):.3f}] | "  # type: ignore[arg-type]
+            f"{'YES' if bool(r['distinguishable_dayclustered']) else 'NO'} |"
+        )
+    lines.append("")
+
+    # ---------- Section 3: Per-day attribution ----------
+    lines.append("## 3. Per-day attribution (H500)")
+    lines.append("")
+    h500 = pd.DataFrame(per_day_df[per_day_df["horizon"] == 500]).copy()
+    if h500.empty:
+        lines.append("**No H500 per-day rows produced.**")
+    else:
+        h500 = h500.sort_values("date").reset_index(drop=True)
+        lines.append(
+            "| date | n_cascades | n_windows | day AUC | precision@top-1% | "
+            "leave-this-day-out pooled AUC drop |"
+        )
+        lines.append("|---|---|---|---|---|---|")
+        for _, r in h500.iterrows():
+            auc_v = float(r["auc"])  # type: ignore[arg-type]
+            auc = f"{auc_v:.3f}" if math.isfinite(auc_v) else "n/a (single-class)"
+            prec = float(r["precision_top_1pct"])  # type: ignore[arg-type]
+            drop_v = float(r["leave_out_pooled_auc_drop"])  # type: ignore[arg-type]
+            drop = f"{drop_v:+.3f}" if math.isfinite(drop_v) else "n/a"
+            lines.append(
+                f"| {r['date']} | {int(r['n_cascades'])} | "  # type: ignore[arg-type]
+                f"{int(r['n_windows'])} | {auc} | {prec:.3f} | {drop} |"  # type: ignore[arg-type]
+            )
+        lines.append("")
+
+        # Top-2 days by leave-one-day-out drop (positive = removing day HURT pooled AUC)
+        h500_sorted = h500.dropna(subset=["leave_out_pooled_auc_drop"]).sort_values(
+            "leave_out_pooled_auc_drop", ascending=False
+        )
+        if len(h500_sorted) >= 2:
+            top2 = h500_sorted.head(2)
+            top2_dates = ", ".join(top2["date"].tolist())
+            top2_drops = ", ".join(
+                f"{float(d):+.3f}" for d in top2["leave_out_pooled_auc_drop"].tolist()
+            )
+            # Compute pooled AUC if BOTH top-2 days are removed
+            pooled_full = (
+                float(h500.iloc[0]["pooled_auc_full"])
+                if (
+                    "pooled_auc_full" in h500.columns
+                    and math.isfinite(float(h500.iloc[0]["pooled_auc_full"]))
+                )
+                else float("nan")
+            )
+            lines.append(
+                f"**Top 2 days driving the pooled AUC: {top2_dates} "
+                f"(leave-out drops {top2_drops}).**  Pooled H500 AUC = "
+                f"{pooled_full:.3f}."
+            )
+            lines.append("")
+
+    # ---------- Section 4: Day-clustered precision at top-1% ----------
+    lines.append("## 4. Day-clustered precision-at-top-1% at H500")
+    lines.append("")
+    h500_sum = pd.DataFrame(summary_df[summary_df["horizon"] == 500]).copy()
+    if h500_sum.empty:
+        lines.append("**No H500 summary row.**")
+    else:
+        r = h500_sum.iloc[0]
+        prec = float(r["precision_top_1pct_real_dayboot"])
+        lines.append(
+            f"Real precision@top-1% (day-clustered mean): "
+            f"{prec:.3f} "
+            f"[{float(r['precision_top_1pct_real_dayboot_lo']):.3f}, "
+            f"{float(r['precision_top_1pct_real_dayboot_hi']):.3f}]"
+        )
+        lines.append("")
+        lines.append(
+            f"Shuffled precision@top-1% (day-clustered mean): "
+            f"{float(r['precision_top_1pct_shuffled_dayboot']):.3f} "
+            f"[{float(r['precision_top_1pct_shuffled_dayboot_lo']):.3f}, "
+            f"{float(r['precision_top_1pct_shuffled_dayboot_hi']):.3f}]"
+        )
+        lines.append("")
+        lines.append(
+            f"Above the 5% (10× lift over base rate ~0.5%) tradeable threshold? "
+            f"**{'YES' if prec > 0.05 else 'NO'}** "
+            f"(threshold from cascade_precursor_real.md §5)."
+        )
+        lines.append("")
+
+    # ---------- Section 5: Verdict ----------
+    lines.append("## 5. Verdict")
+    lines.append("")
+    h500_sum_full = pd.DataFrame(summary_df[summary_df["horizon"] == 500])
+    if h500_sum_full.empty:
+        lines.append("**No H500 results — cannot render verdict.**")
+    else:
+        r = h500_sum_full.iloc[0]
+        dist = bool(r["distinguishable_dayclustered"])
+        # Find the leave-out drops
+        h500 = pd.DataFrame(per_day_df[per_day_df["horizon"] == 500]).copy()
+        h500 = h500.dropna(subset=["leave_out_pooled_auc_drop"]).sort_values(
+            "leave_out_pooled_auc_drop", ascending=False
+        )
+        if len(h500) >= 2:
+            top2_drops = float(h500.iloc[0]["leave_out_pooled_auc_drop"]) + float(
+                h500.iloc[1]["leave_out_pooled_auc_drop"]
+            )
+            top2_dates = h500.head(2)["date"].tolist()
+        else:
+            top2_drops = float("nan")
+            top2_dates = []
+        verdict_kind = (
+            "robust to day-level clustering"
+            if dist
+            and (
+                math.isfinite(top2_drops)
+                and (float(r["auc_real_dayboot"]) - top2_drops > 0.60)
+            )
+            else (
+                "distinguishable from shuffled but contagion-leaning"
+                if dist
+                else "contagion-dominated"
+            )
+        )
+        lines.append(
+            f"Day-clustered H500 real AUC = {float(r['auc_real_dayboot']):.3f} "
+            f"[{float(r['auc_real_dayboot_lo']):.3f}, "
+            f"{float(r['auc_real_dayboot_hi']):.3f}].  "
+            f"Day-clustered H500 shuffled AUC = "
+            f"{float(r['auc_shuffled_dayboot']):.3f} "
+            f"[{float(r['auc_shuffled_dayboot_lo']):.3f}, "
+            f"{float(r['auc_shuffled_dayboot_hi']):.3f}].  "
+            f"Real lo > shuffled hi: **{'YES' if dist else 'NO'}**.  "
+            f"Top 2 days driving signal: "
+            f"{', '.join(top2_dates) if top2_dates else 'n/a'} "
+            f"(combined leave-out drop = "
+            f"{top2_drops:+.3f}{')' if math.isfinite(top2_drops) else ' — n/a)'}."
+            f"  Implied pooled AUC after removing both: "
+            f"{(float(r['auc_real_dayboot']) - top2_drops):.3f}."
+            if math.isfinite(top2_drops)
+            else (
+                f"Day-clustered H500 real AUC = "
+                f"{float(r['auc_real_dayboot']):.3f}"
+                f" [{float(r['auc_real_dayboot_lo']):.3f}, "
+                f"{float(r['auc_real_dayboot_hi']):.3f}]."
+            )
+        )
+        lines.append("")
+        lines.append(f"**Result kind: {verdict_kind}.**")
+        lines.append("")
+
+    lines.append("## 6. Methodological notes")
+    lines.append("")
+    lines.append(
+        "* **Day-clustered bootstrap.** Each iteration samples 7 days WITH "
+        "replacement from the 7 available cascade days (Apr 3, 4, 6, 7, 9, 10, "
+        "13), takes ALL windows from each sampled day, computes AUC on the "
+        "concatenated fold.  This treats each day as the unit of independence, "
+        "consistent with the cascade-contagion concern flagged in the stage-2 "
+        "writeup."
+    )
+    lines.append("")
+    lines.append(
+        "* **Shuffled baseline reuses saved predictions.** The shuffled-label "
+        "AUC uses the `pred_proba_shuffled` column already in the per-window "
+        "parquet — no fresh shuffle, no re-training."
+    )
+    lines.append("")
+    lines.append(
+        "* **Per-day AUC may be NaN** when a day has zero or all positive "
+        "labels (single-class within day → AUC undefined).  These rows are "
+        "dropped from the leave-one-day-out attribution but remain in the CSV."
+    )
+    lines.append("")
+    lines.append(
+        "* **April 14+ untouched.** No raw or cached April 14+ data was loaded."
+    )
+    lines.append("")
+    lines.append(
+        f"_Robustness analysis ran in {elapsed_sec:.1f} s on existing per-"
+        f"window predictions ({n_boot} bootstrap iterations).  No LR re-"
+        f"training, no April 14+ data touched._"
+    )
+
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -2327,6 +3083,28 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--robustness",
+        action="store_true",
+        help=(
+            "Run the day-clustered bootstrap robustness analysis on the "
+            "existing cascade_precursor_real_per_window.parquet.  Reuses saved "
+            "predictions (no LR re-training).  Emits "
+            "cascade_precursor_real_robustness.md, "
+            "cascade_precursor_real_per_day.csv, and "
+            "cascade_precursor_real_robustness_summary.csv."
+        ),
+    )
+    parser.add_argument(
+        "--per-window-path",
+        type=Path,
+        default=None,
+        help=(
+            "Override path to the cascade_precursor_real_per_window.parquet "
+            "input for --robustness (default: <out-dir>/"
+            "cascade_precursor_real_per_window.parquet)."
+        ),
+    )
+    parser.add_argument(
         "--n-boot",
         type=int,
         default=N_BOOT_REAL,
@@ -2346,6 +3124,54 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
+
+    if args.robustness:
+        # ---------- Stage 2 follow-up: day-clustered bootstrap robustness ----------
+        per_window_path: Path = (
+            Path(args.per_window_path)
+            if args.per_window_path is not None
+            else out_dir / "cascade_precursor_real_per_window.parquet"
+        )
+        rob_horizons: tuple[int, ...] = tuple(
+            h for h in horizons if h in ROBUSTNESS_HORIZONS
+        )
+        if not rob_horizons:
+            rob_horizons = ROBUSTNESS_HORIZONS
+        print(
+            f"[robustness] day-clustered bootstrap | horizons={rob_horizons} | "
+            f"n_boot={int(args.n_boot)} | per_window={per_window_path}"
+        )
+        try:
+            summary_df, per_day_df = _run_robustness_pipeline(
+                per_window_path,
+                out_dir,
+                horizons=rob_horizons,
+                n_boot=int(args.n_boot),
+                seed=int(args.seed),
+            )
+        except RuntimeError as exc:
+            print(f"[robustness] BLOCKER: {exc}")
+            return 1
+        elapsed = time.time() - t0
+        _emit_robustness_markdown(
+            summary_df,
+            per_day_df,
+            out_dir / "cascade_precursor_real_robustness.md",
+            elapsed_sec=elapsed,
+            n_boot=int(args.n_boot),
+        )
+        print(f"[robustness] done in {elapsed:.1f} s")
+        print(
+            f"[robustness] wrote " f"{out_dir / 'cascade_precursor_real_robustness.md'}"
+        )
+        print(
+            f"[robustness] wrote " f"{out_dir / 'cascade_precursor_real_per_day.csv'}"
+        )
+        print(
+            f"[robustness] wrote "
+            f"{out_dir / 'cascade_precursor_real_robustness_summary.csv'}"
+        )
+        return 0
 
     if args.cascade_real:
         # ---------- Stage 2: real cause-flag probe ----------

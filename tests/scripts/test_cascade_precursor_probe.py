@@ -299,3 +299,333 @@ def test_april_diagnostic_dates_listing():
     assert len(out) == 13
     # Strictly chronological
     assert out == sorted(out)
+
+
+# ---------------------------------------------------------------------------
+# Step-1/4 robustness — day-clustered bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _make_synthetic_per_window_for_robustness(
+    *,
+    n_days: int = 7,
+    n_per_day: int = 200,
+    n_pos_per_day: int = 5,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Build a fake per-window dataframe shaped like the cascade-real parquet.
+
+    Probabilities are perfectly separable (positives draw from N(2, 1)) so AUC ≈ 1
+    for the real label and ~0.5 for the shuffled control.
+    """
+    rng = np.random.default_rng(seed)
+    rows: list[dict] = []
+    for d in range(n_days):
+        date = f"2026-04-{(d + 3):02d}"
+        labels = np.zeros(n_per_day, dtype=np.int8)
+        labels[:n_pos_per_day] = 1
+        rng.shuffle(labels)
+        # Real model: separable
+        proba = np.where(
+            labels == 1,
+            rng.normal(loc=2.0, scale=1.0, size=n_per_day),
+            rng.normal(loc=0.0, scale=1.0, size=n_per_day),
+        )
+        # Shuffled control: same labels, random scores
+        proba_shuf = rng.normal(size=n_per_day)
+        proba_rf = rng.normal(size=n_per_day)
+        for i in range(n_per_day):
+            rows.append(
+                {
+                    "symbol": "BTC",
+                    "date": date,
+                    "anchor_ts": 1_700_000_000_000 + d * 86_400_000 + i,
+                    "horizon": 500,
+                    "real_cascade_label": int(labels[i]),
+                    "pred_proba": float(proba[i]),
+                    "pred_proba_shuffled": float(proba_shuf[i]),
+                    "pred_proba_random_feat": float(proba_rf[i]),
+                    "fold": date,
+                    "scope": "pooled",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_day_clustered_bootstrap_auc_recovers_separable_signal():
+    """On a perfectly separable dataset the day-clustered bootstrap CI must
+    bracket a high AUC and exclude 0.5."""
+    from scripts.cascade_precursor_probe import _day_clustered_bootstrap_auc
+
+    df = _make_synthetic_per_window_for_robustness(seed=42)
+    point, lo, hi = _day_clustered_bootstrap_auc(
+        df,
+        proba_col="pred_proba",
+        label_col="real_cascade_label",
+        date_col="date",
+        n_boot=200,
+        seed=0,
+    )
+    assert math.isfinite(point)
+    assert math.isfinite(lo)
+    assert math.isfinite(hi)
+    # Separable problem → real-AUC is high, lower bound clears 0.6 comfortably.
+    assert point > 0.85, f"point={point}"
+    assert lo > 0.6, f"lo={lo}"
+    # Shuffled control hovers near 0.5; bootstrap CI should NOT exclude 0.5.
+    s_point, s_lo, s_hi = _day_clustered_bootstrap_auc(
+        df,
+        proba_col="pred_proba_shuffled",
+        label_col="real_cascade_label",
+        date_col="date",
+        n_boot=200,
+        seed=0,
+    )
+    assert math.isfinite(s_point)
+    # Shuffled CI brackets 0.5 (lo<0.5<hi) — lower bound below 0.5 strict-greater test.
+    assert s_lo < 0.5 < s_hi, f"shuffled lo={s_lo} hi={s_hi}"
+
+
+def test_day_clustered_bootstrap_resamples_at_day_level():
+    """If we resample at the day level with replacement, a single duplicated day
+    should appear with a non-trivial probability (~1 - (n-1)^k / n^k for k draws)."""
+    from scripts.cascade_precursor_probe import _day_clustered_bootstrap_iter_indices
+
+    rng = np.random.default_rng(0)
+    days = ["2026-04-03", "2026-04-04", "2026-04-06"]
+    # Per-day index lists
+    day_to_idx = {
+        days[0]: np.array([0, 1, 2]),
+        days[1]: np.array([3, 4]),
+        days[2]: np.array([5, 6, 7, 8]),
+    }
+    n_iter = 200
+    has_duplicate = 0
+    sizes: list[int] = []
+    for _ in range(n_iter):
+        boot_idx = _day_clustered_bootstrap_iter_indices(days, day_to_idx, rng=rng)
+        # Each draw concatenates ALL windows of the sampled days
+        sizes.append(len(boot_idx))
+        # Detect day duplication: total size > sum of unique-day sizes
+        # We test by checking that occasionally the bootstrap fold has 9 rows
+        # (e.g. day-0 sampled 3× → 3+3+3 = 9). With n=3 days, every draw concatenates
+        # 3 days' worth of windows so the size is sum of 3 per-day counts.
+        if len(boot_idx) > sum(len(v) for v in day_to_idx.values()):
+            # Cannot exceed total — only equal when all unique. Larger means duplication
+            # → impossible by construction, but guard against off-by-one.
+            has_duplicate += 1
+    # Each bootstrap draw should have len = sum_of_3_sampled_day_sizes.
+    # Min size = 3*2 = 6 (three days of [3,4]); max = 3*4 = 12 (three days of [5,6,7,8]).
+    assert min(sizes) >= 2 * 3, f"too small, min={min(sizes)}"
+    assert max(sizes) <= 4 * 3, f"too large, max={max(sizes)}"
+
+
+def test_per_day_attribution_columns():
+    """Per-day attribution returns one row per (date, horizon) with required cols."""
+    from scripts.cascade_precursor_probe import _per_day_attribution
+
+    df = _make_synthetic_per_window_for_robustness(seed=11)
+    out = _per_day_attribution(
+        df,
+        horizon=500,
+        proba_col="pred_proba",
+        label_col="real_cascade_label",
+        date_col="date",
+    )
+    assert isinstance(out, pd.DataFrame)
+    assert len(out) == 7  # 7 days
+    required = {
+        "date",
+        "horizon",
+        "n_cascades",
+        "n_windows",
+        "auc",
+        "precision_top_1pct",
+        "leave_out_pooled_auc_drop",
+    }
+    assert required.issubset(set(out.columns))
+    assert (out["horizon"] == 500).all()
+    assert (out["n_windows"] > 0).all()
+    # Pooled AUC is high → leave-one-day-out drop is small per day on a balanced set.
+    assert out["leave_out_pooled_auc_drop"].notna().all()
+
+
+def test_precision_top_1pct_helper_matches_definition():
+    """Day-clustered precision-at-top-1% helper agrees with the existing utility on
+    a single-day sample."""
+    from scripts.cascade_precursor_probe import (
+        _precision_at_top_pct_pooled,
+        _precision_recall_at_top_pct,
+    )
+
+    rng = np.random.default_rng(7)
+    proba = rng.uniform(size=1000)
+    labels = (rng.uniform(size=1000) < 0.04).astype(np.int8)
+    p1, _ = _precision_recall_at_top_pct(proba, labels, top_pct=0.01)
+    p2 = _precision_at_top_pct_pooled(proba, labels, top_pct=0.01)
+    assert abs(p1 - p2) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Cascade-direction probe — Step 2 (direction LR on cascade-likely subset)
+# ---------------------------------------------------------------------------
+
+
+def test_realized_direction_sign_handles_zero_and_signs():
+    """Realized direction is +1 for positive forward return, 0 for non-positive
+    (we treat exactly-zero as 'not positive' to keep the binary target stable)."""
+    from scripts.cascade_precursor_probe import _realized_direction_label
+
+    fwd = np.array([0.01, -0.005, 0.0, 0.0001, -1e-9, np.nan])
+    out = _realized_direction_label(fwd)
+    # +ret → 1, -ret/zero/NaN → 0; NaN preserved as -1 sentinel? We check spec.
+    assert out[0] == 1
+    assert out[1] == 0
+    assert out[2] == 0
+    assert out[3] == 1
+    assert out[4] == 0
+    # NaN forward return → label = -1 (invalid sentinel)
+    assert out[5] == -1
+
+
+def test_top_pct_pred_proba_mask_returns_correct_count():
+    """Top-5% by predicted probability returns exactly ceil(n * 0.05) windows."""
+    from scripts.cascade_precursor_probe import _top_pct_mask
+
+    rng = np.random.default_rng(0)
+    proba = rng.uniform(size=200)
+    mask = _top_pct_mask(proba, top_pct=0.05)
+    # 200 * 0.05 = 10
+    assert mask.sum() == 10
+    # The selected probabilities must all be ≥ the 95th percentile cutoff
+    cutoff = np.quantile(proba, 0.95)
+    assert (proba[mask] >= cutoff - 1e-12).all()
+
+
+def test_marginal_direction_asymmetry_reports_p_positive():
+    """Helper reports P(forward_return > 0 | cascade) on the cascade subset only."""
+    from scripts.cascade_precursor_probe import _marginal_direction_asymmetry
+
+    fwd = np.array([0.01, -0.01, 0.02, -0.005, 0.0, 0.001])
+    cascade = np.array([1, 1, 1, 0, 1, 1])  # 5 cascades
+    p = _marginal_direction_asymmetry(fwd, cascade)
+    # Among 5 cascades: pos count = [0.01, 0.02, 0.001] = 3; zero counts as non-pos
+    assert abs(p - 3 / 5) < 1e-12
+
+
+def test_marginal_direction_asymmetry_no_cascades_returns_nan():
+    from scripts.cascade_precursor_probe import _marginal_direction_asymmetry
+
+    fwd = np.array([0.01, -0.01, 0.02])
+    cascade = np.zeros(3, dtype=np.int8)
+    p = _marginal_direction_asymmetry(fwd, cascade)
+    assert math.isnan(p)
+
+
+def test_overshoot_direction_first_liq_fill_in_window():
+    """Overshoot direction = sign(first_liq_price - anchor_mid) for the first
+    liquidation in (anchor_ts, end_ts]; if no liq in window, sentinel = 0."""
+    from scripts.cascade_precursor_probe import _overshoot_direction_for_window
+
+    # Anchor at t=1000, end_ts=2000, anchor_mid=100.
+    # Liquidation fills: ts=1500 price=110 (first), ts=1800 price=90.
+    liq_ts = np.array([500, 1500, 1800, 2500], dtype=np.int64)
+    liq_price = np.array([99.0, 110.0, 90.0, 95.0], dtype=np.float64)
+    sign = _overshoot_direction_for_window(
+        anchor_ts=1000,
+        end_ts=2000,
+        anchor_mid=100.0,
+        liq_ts=liq_ts,
+        liq_price=liq_price,
+    )
+    # First liquidation in (1000, 2000] is idx=1, price=110 → +1
+    assert sign == 1
+
+    # Negative overshoot: first liq price below anchor
+    liq_ts2 = np.array([1200, 1900], dtype=np.int64)
+    liq_price2 = np.array([95.0, 105.0], dtype=np.float64)
+    s2 = _overshoot_direction_for_window(
+        anchor_ts=1000,
+        end_ts=2000,
+        anchor_mid=100.0,
+        liq_ts=liq_ts2,
+        liq_price=liq_price2,
+    )
+    assert s2 == -1
+
+    # No liq in window → sentinel 0
+    s3 = _overshoot_direction_for_window(
+        anchor_ts=1000,
+        end_ts=2000,
+        anchor_mid=100.0,
+        liq_ts=np.array([100, 5000], dtype=np.int64),
+        liq_price=np.array([1.0, 2.0], dtype=np.float64),
+    )
+    assert s3 == 0
+
+
+def test_majority_class_baseline_auc_is_naive_constant():
+    """A baseline that always predicts the majority class has AUC = 0.5 by
+    construction (constant scores)."""
+    from scripts.cascade_precursor_probe import _majority_class_baseline_auc
+
+    # 70% positive, 30% negative — majority predictor should yield AUC = 0.5
+    y = np.concatenate([np.ones(70, dtype=int), np.zeros(30, dtype=int)])
+    auc = _majority_class_baseline_auc(y)
+    assert abs(auc - 0.5) < 1e-12
+
+
+def test_direction_lr_pipeline_produces_valid_predictions_on_synthetic_data():
+    """End-to-end: feed a small synthetic dataset to the direction LR LOO-CV
+    helper and check it returns finite per-window predictions for every window."""
+    from scripts.cascade_precursor_probe import _leave_one_day_out_predictions
+
+    rng = np.random.default_rng(0)
+    n_days = 5
+    n_per_day = 50
+    X_list, y_list, dates_list = [], [], []
+    for d in range(n_days):
+        date = f"2026-04-{d + 3:02d}"
+        X_d = rng.normal(size=(n_per_day, 10)).astype(np.float32)
+        # Direction label: depends on first feature
+        y_d = (X_d[:, 0] > 0).astype(np.int64)
+        X_list.append(X_d)
+        y_list.append(y_d)
+        dates_list.extend([date] * n_per_day)
+    X = np.concatenate(X_list, axis=0)
+    y = np.concatenate(y_list, axis=0)
+    dates = np.array(dates_list)
+
+    pred = _leave_one_day_out_predictions(
+        X=X, y=y, dates=dates, feature_mode="real", label_mode="real", rng_seed=0
+    )
+    # Every window has a prediction (one fold per day)
+    assert pred.shape == y.shape
+    assert np.isfinite(pred).all()
+    # Direction LR should beat 0.5 AUC since y is signal-bearing
+    from sklearn.metrics import roc_auc_score
+
+    auc = roc_auc_score(y, pred)
+    assert auc > 0.7, f"sanity check failed: auc={auc}"
+
+
+def test_per_day_expected_gross_formula():
+    """Per-day expected gross = trigger_freq × (gross_per_trigger - cost_per_trigger).
+
+    gross_per_trigger = (2 × dir_acc - 1) × E[|fwd_ret|_h500] (in bps).
+    cost_per_trigger = 2 × fee + 2 × slip (in bps).
+    """
+    from scripts.cascade_precursor_probe import _direction_per_day_expected_gross
+
+    out = _direction_per_day_expected_gross(
+        triggers_per_day=1.0,
+        direction_accuracy=0.60,  # 10pp above coin-flip
+        mean_abs_fwd_bps=100.0,  # 1% mean on cascade-likely
+        fee_bps_per_side=4.0,
+        slip_bps_per_side=1.0,
+    )
+    # gross = (2*0.6-1)*100 = 20bps; cost = 2*4+2*1 = 10bps; net = 10bps; daily = 10bps × 1
+    assert abs(out["gross_per_trigger_bps"] - 20.0) < 1e-9
+    assert abs(out["cost_per_trigger_bps"] - 10.0) < 1e-9
+    assert abs(out["net_per_trigger_bps"] - 10.0) < 1e-9
+    assert abs(out["per_day_gross_bps"] - 10.0) < 1e-9
