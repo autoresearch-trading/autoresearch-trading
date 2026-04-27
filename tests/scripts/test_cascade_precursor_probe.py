@@ -134,3 +134,168 @@ def test_per_window_lookup_to_dict_smoke():
     assert int(row["synthetic_cascade_label"]) == 0
     assert pd.isna(row["real_cascade_label"])
     assert bool(row["top_decile_bool"]) is False
+
+
+# ---------------------------------------------------------------------------
+# Stage-2 (real cascade label) helpers
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_auc_ci_perfect_separation_is_one():
+    """Bootstrap CI on perfect separation should be tight near 1.0."""
+    from scripts.cascade_precursor_probe import _bootstrap_auc_ci
+
+    rng = np.random.default_rng(0)
+    n = 500
+    labels = np.zeros(n, dtype=np.int64)
+    labels[: n // 2] = 1
+    # Perfect ranker: probas correlate perfectly with labels
+    proba = labels.astype(np.float64) + rng.normal(scale=0.01, size=n)
+    point, lo, hi = _bootstrap_auc_ci(proba, labels, n_boot=200, seed=0)
+    assert point > 0.99
+    assert lo > 0.95
+    assert hi <= 1.0
+
+
+def test_bootstrap_auc_ci_random_brackets_half():
+    """Random predictions on balanced labels: AUC CI brackets 0.5."""
+    from scripts.cascade_precursor_probe import _bootstrap_auc_ci
+
+    rng = np.random.default_rng(1)
+    n = 1000
+    labels = (rng.random(n) < 0.5).astype(np.int64)
+    proba = rng.random(n)
+    point, lo, hi = _bootstrap_auc_ci(proba, labels, n_boot=200, seed=1)
+    # Random ranker → AUC near 0.5; 95% CI should bracket 0.5
+    assert lo < 0.5 < hi
+    assert 0.4 < point < 0.6
+
+
+def test_bootstrap_auc_ci_degenerate_returns_nan():
+    """All-one or all-zero labels → AUC undefined → NaN tuple."""
+    from scripts.cascade_precursor_probe import _bootstrap_auc_ci
+
+    n = 100
+    proba = np.linspace(0, 1, n)
+    labels_all_zero = np.zeros(n, dtype=np.int64)
+    point, lo, hi = _bootstrap_auc_ci(proba, labels_all_zero, n_boot=50, seed=0)
+    assert math.isnan(point)
+    assert math.isnan(lo)
+    assert math.isnan(hi)
+
+
+def test_real_cascade_label_for_window_anchor_horizon_interval():
+    """Real-cascade label = 1 iff a liquidation ts falls in (anchor_ts, ts_at(anchor+H)]."""
+    from scripts.cascade_precursor_probe import _real_cascade_label_with_event_ts
+
+    # 5 events at ts=10,20,30,40,50; anchor at idx=2 (ts=30); horizon=2 → end_idx=4 (ts=50)
+    event_ts = np.array([10, 20, 30, 40, 50], dtype=np.int64)
+    # Window starts at idx=0 → anchor is start + WINDOW_LEN - 1 (in this synthetic test
+    # we bypass WINDOW_LEN by passing window_starts that imply anchor_idx via the formula
+    # in the helper).  Easier: import WINDOW_LEN and adapt.
+    from tape.constants import WINDOW_LEN
+
+    # We need window_starts such that start + WINDOW_LEN - 1 = 2 (anchor at idx=2)
+    # So start = 2 - WINDOW_LEN + 1.  Build a fake event_ts array large enough.
+    n = WINDOW_LEN + 10
+    event_ts = np.arange(n, dtype=np.int64) * 10  # ts = 0, 10, 20, ...
+    window_starts = np.array([0], dtype=np.int64)  # anchor_idx = WINDOW_LEN - 1
+    anchor_idx = WINDOW_LEN - 1
+    anchor_ts = np.array([event_ts[anchor_idx]], dtype=np.int64)  # 10*(WINDOW_LEN-1)
+    horizon = 5
+    end_ts = event_ts[anchor_idx + horizon]
+
+    # Liquidation at ts=anchor_ts+5 (strictly inside (anchor_ts, end_ts])
+    liq_ts_inside = np.array([int(anchor_ts[0]) + 5], dtype=np.int64)
+    out = _real_cascade_label_with_event_ts(
+        anchor_ts=anchor_ts,
+        window_starts=window_starts,
+        event_ts=event_ts,
+        horizon=horizon,
+        liq_ts=liq_ts_inside,
+    )
+    assert out.shape == (1,)
+    assert int(out[0]) == 1
+
+    # Liquidation exactly at anchor_ts (excluded by left-open interval)
+    liq_ts_at_anchor = np.array([int(anchor_ts[0])], dtype=np.int64)
+    out2 = _real_cascade_label_with_event_ts(
+        anchor_ts=anchor_ts,
+        window_starts=window_starts,
+        event_ts=event_ts,
+        horizon=horizon,
+        liq_ts=liq_ts_at_anchor,
+    )
+    assert int(out2[0]) == 0
+
+    # Liquidation past end_ts (excluded)
+    liq_ts_past = np.array([int(end_ts) + 1], dtype=np.int64)
+    out3 = _real_cascade_label_with_event_ts(
+        anchor_ts=anchor_ts,
+        window_starts=window_starts,
+        event_ts=event_ts,
+        horizon=horizon,
+        liq_ts=liq_ts_past,
+    )
+    assert int(out3[0]) == 0
+
+
+def test_precision_recall_at_top_pct_basic():
+    """Top-1% precision/recall on a perfectly ranked array."""
+    from scripts.cascade_precursor_probe import _precision_recall_at_top_pct
+
+    n = 1000
+    # 5 cascades, perfectly ranked at the top
+    proba = np.linspace(0, 1, n)
+    labels = np.zeros(n, dtype=np.int64)
+    labels[-5:] = 1
+    p, r = _precision_recall_at_top_pct(proba, labels, top_pct=0.01)
+    # top 1% = 10 windows; 5 of them are cascades
+    assert math.isclose(p, 0.5, abs_tol=1e-9)
+    assert math.isclose(r, 1.0, abs_tol=1e-9)
+
+
+def test_precision_recall_at_top_pct_no_positives_returns_nan():
+    from scripts.cascade_precursor_probe import _precision_recall_at_top_pct
+
+    n = 100
+    proba = np.linspace(0, 1, n)
+    labels = np.zeros(n, dtype=np.int64)
+    p, r = _precision_recall_at_top_pct(proba, labels, top_pct=0.01)
+    # No positives → precision=0, recall=NaN (denom=0)
+    assert math.isclose(p, 0.0, abs_tol=1e-9)
+    assert math.isnan(r)
+
+
+def test_signal_distinguishable_from_baseline_basic():
+    """CI lower bound must exceed baseline upper bound for distinguishable=True."""
+    from scripts.cascade_precursor_probe import _signal_distinguishable_from_baseline
+
+    # Distinguishable: real CI [0.62, 0.70] vs baseline CI [0.45, 0.55]
+    assert _signal_distinguishable_from_baseline(
+        real_lo=0.62, real_hi=0.70, baseline_lo=0.45, baseline_hi=0.55
+    )
+    # Not distinguishable: overlap
+    assert not _signal_distinguishable_from_baseline(
+        real_lo=0.50, real_hi=0.65, baseline_lo=0.45, baseline_hi=0.55
+    )
+    # Tied at the boundary — strict greater-than → not distinguishable
+    assert not _signal_distinguishable_from_baseline(
+        real_lo=0.55, real_hi=0.65, baseline_lo=0.45, baseline_hi=0.55
+    )
+    # NaN inputs propagate to False
+    assert not _signal_distinguishable_from_baseline(
+        real_lo=float("nan"), real_hi=0.7, baseline_lo=0.45, baseline_hi=0.55
+    )
+
+
+def test_april_diagnostic_dates_listing():
+    """Helper returns the canonical April 1-13 date list (calendar dates, not gated on data)."""
+    from scripts.cascade_precursor_probe import _april_diagnostic_dates
+
+    out = _april_diagnostic_dates()
+    assert out[0] == "2026-04-01"
+    assert out[-1] == "2026-04-13"
+    assert len(out) == 13
+    # Strictly chronological
+    assert out == sorted(out)

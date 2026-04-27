@@ -146,6 +146,106 @@ def _synthetic_cascade_label(
     return label
 
 
+def _precision_recall_at_top_pct(
+    proba: np.ndarray, labels: np.ndarray, *, top_pct: float
+) -> tuple[float, float]:
+    """Top-`top_pct` precision and recall (no lift; caller computes via base rate).
+
+    Returns
+    -------
+    (precision, recall)
+        precision = (cascades in top k) / k
+        recall    = (cascades in top k) / total_cascades ; NaN if total_cascades==0
+    Top-k size is `max(1, n*top_pct)`.
+    """
+    n = len(proba)
+    if n == 0:
+        return float("nan"), float("nan")
+    n_top = max(1, int(round(n * top_pct)))
+
+    order = np.argsort(-proba, kind="stable")
+    top = order[:n_top]
+    pos_in_top = float(labels[top].sum())
+    total_pos = float(labels.sum())
+    precision = pos_in_top / float(n_top)
+    recall = pos_in_top / total_pos if total_pos > 0 else float("nan")
+    return precision, recall
+
+
+def _bootstrap_auc_ci(
+    proba: np.ndarray,
+    labels: np.ndarray,
+    *,
+    n_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> tuple[float, float, float]:
+    """Bootstrap (point, lo, hi) AUC with a 100*(1-alpha)% percentile CI.
+
+    Resamples `(proba, labels)` rows with replacement `n_boot` times.  If a
+    bootstrap draw yields a single class the AUC for that draw is skipped
+    (recorded as NaN and dropped from the percentile calc).  If the labels are
+    all-zero or all-one the point AUC is undefined and we return (NaN, NaN, NaN).
+    """
+    n = len(proba)
+    if n == 0 or len(np.unique(labels)) < 2:
+        return float("nan"), float("nan"), float("nan")
+    try:
+        point = float(roc_auc_score(labels, proba))
+    except ValueError:
+        return float("nan"), float("nan"), float("nan")
+
+    rng = np.random.default_rng(seed)
+    aucs = np.empty(n_boot, dtype=np.float64)
+    aucs[:] = np.nan
+    for b in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        y_b = labels[idx]
+        p_b = proba[idx]
+        if len(np.unique(y_b)) < 2:
+            continue
+        try:
+            aucs[b] = roc_auc_score(y_b, p_b)
+        except ValueError:
+            continue
+
+    finite = aucs[np.isfinite(aucs)]
+    if len(finite) < 10:
+        # Not enough valid bootstrap draws to build a CI.
+        return point, float("nan"), float("nan")
+    lo = float(np.quantile(finite, alpha / 2.0))
+    hi = float(np.quantile(finite, 1.0 - alpha / 2.0))
+    return point, lo, hi
+
+
+def _signal_distinguishable_from_baseline(
+    *,
+    real_lo: float,
+    real_hi: float,
+    baseline_lo: float,
+    baseline_hi: float,
+) -> bool:
+    """True iff `real_lo > baseline_hi` (strict, NaN-safe).
+
+    The binding statistical question for the real-cascade probe: does the
+    real-label AUC's 95% CI lower bound strictly exceed the shuffled-label
+    AUC's 95% CI upper bound?  Strict > so 'tied at boundary' is False.
+    """
+    vals = (real_lo, real_hi, baseline_lo, baseline_hi)
+    if any(not math.isfinite(v) for v in vals):
+        return False
+    return real_lo > baseline_hi
+
+
+def _april_diagnostic_dates() -> list[str]:
+    """Calendar dates April 1 through April 13 (inclusive), as `YYYY-MM-DD` strings.
+
+    These are the diagnostic-window dates regardless of whether raw data is on
+    disk for a given symbol.  The caller filters to dates with shards / parquet.
+    """
+    return [f"2026-04-{d:02d}" for d in range(1, 14)]
+
+
 def _precision_recall_at_top_decile(
     proba: np.ndarray, labels: np.ndarray
 ) -> tuple[float, float, float]:
@@ -1300,6 +1400,885 @@ def _emit_markdown(
 
 
 # ---------------------------------------------------------------------------
+# Stage 2 — REAL cause-flag probe on April 1-13 with leave-one-day-out CV
+# ---------------------------------------------------------------------------
+#
+# The synthetic-label probe (stage 1) measured volatility-clustering, not real
+# liquidation cascades — the overlap-validation diagnostic confirmed only ~20%
+# of real cascades coincide with 99th-percentile-magnitude forward returns at
+# H100.  Stage 2 uses the `cause` flag directly.  Sample size on April 1-13 is
+# small (n_cascades ≈ 9 / 20 / 73 universe-wide at H50/H100/H500) — wide CIs
+# expected.  The binding question: is the real cascade label distinguishable
+# from a shuffled-label baseline given the small n?
+#
+# Protocol:
+#   * Real-cascade label per window: any `cause IN ('market_liquidation',
+#     'backstop_liquidation')` fill in (anchor_ts, ts_at(anchor + H)].  Pulled
+#     from raw trade parquet (April 1+) via DuckDB; pre-April dedup rule does
+#     NOT apply (April+ uses event_type='fulfill_taker' filter — gotcha #19).
+#   * Pooled cross-symbol LR with leave-one-day-out CV (April 1-13).
+#   * Per-symbol LR with leave-one-day-out CV for symbols with ≥5 cascades at H.
+#   * Shuffled-label baseline: same fit, labels permuted within each train day.
+#   * Random-feature baseline: same fit, features replaced by Gaussian noise.
+#   * Bootstrap 95% AUC CIs.
+#   * Hard constraint: April 14+ untouched (gotcha #17).
+#
+# Multiple-testing awareness: the BINDING metric is pooled cross-symbol AUC vs
+# shuffled at H100 and H500.  Per-symbol cells are descriptive only.
+
+REAL_HORIZONS: tuple[int, ...] = (50, 100, 500)
+N_BOOT_REAL: int = 1000
+PER_SYMBOL_MIN_CASCADES: int = 5
+TOP_PCT_REAL: float = 0.01  # precision-at-top-1%
+
+
+@dataclass(frozen=True)
+class RealDayBatch:
+    """Per-(symbol, date) windows + real-cascade labels at every horizon.
+
+    Built from the cache shard for flat features + event_ts, plus a DuckDB
+    query against the raw trade parquet for the liquidation timestamps.
+    """
+
+    symbol: str
+    date: str
+    flat_X: np.ndarray  # (N, FLAT_DIM)
+    anchor_ts: np.ndarray  # (N,) int64
+    window_starts: np.ndarray  # (N,) int64
+    real_labels: dict[int, np.ndarray]  # h -> (N,) int8
+    real_valid: dict[int, np.ndarray]  # h -> (N,) bool — True iff anchor+h fits in day
+
+
+def _load_liq_ts_for_symbol_date(symbol: str, date_str: str) -> np.ndarray | None:
+    """Return sorted int64 array of liquidation trade ts_ms for (symbol, date),
+    or None if the raw parquet directory does not exist.
+
+    Hard constraint: April 14+ data is hold-out — refuse to load.
+    """
+    if date_str >= APRIL_HELDOUT_START:
+        return None
+    if date_str < APRIL_START:
+        # Pre-April raw data has no `cause` column (CLAUDE.md schema)
+        return None
+    base = Path(f"data/trades/symbol={symbol}/date={date_str}")
+    if not base.exists():
+        return None
+    parquet_files = list(base.glob("*.parquet"))
+    if not parquet_files:
+        return None
+    q = (
+        f"SELECT ts_ms FROM read_parquet('{base}/*.parquet') "
+        f"WHERE cause IN ('market_liquidation', 'backstop_liquidation') "
+        f"ORDER BY ts_ms"
+    )
+    try:
+        df = duckdb.query(q).to_df()
+    except Exception:
+        return None
+    return df["ts_ms"].to_numpy(dtype=np.int64)
+
+
+def _build_real_day_batch(
+    cache_dir: Path,
+    symbol: str,
+    date_str: str,
+    horizons: tuple[int, ...] = REAL_HORIZONS,
+) -> RealDayBatch | None:
+    """Build a RealDayBatch for (symbol, date_str) on April 1-13.
+
+    Returns None if the cache shard or raw-trade parquet is unavailable, or if
+    the shard is empty.
+    """
+    shard_path = cache_dir / f"{symbol}__{date_str}.npz"
+    if not shard_path.exists():
+        return None
+    if date_str >= APRIL_HELDOUT_START or date_str < APRIL_START:
+        return None
+    payload = _load_shard(shard_path)
+    features: np.ndarray = payload["features"]
+    event_ts: np.ndarray = payload["event_ts"].astype(np.int64)
+    n_events = features.shape[0]
+    if n_events < WINDOW_LEN:
+        return None
+
+    last_valid_start = n_events - WINDOW_LEN
+    if last_valid_start < 0:
+        return None
+    starts = np.arange(0, last_valid_start + 1, STRIDE_EVAL, dtype=np.int64)
+    if len(starts) == 0:
+        return None
+    anchors = starts + WINDOW_LEN - 1
+    anchor_ts = event_ts[anchors].astype(np.int64)
+
+    # Flat features per window
+    flat_X = np.empty((len(starts), FLAT_DIM), dtype=np.float32)
+    for i, s in enumerate(starts):
+        flat_X[i] = extract_flat_features(features[s : s + WINDOW_LEN])
+
+    # Real cascade labels per horizon — even if liq_ts is empty (label = all-zeros)
+    liq_ts = _load_liq_ts_for_symbol_date(symbol, date_str)
+    if liq_ts is None:
+        return None  # raw parquet missing → can't validate
+
+    real_labels: dict[int, np.ndarray] = {}
+    real_valid: dict[int, np.ndarray] = {}
+    for h in horizons:
+        end_idx = anchors + h
+        valid = end_idx < n_events
+        real_valid[h] = valid
+        real_labels[h] = _real_cascade_label_with_event_ts(
+            anchor_ts=anchor_ts,
+            window_starts=starts,
+            event_ts=event_ts,
+            horizon=h,
+            liq_ts=liq_ts,
+        )
+    return RealDayBatch(
+        symbol=symbol,
+        date=date_str,
+        flat_X=flat_X,
+        anchor_ts=anchor_ts,
+        window_starts=starts,
+        real_labels=real_labels,
+        real_valid=real_valid,
+    )
+
+
+def _gather_real_batches(
+    cache_dir: Path,
+    symbols: tuple[str, ...],
+    dates: list[str],
+    horizons: tuple[int, ...] = REAL_HORIZONS,
+) -> list[RealDayBatch]:
+    """Build all RealDayBatch objects across (symbol × date)."""
+    out: list[RealDayBatch] = []
+    for symbol in symbols:
+        for date_str in dates:
+            b = _build_real_day_batch(cache_dir, symbol, date_str, horizons=horizons)
+            if b is not None:
+                out.append(b)
+    return out
+
+
+def _stack_real_batches_at_horizon(
+    batches: list[RealDayBatch], horizon: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Stack per-batch arrays for a single horizon, dropping invalid windows
+    (anchor + horizon overruns the shard).
+
+    Returns
+    -------
+    X         : (N_total, FLAT_DIM)
+    y         : (N_total,) int8 real cascade labels
+    sym_arr   : (N_total,) U-array of symbol strings
+    date_arr  : (N_total,) U-array of date strings
+    anchor_arr: (N_total,) int64 anchor timestamps
+    """
+    if not batches:
+        return (
+            np.zeros((0, FLAT_DIM), dtype=np.float32),
+            np.zeros(0, dtype=np.int8),
+            np.zeros(0, dtype="<U16"),
+            np.zeros(0, dtype="<U10"),
+            np.zeros(0, dtype=np.int64),
+        )
+    Xs: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    syms: list[np.ndarray] = []
+    dates: list[np.ndarray] = []
+    anchors: list[np.ndarray] = []
+    for b in batches:
+        if horizon not in b.real_labels:
+            continue
+        valid = b.real_valid[horizon]
+        if not valid.any():
+            continue
+        Xs.append(b.flat_X[valid])
+        ys.append(b.real_labels[horizon][valid].astype(np.int8))
+        n_v = int(valid.sum())
+        syms.append(np.full(n_v, b.symbol, dtype="<U16"))
+        dates.append(np.full(n_v, b.date, dtype="<U10"))
+        anchors.append(b.anchor_ts[valid].astype(np.int64))
+    if not Xs:
+        return (
+            np.zeros((0, FLAT_DIM), dtype=np.float32),
+            np.zeros(0, dtype=np.int8),
+            np.zeros(0, dtype="<U16"),
+            np.zeros(0, dtype="<U10"),
+            np.zeros(0, dtype=np.int64),
+        )
+    return (
+        np.concatenate(Xs, axis=0),
+        np.concatenate(ys, axis=0),
+        np.concatenate(syms, axis=0),
+        np.concatenate(dates, axis=0),
+        np.concatenate(anchors, axis=0),
+    )
+
+
+def _fit_lr_proba(Xtr: np.ndarray, ytr: np.ndarray, Xte: np.ndarray) -> np.ndarray:
+    """Fit balanced LR + StandardScaler on (Xtr, ytr); return P(class=1) on Xte.
+
+    Degenerate ytr (single class) → returns constant probability = ytr.mean().
+    """
+    if len(np.unique(ytr)) < 2 or len(Xtr) == 0:
+        const = float(ytr.mean()) if len(ytr) > 0 else 0.0
+        return np.full(len(Xte), const, dtype=np.float64)
+    scaler = StandardScaler().fit(Xtr)
+    lr = LogisticRegression(
+        C=1.0, max_iter=1_000, class_weight="balanced", solver="lbfgs"
+    ).fit(scaler.transform(Xtr), ytr)
+    proba = lr.predict_proba(scaler.transform(Xte))
+    classes = list(lr.classes_)
+    pos_idx = classes.index(1) if 1 in classes else (1 if proba.shape[1] > 1 else 0)
+    return proba[:, pos_idx].astype(np.float64)
+
+
+def _shuffle_labels_within_day(
+    y: np.ndarray, dates: np.ndarray, *, seed: int
+) -> np.ndarray:
+    """Permute labels independently within each day (preserves per-day base rate)."""
+    rng = np.random.default_rng(seed)
+    out = y.copy()
+    for d in np.unique(dates):
+        mask = dates == d
+        idx = np.flatnonzero(mask)
+        if len(idx) > 1:
+            perm = rng.permutation(len(idx))
+            out[idx] = y[idx[perm]]
+    return out
+
+
+def _leave_one_day_out_predictions(
+    *,
+    X: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    feature_mode: str = "real",
+    label_mode: str = "real",
+    rng_seed: int = 0,
+) -> np.ndarray:
+    """Leave-one-day-out CV: hold out each day, train on the rest, predict on day.
+
+    Parameters
+    ----------
+    feature_mode : 'real' uses X as-is; 'random' replaces with Gaussian noise.
+    label_mode   : 'real' uses y; 'shuffled' permutes within-day in train fold only.
+
+    Returns
+    -------
+    pred : (N,) predicted P(class=1).  pred[i] is from a fold where i was held out.
+    """
+    n = len(y)
+    pred = np.full(n, np.nan, dtype=np.float64)
+    unique_dates = sorted(np.unique(dates).tolist())
+    rng = np.random.default_rng(rng_seed)
+    for fold_idx, held_date in enumerate(unique_dates):
+        train_mask = dates != held_date
+        test_mask = dates == held_date
+        if not train_mask.any() or not test_mask.any():
+            continue
+        if feature_mode == "real":
+            Xtr = X[train_mask]
+            Xte = X[test_mask]
+        elif feature_mode == "random":
+            # Same shape, same dtype, Gaussian noise
+            Xtr = rng.standard_normal(size=(int(train_mask.sum()), X.shape[1])).astype(
+                np.float32
+            )
+            Xte = rng.standard_normal(size=(int(test_mask.sum()), X.shape[1])).astype(
+                np.float32
+            )
+        else:
+            raise ValueError(f"unknown feature_mode: {feature_mode}")
+
+        ytr = y[train_mask].astype(np.int64)
+        if label_mode == "shuffled":
+            ytr = _shuffle_labels_within_day(
+                ytr, dates[train_mask], seed=rng_seed + fold_idx
+            )
+
+        proba = _fit_lr_proba(Xtr, ytr, Xte)
+        pred[test_mask] = proba
+    return pred
+
+
+def _per_cell_real_metrics(
+    *,
+    proba_real: np.ndarray,
+    proba_shuffled: np.ndarray,
+    proba_random_feat: np.ndarray,
+    labels: np.ndarray,
+    n_boot: int = N_BOOT_REAL,
+    seed: int = 0,
+) -> dict[str, float | bool]:
+    """Compute the canonical metrics for one (H, scope) cell."""
+    valid = np.isfinite(proba_real) & np.isfinite(labels.astype(np.float64))
+    p_r = proba_real[valid]
+    p_sh = proba_shuffled[valid]
+    p_rf = proba_random_feat[valid]
+    y = labels[valid].astype(np.int64)
+    n_total = int(len(y))
+    n_cascades = int(y.sum())
+    base_rate = float(n_cascades / n_total) if n_total > 0 else float("nan")
+
+    # AUC + bootstrap CI
+    auc, auc_lo, auc_hi = _bootstrap_auc_ci(p_r, y, n_boot=n_boot, seed=seed)
+    auc_sh, auc_sh_lo, auc_sh_hi = _bootstrap_auc_ci(
+        p_sh, y, n_boot=n_boot, seed=seed + 1
+    )
+    auc_rf, auc_rf_lo, auc_rf_hi = _bootstrap_auc_ci(
+        p_rf, y, n_boot=n_boot, seed=seed + 2
+    )
+
+    # Precision/recall at top-1%
+    prec_top, rec_top = _precision_recall_at_top_pct(p_r, y, top_pct=TOP_PCT_REAL)
+    if math.isfinite(base_rate) and base_rate > 0:
+        lift_top = prec_top / base_rate
+    else:
+        lift_top = float("nan")
+
+    # Distinguishability flags
+    dist_from_shuffled = _signal_distinguishable_from_baseline(
+        real_lo=auc_lo, real_hi=auc_hi, baseline_lo=auc_sh_lo, baseline_hi=auc_sh_hi
+    )
+    dist_from_random_feat = _signal_distinguishable_from_baseline(
+        real_lo=auc_lo, real_hi=auc_hi, baseline_lo=auc_rf_lo, baseline_hi=auc_rf_hi
+    )
+
+    return {
+        "n_total": float(n_total),
+        "n_cascades": float(n_cascades),
+        "base_rate": base_rate,
+        "auc": auc,
+        "auc_lo": auc_lo,
+        "auc_hi": auc_hi,
+        "auc_shuffled": auc_sh,
+        "auc_shuffled_lo": auc_sh_lo,
+        "auc_shuffled_hi": auc_sh_hi,
+        "auc_random_feat": auc_rf,
+        "auc_random_feat_lo": auc_rf_lo,
+        "auc_random_feat_hi": auc_rf_hi,
+        "precision_at_top_1pct": prec_top,
+        "recall_at_top_1pct": rec_top,
+        "lift_at_top_1pct": lift_top,
+        "signal_distinguishable_from_shuffled": dist_from_shuffled,
+        "signal_distinguishable_from_random_feat": dist_from_random_feat,
+    }
+
+
+def _run_cascade_real_pipeline(
+    cache_dir: Path,
+    symbols: tuple[str, ...],
+    out_dir: Path,
+    *,
+    horizons: tuple[int, ...] = REAL_HORIZONS,
+    n_boot: int = N_BOOT_REAL,
+    seed: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Run the stage-2 real-cascade probe.
+
+    Returns
+    -------
+    (per_window_df, per_cell_df, summary_dict)
+    """
+    dates = _april_diagnostic_dates()
+    print(
+        f"[cascade-real] gathering windows for {len(symbols)} symbols × "
+        f"{len(dates)} dates (April 1-13)..."
+    )
+    batches = _gather_real_batches(cache_dir, symbols, dates, horizons=horizons)
+    if not batches:
+        raise RuntimeError(
+            "No April 1-13 batches built — cache shards or raw trade parquets "
+            "may be missing.  Cannot run stage-2 real-cascade probe."
+        )
+    n_batches = len(batches)
+    n_unique_dates = len({b.date for b in batches})
+    n_unique_syms = len({b.symbol for b in batches})
+    print(
+        f"[cascade-real] built {n_batches} (symbol, date) batches across "
+        f"{n_unique_syms} symbols and {n_unique_dates} dates"
+    )
+
+    per_window_rows: list[dict] = []
+    per_cell_rows: list[dict] = []
+    summary: dict[str, dict] = {}
+
+    for h in horizons:
+        X, y, sym_arr, date_arr, anchor_arr = _stack_real_batches_at_horizon(batches, h)
+        if len(y) == 0 or y.sum() == 0:
+            print(
+                f"[cascade-real] H{h}: no positive cascades on April 1-13 — "
+                f"skipping cell"
+            )
+            continue
+        n_total = int(len(y))
+        n_cascades = int(y.sum())
+        unique_dates = sorted(np.unique(date_arr).tolist())
+        print(
+            f"[cascade-real] H{h}: n_total={n_total}, n_cascades={n_cascades}, "
+            f"n_dates={len(unique_dates)}"
+        )
+
+        # ----- Pooled cross-symbol leave-one-day-out CV -----
+        proba_real_pool = _leave_one_day_out_predictions(
+            X=X,
+            y=y,
+            dates=date_arr,
+            feature_mode="real",
+            label_mode="real",
+            rng_seed=seed,
+        )
+        proba_shuffled_pool = _leave_one_day_out_predictions(
+            X=X,
+            y=y,
+            dates=date_arr,
+            feature_mode="real",
+            label_mode="shuffled",
+            rng_seed=seed + 100,
+        )
+        proba_random_feat_pool = _leave_one_day_out_predictions(
+            X=X,
+            y=y,
+            dates=date_arr,
+            feature_mode="random",
+            label_mode="real",
+            rng_seed=seed + 200,
+        )
+
+        pooled_metrics = _per_cell_real_metrics(
+            proba_real=proba_real_pool,
+            proba_shuffled=proba_shuffled_pool,
+            proba_random_feat=proba_random_feat_pool,
+            labels=y,
+            n_boot=n_boot,
+            seed=seed,
+        )
+        pooled_metrics_typed: dict[str, float | bool | str | int] = dict(pooled_metrics)
+        pooled_metrics_typed["horizon"] = int(h)
+        pooled_metrics_typed["scope"] = "pooled"
+        pooled_metrics_typed["symbol"] = "ALL"
+        per_cell_rows.append(pooled_metrics_typed)
+        summary[f"pooled_H{h}"] = pooled_metrics
+
+        # ----- Per-window rows for the pooled fold -----
+        valid_pool = np.isfinite(proba_real_pool)
+        for i in np.flatnonzero(valid_pool):
+            per_window_rows.append(
+                {
+                    "symbol": str(sym_arr[i]),
+                    "date": str(date_arr[i]),
+                    "anchor_ts": int(anchor_arr[i]),
+                    "horizon": int(h),
+                    "real_cascade_label": int(y[i]),
+                    "pred_proba": float(proba_real_pool[i]),
+                    "pred_proba_shuffled": float(proba_shuffled_pool[i]),
+                    "pred_proba_random_feat": float(proba_random_feat_pool[i]),
+                    "fold": str(date_arr[i]),  # held-out day
+                    "scope": "pooled",
+                }
+            )
+
+        # ----- Per-symbol cells for symbols with ≥ PER_SYMBOL_MIN_CASCADES at H -----
+        for symbol in sorted(np.unique(sym_arr).tolist()):
+            sym_mask = sym_arr == symbol
+            y_s = y[sym_mask]
+            if y_s.sum() < PER_SYMBOL_MIN_CASCADES:
+                continue
+            X_s = X[sym_mask]
+            dates_s = date_arr[sym_mask]
+            unique_dates_s = sorted(np.unique(dates_s).tolist())
+            if len(unique_dates_s) < 2:
+                # Cannot run leave-one-day-out CV with a single date
+                continue
+
+            proba_real_s = _leave_one_day_out_predictions(
+                X=X_s,
+                y=y_s,
+                dates=dates_s,
+                feature_mode="real",
+                label_mode="real",
+                rng_seed=seed + 1000,
+            )
+            proba_shuffled_s = _leave_one_day_out_predictions(
+                X=X_s,
+                y=y_s,
+                dates=dates_s,
+                feature_mode="real",
+                label_mode="shuffled",
+                rng_seed=seed + 1100,
+            )
+            proba_random_feat_s = _leave_one_day_out_predictions(
+                X=X_s,
+                y=y_s,
+                dates=dates_s,
+                feature_mode="random",
+                label_mode="real",
+                rng_seed=seed + 1200,
+            )
+
+            sym_metrics = _per_cell_real_metrics(
+                proba_real=proba_real_s,
+                proba_shuffled=proba_shuffled_s,
+                proba_random_feat=proba_random_feat_s,
+                labels=y_s,
+                n_boot=n_boot,
+                seed=seed,
+            )
+            sym_metrics_typed: dict[str, float | bool | str | int] = dict(sym_metrics)
+            sym_metrics_typed["horizon"] = int(h)
+            sym_metrics_typed["scope"] = "per_symbol"
+            sym_metrics_typed["symbol"] = symbol
+            per_cell_rows.append(sym_metrics_typed)
+
+    per_window_df = pd.DataFrame(per_window_rows)
+    per_cell_df = pd.DataFrame(per_cell_rows)
+    return per_window_df, per_cell_df, summary
+
+
+def _emit_real_markdown(
+    per_cell_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    horizons: tuple[int, ...],
+    elapsed_sec: float,
+    notes: list[str] | None = None,
+) -> None:
+    """Render the stage-2 markdown verdict per the prompt's required outline."""
+    lines: list[str] = []
+    lines.append("# Goal-A cascade-precursor (stage 2) — real `cause` flag probe")
+    lines.append("")
+    lines.append(
+        "**Question.** Is there a measurable precursor footprint in the 200 "
+        "events before a real liquidation cascade?  Stage 1 used a synthetic "
+        "99th-percentile-magnitude label that turned out to overlap real "
+        "cascades only ~20% on April 1-13 at H100 — the high lift was "
+        "measuring volatility clustering, not forced liquidations.  Stage 2 "
+        "uses the `cause` flag directly.  Sample size on April 1-13 is small "
+        "(n_cascades ≈ 9 / 20 / 73 universe-wide at H50 / H100 / H500) — "
+        "wide CIs are expected.  The binding statistical question is whether "
+        "the real-label AUC's 95% CI lower bound strictly exceeds the "
+        "shuffled-label AUC's 95% CI upper bound."
+    )
+    lines.append("")
+    lines.append(
+        "**Protocol.** 83-dim flat baseline (`tape/flat_features.py`).  "
+        "`LogisticRegression(class_weight='balanced', C=1.0)` — same default "
+        "as Gate 0 / Gate 1.  No hyperparameter search (small data + multiple "
+        "comparisons would inflate AUC).  Pooled cross-symbol leave-one-day-"
+        "out CV on April 1-13 — held-out day's predictions aggregated across "
+        "folds.  Per-symbol leave-one-day-out CV restricted to symbols with "
+        "≥ 5 real cascades at the horizon of interest (descriptive, not "
+        "binding).  Bootstrap 95% AUC CI (n_boot = 1000).  Shuffled-label "
+        "baseline (labels permuted within day, train fold only).  Random-"
+        "feature baseline (Gaussian noise, same shape).  April 14+ "
+        "untouched (gotcha #17)."
+    )
+    lines.append("")
+    lines.append(
+        "**Contamination disclosure.** April 1-13 was used for v1 diagnostic "
+        "checks (gotcha #17 lists this as the diagnostic window) — but the "
+        "`cause` field was NOT studied in v1.  The contamination concern "
+        "from prior v1 work is on direction-related tests and cannot bias "
+        "this real-cascade probe."
+    )
+    lines.append("")
+
+    # ---------- 1. Sample size confirmation ----------
+    lines.append("## 1. Sample size confirmation")
+    lines.append("")
+    pooled: pd.DataFrame = pd.DataFrame(
+        per_cell_df[per_cell_df["scope"] == "pooled"]
+    ).copy()
+    if pooled.empty:
+        lines.append("**No pooled cells produced — see methodological flag below.**")
+    else:
+        lines.append("| H | n_total (windows) | n_cascades | base rate |")
+        lines.append("|---|---|---|---|")
+        for h in horizons:
+            sub = pooled[pooled["horizon"] == h]
+            if sub.empty:
+                lines.append(f"| H{h} | — | — | — |")
+                continue
+            r = sub.iloc[0]
+            lines.append(
+                f"| H{h} | {int(r['n_total'])} | {int(r['n_cascades'])} | "
+                f"{float(r['base_rate']):.4f} |"
+            )
+        lines.append("")
+        lines.append(
+            "Prior synthetic-vs-real validation reported H50 = 9, H100 = 20, "
+            "H500 = 73 cascades universe-wide.  If the table above differs, "
+            "explain in flags below."
+        )
+    lines.append("")
+
+    # ---------- 2. Pooled cross-symbol AUC ----------
+    lines.append("## 2. Pooled cross-symbol AUC at H100 and H500")
+    lines.append("")
+    if pooled.empty:
+        lines.append("**No pooled cells available.**")
+    else:
+        lines.append(
+            "| H | AUC (real label) | AUC (shuffled) | AUC (random feat) | "
+            "distinguishable from shuffled? |"
+        )
+        lines.append("|---|---|---|---|---|")
+        for h in horizons:
+            sub = pooled[pooled["horizon"] == h]
+            if sub.empty:
+                continue
+            r = sub.iloc[0]
+            lines.append(
+                f"| H{h} | "
+                f"{float(r['auc']):.3f} [{float(r['auc_lo']):.3f}, "
+                f"{float(r['auc_hi']):.3f}] | "
+                f"{float(r['auc_shuffled']):.3f} "
+                f"[{float(r['auc_shuffled_lo']):.3f}, "
+                f"{float(r['auc_shuffled_hi']):.3f}] | "
+                f"{float(r['auc_random_feat']):.3f} "
+                f"[{float(r['auc_random_feat_lo']):.3f}, "
+                f"{float(r['auc_random_feat_hi']):.3f}] | "
+                f"{'YES' if bool(r['signal_distinguishable_from_shuffled']) else 'NO'} |"
+            )
+        lines.append("")
+    lines.append("")
+
+    # ---------- 3. Distinguishability ----------
+    lines.append("## 3. Distinguishable from shuffled-label baseline?")
+    lines.append("")
+    lines.append(
+        "Binding statistical test: real-label AUC CI lower bound must "
+        "strictly exceed shuffled-label AUC CI upper bound.  Aggregate "
+        "across H100 and H500 below."
+    )
+    lines.append("")
+    if pooled.empty:
+        lines.append("**Cannot evaluate — no pooled cells.**")
+    else:
+        for h in horizons:
+            sub = pooled[pooled["horizon"] == h]
+            if sub.empty:
+                continue
+            r = sub.iloc[0]
+            verdict = (
+                "**DISTINGUISHABLE**"
+                if bool(r["signal_distinguishable_from_shuffled"])
+                else "**NOT distinguishable**"
+            )
+            lines.append(
+                f"* H{h}: real CI [{float(r['auc_lo']):.3f}, "
+                f"{float(r['auc_hi']):.3f}] vs shuffled CI "
+                f"[{float(r['auc_shuffled_lo']):.3f}, "
+                f"{float(r['auc_shuffled_hi']):.3f}] → {verdict}."
+            )
+    lines.append("")
+
+    # ---------- 4. Per-symbol breakdown ----------
+    lines.append("## 4. Per-symbol breakdown")
+    lines.append("")
+    per_sym: pd.DataFrame = pd.DataFrame(
+        per_cell_df[per_cell_df["scope"] == "per_symbol"]
+    ).copy()
+    if per_sym.empty:
+        lines.append(
+            "**No per-symbol cells — no symbols had ≥ 5 cascades at any "
+            "evaluated horizon.**"
+        )
+    else:
+        lines.append(
+            "Symbols with ≥ 5 real cascades at the horizon of interest "
+            "(descriptive only; multiple-testing not adjusted)."
+        )
+        lines.append("")
+        lines.append(
+            "| symbol | H | n_cascades | AUC (real) | AUC (shuffled) | "
+            "auc>0.60 & CI excl 0.50 & dist from shuffled? |"
+        )
+        lines.append("|---|---|---|---|---|---|")
+        for h in horizons:
+            sub_df: pd.DataFrame = pd.DataFrame(
+                per_sym[per_sym["horizon"] == h]
+            ).sort_values("auc", ascending=False)
+            for _, r in sub_df.iterrows():
+                auc_v = float(r["auc"])  # type: ignore[arg-type]
+                lo_v = float(r["auc_lo"])  # type: ignore[arg-type]
+                # Three-way conjunction per the prompt
+                clears = (
+                    math.isfinite(auc_v)
+                    and auc_v > 0.60
+                    and math.isfinite(lo_v)
+                    and lo_v > 0.50
+                    and bool(r["signal_distinguishable_from_shuffled"])
+                )
+                lines.append(
+                    f"| {r['symbol']} | H{int(r['horizon'])} | "  # type: ignore[arg-type]
+                    f"{int(r['n_cascades'])} | "  # type: ignore[arg-type]
+                    f"{auc_v:.3f} [{lo_v:.3f}, {float(r['auc_hi']):.3f}] | "  # type: ignore[arg-type]
+                    f"{float(r['auc_shuffled']):.3f} | "  # type: ignore[arg-type]
+                    f"{'YES' if clears else 'NO'} |"
+                )
+        lines.append("")
+        # Aggregate counter
+        clears_count = 0
+        for _, r in per_sym.iterrows():
+            auc_v = float(r["auc"])  # type: ignore[arg-type]
+            lo_v = float(r["auc_lo"])  # type: ignore[arg-type]
+            if (
+                math.isfinite(auc_v)
+                and auc_v > 0.60
+                and math.isfinite(lo_v)
+                and lo_v > 0.50
+                and bool(r["signal_distinguishable_from_shuffled"])
+            ):
+                clears_count += 1
+        lines.append(
+            f"**{clears_count} per-symbol cells clear AUC > 0.60 AND CI "
+            f"excludes 0.50 AND are distinguishable from shuffled.**"
+        )
+    lines.append("")
+
+    # ---------- 5. Precision-at-top-1% lift ----------
+    lines.append("## 5. Precision-at-top-1% lift (pooled cross-symbol)")
+    lines.append("")
+    lines.append(
+        "If we trade only when the model says cascade-likely (top 1% of "
+        "windows by predicted probability), how often is it right?  For a "
+        "10× tradeable lift at base rate ~0.5%, top-1% precision must be "
+        "> 5%."
+    )
+    lines.append("")
+    if pooled.empty:
+        lines.append("**No pooled cells available.**")
+    else:
+        lines.append("| H | base rate | precision@top-1% | lift | recall@top-1% |")
+        lines.append("|---|---|---|---|---|")
+        for h in horizons:
+            sub = pooled[pooled["horizon"] == h]
+            if sub.empty:
+                continue
+            r = sub.iloc[0]
+            prec = float(r["precision_at_top_1pct"])
+            rec = float(r["recall_at_top_1pct"])
+            lift = float(r["lift_at_top_1pct"])
+            base = float(r["base_rate"])
+            prec_s = f"{prec:.4f}" if math.isfinite(prec) else "—"
+            rec_s = f"{rec:.4f}" if math.isfinite(rec) else "—"
+            lift_s = f"{lift:.2f}" if math.isfinite(lift) else "—"
+            lines.append(f"| H{h} | {base:.4f} | {prec_s} | {lift_s} | {rec_s} |")
+        lines.append("")
+
+    # ---------- 6. Verdict ----------
+    lines.append("## 6. Verdict")
+    lines.append("")
+    if pooled.empty:
+        lines.append(
+            "**UNDERPOWERED — no pooled cells available.**  The April 1-13 "
+            "raw data may be incomplete; see flags below."
+        )
+    else:
+        # Decision: did either H100 or H500 clear distinguishable-from-shuffled?
+        h100 = pooled[pooled["horizon"] == 100]
+        h500 = pooled[pooled["horizon"] == 500]
+        h100_dist = (
+            bool(h100.iloc[0]["signal_distinguishable_from_shuffled"])
+            if not h100.empty
+            else False
+        )
+        h500_dist = (
+            bool(h500.iloc[0]["signal_distinguishable_from_shuffled"])
+            if not h500.empty
+            else False
+        )
+        # Sample-size guard — distinguishability with very few cascades is fragile.
+        n_h100 = int(h100.iloc[0]["n_cascades"]) if not h100.empty else 0
+        n_h500 = int(h500.iloc[0]["n_cascades"]) if not h500.empty else 0
+
+        if h100_dist or h500_dist:
+            lines.append(
+                "**YES (with caveats) — at least one binding horizon clears "
+                "distinguishability from the shuffled-label baseline.**  "
+                f"H100 dist: {h100_dist} (n_cascades = {n_h100}); H500 dist: "
+                f"{h500_dist} (n_cascades = {n_h500}).  The 83-dim flat "
+                "representation carries some real-cascade-precursor signal "
+                "above pure noise on April 1-13.  Caveats: small n keeps the "
+                "CI wide; a single cluster of same-day cascades can dominate "
+                "a fold's AUC."
+            )
+        else:
+            # Bracket: is it truly null or underpowered?
+            min_lo_above_05 = False
+            for h_df in (h100, h500):
+                if not h_df.empty:
+                    lo_v = float(h_df.iloc[0]["auc_lo"])
+                    if math.isfinite(lo_v) and lo_v > 0.50:
+                        min_lo_above_05 = True
+                        break
+            if min_lo_above_05:
+                lines.append(
+                    "**MARGINAL — pooled real-label AUC excludes 0.50 at "
+                    "the 95% CI but does NOT distinguish from the shuffled "
+                    "baseline.**  The shuffled baseline's CI is wide enough "
+                    "(small n) to overlap real-label CI.  Cannot reject "
+                    "noise hypothesis at the binding test."
+                )
+            else:
+                lines.append(
+                    "**UNDERPOWERED / NULL — pooled real-label AUC CI "
+                    "brackets 0.50, indistinguishable from the shuffled "
+                    "baseline at H100 and H500.**  Either the 83-dim flat "
+                    "representation lacks real-cascade-precursor signal, or "
+                    "the n=20-73 cascades on April 1-13 is too small to "
+                    "tell.  Definitive answer requires more April data "
+                    "(currently hold-out) or a different cascade definition."
+                )
+    lines.append("")
+
+    # ---------- 7. Methodological flags ----------
+    lines.append("## 7. Methodological flags")
+    lines.append("")
+    lines.append(
+        "* **Leave-one-day-out independence.** The folds are leave-one-day-"
+        "out (April 1-13 → ≤ 13 folds depending on data availability), but "
+        "real liquidation cascades cluster intra-day (cascade contagion).  "
+        "If a single day's cascades dominate the held-out day's AUC, fold-"
+        "level AUC overstates true held-out performance.  The bootstrap CI "
+        "captures sampling noise but not fold-clustering noise."
+    )
+    lines.append("")
+    lines.append(
+        "* **Per-symbol cells are descriptive, not binding.** With 3 horizons "
+        "× ≤ 25 symbols of per-symbol comparisons, per-symbol AUC > 0.60 "
+        "cells will appear by chance even under the null.  Treat per-symbol "
+        "results as pattern hints, not standalone evidence."
+    )
+    lines.append("")
+    lines.append(
+        "* **Stage-1 contamination disclosure (gotcha #17).** April 1-13 was "
+        "used for v1 diagnostic checks but the `cause` field was not "
+        "studied — contamination on this stage-2 study is not a concern."
+    )
+    lines.append("")
+    lines.append(
+        "* **April 14+ hold-out preserved.** No raw or cached April 14+ data "
+        "was loaded by this script."
+    )
+    lines.append("")
+    if notes:
+        for note in notes:
+            lines.append(f"* {note}")
+            lines.append("")
+
+    lines.append(
+        f"_Pipeline ran in {elapsed_sec:.1f} s.  CPU-only.  No April 14+ "
+        f"data touched._"
+    )
+
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -1337,6 +2316,28 @@ def main() -> int:
         action="store_true",
         help="Skip the April 1-13 real-vs-synthetic overlap diagnostic",
     )
+    parser.add_argument(
+        "--cascade-real",
+        action="store_true",
+        help=(
+            "Run the stage-2 real-cause-flag probe instead of the stage-1 "
+            "synthetic-label probe.  Uses leave-one-day-out CV on April 1-13 "
+            "with the 83-dim flat baseline; emits "
+            "cascade_precursor_real_{table.csv, per_window.parquet, .md}."
+        ),
+    )
+    parser.add_argument(
+        "--n-boot",
+        type=int,
+        default=N_BOOT_REAL,
+        help=f"Bootstrap iterations for AUC CI (default: {N_BOOT_REAL})",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base RNG seed",
+    )
     args = parser.parse_args()
 
     horizons: tuple[int, ...] = tuple(int(h) for h in args.horizons)
@@ -1345,6 +2346,53 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
+
+    if args.cascade_real:
+        # ---------- Stage 2: real cause-flag probe ----------
+        real_horizons: tuple[int, ...] = tuple(
+            h for h in horizons if h in REAL_HORIZONS
+        )
+        if not real_horizons:
+            real_horizons = REAL_HORIZONS
+        print(
+            f"[cascade-real] stage-2 probe | horizons={real_horizons} | "
+            f"symbols={len(symbols)} | cache={args.cache}"
+        )
+        try:
+            per_window_df, per_cell_df, _ = _run_cascade_real_pipeline(
+                args.cache,
+                symbols,
+                out_dir,
+                horizons=real_horizons,
+                n_boot=int(args.n_boot),
+                seed=int(args.seed),
+            )
+        except RuntimeError as exc:
+            print(f"[cascade-real] BLOCKER: {exc}")
+            return 1
+
+        per_cell_df.to_csv(out_dir / "cascade_precursor_real_table.csv", index=False)
+        per_window_df.to_parquet(
+            out_dir / "cascade_precursor_real_per_window.parquet", index=False
+        )
+        elapsed = time.time() - t0
+        _emit_real_markdown(
+            per_cell_df,
+            out_dir / "cascade_precursor_real.md",
+            horizons=real_horizons,
+            elapsed_sec=elapsed,
+        )
+        print(f"[cascade-real] done in {elapsed:.1f} s")
+        print(
+            f"[cascade-real] wrote " f"{out_dir / 'cascade_precursor_real_table.csv'}"
+        )
+        print(
+            f"[cascade-real] wrote "
+            f"{out_dir / 'cascade_precursor_real_per_window.parquet'}"
+        )
+        print(f"[cascade-real] wrote {out_dir / 'cascade_precursor_real.md'}")
+        return 0
+
     print(
         f"[cascade-precursor] horizons={horizons} | symbols={len(symbols)} | "
         f"cache={args.cache}"
