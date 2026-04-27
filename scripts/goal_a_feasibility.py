@@ -92,6 +92,16 @@ MAKER_FEES_BPS_SWEEP: tuple[float, ...] = (
 # symbol-dependent. See `add_maker_headroom_columns` docstring for caveats.
 MAKER_FILL_PROXY_BPS: float = 1.0
 
+# Adverse-selection simulator — empirical fill + realized PnL on cached OB
+# Offsets in bps from anchor mid at which we post symmetric limits.
+ADVERSE_SELECTION_OFFSETS_BPS: tuple[float, ...] = (1.0, 2.0, 5.0)
+# Pacifica actual maker fee: +1.5 bp/side (paid, not rebated)
+PACIFICA_MAKER_FEE_BPS: float = 1.5
+# Subsample cap per shard for the adverse-selection sim (smaller than the
+# main book-walk pipeline because we now do per-window OB-snapshot range scans
+# over the horizon, not just an at-anchor snapshot lookup).
+ADVERSE_WINDOWS_PER_SHARD_CAP: int = 200
+
 # Index of log_return in the cached features tensor (col 0 per FEATURE_NAMES)
 _LOG_RETURN_IDX = FEATURE_NAMES.index("log_return")
 
@@ -971,6 +981,695 @@ def write_survivors_md(
 
 
 # ---------------------------------------------------------------------------
+# Adverse-selection simulator
+# ---------------------------------------------------------------------------
+#
+# For each window, we simulate posting a symmetric pair of limit orders at
+# `anchor_mid × (1 ± X/10000)` and ask: did either side get filled within the
+# horizon, and conditional on a fill, what was the realized PnL exiting at
+# `mid_at_horizon = anchor_mid × exp(forward_log_return)` with no slippage?
+#
+# Fills are detected by walking the OB snapshot grid in the time interval
+# [anchor_ts, ts_at_event(anchor + H)]. A bid fills if any snapshot in that
+# range has best_ask <= bid_price (a seller crossed our bid). Symmetrically
+# for the ask side.
+#
+# Caveat: the OB cadence is ~24s. At H10 on liquid symbols the horizon may
+# be sub-second, in which case the [anchor_ts, horizon_end_ts] window
+# contains the at-anchor snapshot only (the first one we've already seen
+# in the at-anchor mid lookup). At H100/H500 on liquid symbols we get
+# multiple snapshots. Fill detection at short horizons is therefore
+# conservative — we miss intra-snapshot trade-throughs. This is documented
+# as a methodological flag in the verdict markdown.
+
+
+def best_bid_ask_from_levels(
+    bid_prices: np.ndarray,
+    bid_qtys: np.ndarray,
+    ask_prices: np.ndarray,
+    ask_qtys: np.ndarray,
+) -> tuple[float, float]:
+    """Best bid (highest price w/ qty>0) and best ask (lowest price w/ qty>0)
+    from a single snapshot's L1-L10 vectors. Returns (NaN, NaN) if either side
+    has no valid level.
+
+    L1 IS the best level by parquet convention, but we defensively scan all
+    10 levels in case L1 is missing (qty=0). This matches `simulate_taker_fill`.
+    """
+    bid_valid = (bid_prices > 0) & (bid_qtys > 0)
+    ask_valid = (ask_prices > 0) & (ask_qtys > 0)
+    if not bid_valid.any() or not ask_valid.any():
+        return float("nan"), float("nan")
+    # First valid level on each side IS the best (parquet pre-sorts).
+    best_bid = float(bid_prices[bid_valid][0])
+    best_ask = float(ask_prices[ask_valid][0])
+    return best_bid, best_ask
+
+
+def detect_fill_in_range(
+    *,
+    snap_best_bids: np.ndarray,
+    snap_best_asks: np.ndarray,
+    snap_ts: np.ndarray,
+    anchor_ts: int,
+    horizon_end_ts: int,
+    bid_price: float,
+    ask_price: float,
+) -> tuple[bool, bool]:
+    """Detect bid/ask fills within [anchor_ts, horizon_end_ts] using OB grid.
+
+    Bid fills if any snapshot in the range has best_ask <= bid_price (a seller
+    crossed our resting bid). Ask fills if any snapshot has best_bid >=
+    ask_price. NaN snapshot bid/ask values are treated as not-crossing.
+    """
+    # searchsorted gives [lo, hi) over snap_ts s.t. anchor_ts <= snap_ts < hi
+    lo = int(np.searchsorted(snap_ts, anchor_ts, side="left"))
+    hi = int(np.searchsorted(snap_ts, horizon_end_ts, side="right"))
+    if lo >= hi:
+        return False, False
+    asks_in_range = snap_best_asks[lo:hi]
+    bids_in_range = snap_best_bids[lo:hi]
+    # NaN-safe: treat NaN as "not crossing"
+    bid_filled = bool(np.any(np.isfinite(asks_in_range) & (asks_in_range <= bid_price)))
+    ask_filled = bool(np.any(np.isfinite(bids_in_range) & (bids_in_range >= ask_price)))
+    return bid_filled, ask_filled
+
+
+def model_accuracy_breakeven(
+    *, expected_realized_pnl_bps: float, maker_fee_bps_per_side: float
+) -> float:
+    """Directional accuracy `p` at which expected per-round-trip PnL = 0.
+
+    Math:
+        (2p − 1) × E[realized | filled] − 2 × maker_fee_per_side = 0
+        p = 0.5 + maker_fee_per_side / E[realized | filled]
+
+    Edge cases:
+      * E = 0 and fee = 0: equation 0 = 0; canonical break-even is 0.5.
+      * E = 0 and fee != 0: equation has no solution; returns +inf (unreachable
+        accuracy — the strategy is always cost-bound).
+      * E < 0: breakeven < 0.5 means a long-bias model loses money even with
+        perfect skill, since filled trades have negative expectation. Caller
+        should flag the sign separately.
+      * E very small positive (e.g. 0.1 bp) with fee=1.5: breakeven = 15.5,
+        i.e. unreachable. Return value still meaningful as a magnitude flag.
+    """
+    if expected_realized_pnl_bps == 0.0:
+        if maker_fee_bps_per_side == 0.0:
+            return 0.5
+        return float("inf")
+    return 0.5 + maker_fee_bps_per_side / expected_realized_pnl_bps
+
+
+def process_shard_adverse_selection(
+    shard_path: Path,
+    *,
+    rng: np.random.Generator,
+    horizons: Iterable[int] = DIRECTION_HORIZONS,
+    offsets_bps: Iterable[float] = ADVERSE_SELECTION_OFFSETS_BPS,
+    cap: int = ADVERSE_WINDOWS_PER_SHARD_CAP,
+) -> list[dict]:
+    """Per-window per-cell adverse-selection sim for one (sym, date) shard.
+
+    Returns one row per (window, horizon, offset). Empty list if shard is in
+    the April hold-out, has fewer than WINDOW_LEN events, or its OB parquet
+    is missing.
+    """
+    sym, date = shard_path.stem.split("__")
+    if date >= APRIL_HELDOUT_START:
+        return []
+
+    with np.load(shard_path, allow_pickle=False) as z:
+        features = z["features"]
+        event_ts = z["event_ts"]
+    n_events = features.shape[0]
+    starts = _list_window_starts(n_events, stride=STRIDE_EVAL)
+    if len(starts) == 0:
+        return []
+    starts = _subsample_starts(starts, cap, rng)
+
+    anchors = starts + WINDOW_LEN - 1
+    anchor_ts = event_ts[anchors]
+    log_returns = features[:, _LOG_RETURN_IDX].astype(np.float64)
+    cum = np.concatenate([[0.0], np.cumsum(log_returns)])
+
+    horizon_list = list(horizons)
+    offset_list = list(offsets_bps)
+
+    # Forward returns + horizon-end timestamps per horizon
+    fwd_by_h: dict[int, np.ndarray] = {}
+    horizon_end_ts_by_h: dict[int, np.ndarray] = {}
+    valid_by_h: dict[int, np.ndarray] = {}
+    for h in horizon_list:
+        end = anchors + h
+        valid = end < n_events
+        fwd = np.full(len(anchors), np.nan, dtype=np.float64)
+        fwd[valid] = cum[end[valid] + 1] - cum[anchors[valid] + 1]
+        h_end_ts = np.full(len(anchors), -1, dtype=np.int64)
+        h_end_ts[valid] = event_ts[end[valid]]
+        fwd_by_h[h] = fwd
+        horizon_end_ts_by_h[h] = h_end_ts
+        valid_by_h[h] = valid
+
+    # Load raw OB and pre-extract best bid/ask per snapshot
+    ob = load_ob_day(sym, date)
+    if ob is None or len(ob) == 0:
+        return []
+    snap_ts = ob["ts_ms"].to_numpy(dtype=np.int64)
+
+    bid_prices_all = np.stack(
+        [ob[f"bid{i}_price"].to_numpy(dtype=float) for i in range(1, N_LEVELS + 1)],
+        axis=1,
+    )
+    bid_qtys_all = np.stack(
+        [ob[f"bid{i}_qty"].to_numpy(dtype=float) for i in range(1, N_LEVELS + 1)],
+        axis=1,
+    )
+    ask_prices_all = np.stack(
+        [ob[f"ask{i}_price"].to_numpy(dtype=float) for i in range(1, N_LEVELS + 1)],
+        axis=1,
+    )
+    ask_qtys_all = np.stack(
+        [ob[f"ask{i}_qty"].to_numpy(dtype=float) for i in range(1, N_LEVELS + 1)],
+        axis=1,
+    )
+
+    # Per-snapshot best bid/ask. Vectorised: for each row, mask qty>0 then
+    # take the min/max along axis 1. We do this with masked views.
+    bid_valid_mask = (bid_prices_all > 0) & (bid_qtys_all > 0)
+    ask_valid_mask = (ask_prices_all > 0) & (ask_qtys_all > 0)
+    # best_bid = max of valid bid prices; best_ask = min of valid ask prices.
+    # Use np.where to neutralise invalid entries.
+    bid_for_max = np.where(bid_valid_mask, bid_prices_all, -np.inf)
+    ask_for_min = np.where(ask_valid_mask, ask_prices_all, np.inf)
+    snap_best_bids = bid_for_max.max(axis=1)
+    snap_best_asks = ask_for_min.min(axis=1)
+    snap_best_bids = np.where(np.isfinite(snap_best_bids), snap_best_bids, np.nan)
+    snap_best_asks = np.where(np.isfinite(snap_best_asks), snap_best_asks, np.nan)
+    snap_mid = 0.5 * (snap_best_bids + snap_best_asks)
+
+    # Anchor mid: most-recent prior snapshot
+    snap_idx = np.searchsorted(snap_ts, anchor_ts, side="right") - 1
+    valid_anchor = snap_idx >= 0
+    if not valid_anchor.any():
+        return []
+
+    rows: list[dict] = []
+    for w_idx in range(len(anchors)):
+        if not valid_anchor[w_idx]:
+            continue
+        s = int(snap_idx[w_idx])
+        anchor_mid = float(snap_mid[s])
+        if not np.isfinite(anchor_mid) or anchor_mid <= 0:
+            continue
+        a_ts = int(anchor_ts[w_idx])
+
+        for h in horizon_list:
+            if not valid_by_h[h][w_idx]:
+                continue
+            fr = fwd_by_h[h][w_idx]
+            if not np.isfinite(fr):
+                continue
+            h_end_ts = int(horizon_end_ts_by_h[h][w_idx])
+            mid_at_h = anchor_mid * float(np.exp(fr))
+
+            for offset_bps in offset_list:
+                bid_price = anchor_mid * (1.0 - offset_bps / 1e4)
+                ask_price = anchor_mid * (1.0 + offset_bps / 1e4)
+                bid_filled, ask_filled = detect_fill_in_range(
+                    snap_best_bids=snap_best_bids,
+                    snap_best_asks=snap_best_asks,
+                    snap_ts=snap_ts,
+                    anchor_ts=a_ts,
+                    horizon_end_ts=h_end_ts,
+                    bid_price=bid_price,
+                    ask_price=ask_price,
+                )
+                # Realized PnL (bps), only meaningful when filled.
+                if bid_filled and bid_price > 0:
+                    realized_bid_pnl_bps = (mid_at_h - bid_price) / bid_price * 1e4
+                else:
+                    realized_bid_pnl_bps = float("nan")
+                if ask_filled and ask_price > 0:
+                    realized_ask_pnl_bps = (ask_price - mid_at_h) / ask_price * 1e4
+                else:
+                    realized_ask_pnl_bps = float("nan")
+
+                rows.append(
+                    {
+                        "symbol": sym,
+                        "date": date,
+                        "window_start": int(starts[w_idx]),
+                        "anchor_ts": a_ts,
+                        "anchor_mid": anchor_mid,
+                        "horizon": int(h),
+                        "offset_bps": float(offset_bps),
+                        "bid_price": float(bid_price),
+                        "ask_price": float(ask_price),
+                        "bid_filled": bool(bid_filled),
+                        "ask_filled": bool(ask_filled),
+                        "fill_horizon_ts": h_end_ts,
+                        "mid_at_horizon": float(mid_at_h),
+                        "realized_bid_pnl_bps": (
+                            float(realized_bid_pnl_bps)
+                            if np.isfinite(realized_bid_pnl_bps)
+                            else float("nan")
+                        ),
+                        "realized_ask_pnl_bps": (
+                            float(realized_ask_pnl_bps)
+                            if np.isfinite(realized_ask_pnl_bps)
+                            else float("nan")
+                        ),
+                    }
+                )
+    return rows
+
+
+def aggregate_adverse_selection(
+    per_window_df: pd.DataFrame,
+    *,
+    maker_fee_bps_per_side: float = PACIFICA_MAKER_FEE_BPS,
+) -> pd.DataFrame:
+    """Per (symbol, horizon, offset) summary stats for the adverse-selection sim.
+
+    Columns:
+        symbol, horizon, offset_bps, n_windows,
+        fill_rate_bid, fill_rate_ask, fill_rate_either,
+        mean_pnl_bid_filled, median_pnl_bid_filled,
+        q25_pnl_bid_filled, q75_pnl_bid_filled,
+        mean_pnl_ask_filled, median_pnl_ask_filled,
+        q25_pnl_ask_filled, q75_pnl_ask_filled,
+        mean_pnl_either_filled, median_pnl_either_filled,
+        unconditional_maker_pnl_bps,
+        model_accuracy_breakeven
+    """
+    rows: list[dict] = []
+    grouped = per_window_df.groupby(["symbol", "horizon", "offset_bps"], sort=True)
+    for key, g in grouped:
+        sym, h, offset = cast(tuple[str, int, float], key)
+        n_total = int(len(g))
+        bid_filled = g["bid_filled"].to_numpy(dtype=bool)
+        ask_filled = g["ask_filled"].to_numpy(dtype=bool)
+        either_filled = bid_filled | ask_filled
+
+        fill_rate_bid = float(bid_filled.mean()) if n_total else float("nan")
+        fill_rate_ask = float(ask_filled.mean()) if n_total else float("nan")
+        fill_rate_either = float(either_filled.mean()) if n_total else float("nan")
+
+        bid_pnl = g["realized_bid_pnl_bps"].to_numpy(dtype=np.float64)
+        ask_pnl = g["realized_ask_pnl_bps"].to_numpy(dtype=np.float64)
+        bid_pnl_f = bid_pnl[np.isfinite(bid_pnl)]
+        ask_pnl_f = ask_pnl[np.isfinite(ask_pnl)]
+
+        def _stat(arr: np.ndarray, fn) -> float:
+            return float(fn(arr)) if arr.size else float("nan")
+
+        mean_bid = _stat(bid_pnl_f, np.mean)
+        median_bid = _stat(bid_pnl_f, np.median)
+        q25_bid = (
+            float(np.quantile(bid_pnl_f, 0.25)) if bid_pnl_f.size else float("nan")
+        )
+        q75_bid = (
+            float(np.quantile(bid_pnl_f, 0.75)) if bid_pnl_f.size else float("nan")
+        )
+        mean_ask = _stat(ask_pnl_f, np.mean)
+        median_ask = _stat(ask_pnl_f, np.median)
+        q25_ask = (
+            float(np.quantile(ask_pnl_f, 0.25)) if ask_pnl_f.size else float("nan")
+        )
+        q75_ask = (
+            float(np.quantile(ask_pnl_f, 0.75)) if ask_pnl_f.size else float("nan")
+        )
+
+        # Combined "either filled" PnL: take whichever filled. If both filled
+        # in the same window (counter-trend whipsaw — rare on the 1bp offset,
+        # common on the 5bp+) we include both observations as separate samples.
+        either_pnl = (
+            np.concatenate([bid_pnl_f, ask_pnl_f])
+            if (bid_pnl_f.size + ask_pnl_f.size) > 0
+            else np.array([])
+        )
+        mean_either = _stat(either_pnl, np.mean)
+        median_either = _stat(either_pnl, np.median)
+
+        # Unconditional symmetric-limit PnL minus 2x maker fee. This is the
+        # expected gross realised PnL of a strategy that posts both legs
+        # every window with no model. The factor of 1/2 accounts for posting
+        # *both* legs symmetrically; if only one fills, the other doesn't
+        # contribute.
+        # E[gross | bid filled] * P(bid filled) + E[gross | ask filled] * P(ask filled)
+        # divided by 2 (we have two legs but expect ~half of windows in
+        # productive flow). Then subtract 2 * maker_fee to model both legs
+        # paying the fee on a round-trip.
+        e_bid = mean_bid if np.isfinite(mean_bid) else 0.0
+        e_ask = mean_ask if np.isfinite(mean_ask) else 0.0
+        unconditional_pnl = (
+            fill_rate_bid * e_bid + fill_rate_ask * e_ask
+        ) / 2.0 - 2.0 * maker_fee_bps_per_side
+
+        # Breakeven uses the median-cell expected PnL conditional on a fill
+        # (combined either side) — the adverse-selection statistic.
+        if np.isfinite(mean_either):
+            breakeven = model_accuracy_breakeven(
+                expected_realized_pnl_bps=mean_either,
+                maker_fee_bps_per_side=maker_fee_bps_per_side,
+            )
+        else:
+            breakeven = float("nan")
+
+        rows.append(
+            {
+                "symbol": sym,
+                "horizon": int(h),
+                "offset_bps": float(offset),
+                "n_windows": n_total,
+                "fill_rate_bid": fill_rate_bid,
+                "fill_rate_ask": fill_rate_ask,
+                "fill_rate_either": fill_rate_either,
+                "mean_pnl_bid_filled": mean_bid,
+                "median_pnl_bid_filled": median_bid,
+                "q25_pnl_bid_filled": q25_bid,
+                "q75_pnl_bid_filled": q75_bid,
+                "mean_pnl_ask_filled": mean_ask,
+                "median_pnl_ask_filled": median_ask,
+                "q25_pnl_ask_filled": q25_ask,
+                "q75_pnl_ask_filled": q75_ask,
+                "mean_pnl_either_filled": mean_either,
+                "median_pnl_either_filled": median_either,
+                "unconditional_maker_pnl_bps": unconditional_pnl,
+                "model_accuracy_breakeven": breakeven,
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["symbol", "horizon", "offset_bps"])
+        .reset_index(drop=True)
+    )
+
+
+def _append_cell_rows_md(body: list[str], df: pd.DataFrame) -> None:
+    """Append one markdown row per (symbol,horizon,offset) cell using tolist()
+    extraction (avoids pandas Series typing issues with iterrows())."""
+    symbols = df["symbol"].tolist()
+    horizons = df["horizon"].tolist()
+    offsets = df["offset_bps"].tolist()
+    nwins = df["n_windows"].tolist()
+    fillrates = df["fill_rate_either"].tolist()
+    e_eithers = df["mean_pnl_either_filled"].tolist()
+    breakevens = df["model_accuracy_breakeven"].tolist()
+    for sym, h, off, nw, fr, e_e, be in zip(
+        symbols, horizons, offsets, nwins, fillrates, e_eithers, breakevens, strict=True
+    ):
+        body.append(
+            f"| {str(sym)} | H{int(float(h))} | "
+            f"{float(off):+.1f} | {int(float(nw))} | "
+            f"{float(fr):.1%} | "
+            f"{float(e_e):+.3f} | "
+            f"{float(be):.3f} |"
+        )
+
+
+def write_adverse_selection_md(
+    cell_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    maker_fee_bps_per_side: float = PACIFICA_MAKER_FEE_BPS,
+) -> None:
+    """Emit `maker_adverse_selection.md` answering the four prompts:
+
+    1. Is E[realized | filled] consistently negative across the universe?
+    2. Universe-wide median model_accuracy_breakeven vs 51.4% / 60% thresholds.
+    3. Per-symbol cells with breakeven < 55%.
+    4. One-paragraph verdict.
+    """
+    body: list[str] = []
+    body.append("# Goal-A Maker Adverse-Selection Sim — Empirical E[PnL | filled]\n")
+    body.append(
+        "This sim posts symmetric resting limits at "
+        "`anchor_mid × (1 ± offset/1e4)` for every window in the cache and "
+        "asks: did either side fill within the horizon, and what was the "
+        "realized PnL exiting at `mid_at_horizon = anchor_mid × exp(forward_log_return)`? "
+        "If E[realized | filled] is consistently negative, the Maker's Dilemma "
+        "(Albers 2025) is empirically real on this universe, and the maker "
+        "pivot's apparent cost-band advantage in `maker_sensitivity.md` is "
+        f"partially or fully consumed by adverse selection at the actual "
+        f"{maker_fee_bps_per_side:+.1f} bp/side maker fee.\n"
+    )
+    body.append(
+        "**`model_accuracy_breakeven`** = directional accuracy `p` at which "
+        f"`(2p − 1) × E[realized | filled] − 2 × {maker_fee_bps_per_side} bp = 0`. "
+        "If E < 0, breakeven < 0.5: a long-bias model needs to be a contrarian "
+        "to overcome the Dilemma — i.e. the maker pivot fails on filled trades. "
+        "If E > 0, breakeven > 0.5; if breakeven < 55% the Dilemma is mild "
+        "enough that a realistic model could overcome it.\n"
+    )
+
+    # Universe-wide stats
+    n_cells = len(cell_df)
+    medians_either = cell_df["mean_pnl_either_filled"].dropna().to_numpy()
+    medians_bid = cell_df["mean_pnl_bid_filled"].dropna().to_numpy()
+    medians_ask = cell_df["mean_pnl_ask_filled"].dropna().to_numpy()
+    breakevens = cell_df["model_accuracy_breakeven"].dropna().to_numpy()
+
+    universe_median_breakeven = (
+        float(np.median(breakevens)) if breakevens.size else float("nan")
+    )
+    universe_median_e_either = (
+        float(np.median(medians_either)) if medians_either.size else float("nan")
+    )
+    frac_negative_e = (
+        float((medians_either < 0).mean()) if medians_either.size else float("nan")
+    )
+    # "Tradeable" = E[realized | filled] > 0 AND breakeven below threshold.
+    # Cells with negative E have breakeven < 0.5 (contrarian zone, NOT tradeable
+    # for a long-bias model — they confirm the Maker's Dilemma instead). We
+    # require breakeven > 0.5 alongside the upper bound. Build a co-aligned
+    # (E, breakeven) join via the cell_df's full row order; drop NaN breakeven
+    # rows then test on the remaining 1-D arrays of equal length.
+    paired = cell_df[["mean_pnl_either_filled", "model_accuracy_breakeven"]].dropna()
+    if not paired.empty:
+        e_arr = np.array(paired["mean_pnl_either_filled"].tolist(), dtype=np.float64)
+        be_arr = np.array(paired["model_accuracy_breakeven"].tolist(), dtype=np.float64)
+        tradeable_be = (e_arr > 0) & (be_arr > 0.5)
+        cells_breakeven_below_55 = int((tradeable_be & (be_arr < 0.55)).sum())
+        cells_breakeven_below_60 = int((tradeable_be & (be_arr < 0.60)).sum())
+        cells_breakeven_below_5140 = int((tradeable_be & (be_arr < 0.514)).sum())
+    else:
+        cells_breakeven_below_55 = 0
+        cells_breakeven_below_60 = 0
+        cells_breakeven_below_5140 = 0
+
+    body.append("## Universe-wide summary\n")
+    body.append(f"* Total cells (symbol × horizon × offset): **{n_cells}**\n")
+    body.append(
+        f"* Median E[realized | either-side filled] across cells: "
+        f"**{universe_median_e_either:+.3f} bp**\n"
+    )
+    body.append(
+        f"* Fraction of cells with negative E[realized | filled]: "
+        f"**{frac_negative_e:.1%}** (= Maker's Dilemma signal density)\n"
+    )
+    body.append(
+        f"* Universe-wide median `model_accuracy_breakeven`: "
+        f"**{universe_median_breakeven:.3f}** "
+        f"(vs v1 demonstrated 51.4%, vs near-miss 60%)\n"
+    )
+    body.append(
+        f"* Cells with breakeven < 51.4% (v1 ceiling): "
+        f"**{cells_breakeven_below_5140}** of {n_cells}\n"
+    )
+    body.append(
+        f"* Cells with breakeven < 55%: "
+        f"**{cells_breakeven_below_55}** of {n_cells}\n"
+    )
+    body.append(
+        f"* Cells with breakeven < 60%: "
+        f"**{cells_breakeven_below_60}** of {n_cells}\n"
+    )
+
+    # Sign breakdown by horizon
+    body.append("\n## E[realized | filled] sign by horizon\n")
+    body.append(
+        "| horizon | n_cells | median E[either] (bp) | frac negative | "
+        "median breakeven |"
+    )
+    body.append("|---:|---:|---:|---:|---:|")
+    for h_key, gh in cell_df.groupby("horizon", sort=True):
+        h_int = int(cast(int, h_key))
+        e_arr = gh["mean_pnl_either_filled"].dropna().to_numpy()
+        be_arr = gh["model_accuracy_breakeven"].dropna().to_numpy()
+        med_e = float(np.median(e_arr)) if e_arr.size else float("nan")
+        frac_neg = float((e_arr < 0).mean()) if e_arr.size else float("nan")
+        med_be = float(np.median(be_arr)) if be_arr.size else float("nan")
+        body.append(
+            f"| H{h_int} | {len(gh)} | {med_e:+.3f} | {frac_neg:.1%} | {med_be:.3f} |"
+        )
+
+    # By offset
+    body.append("\n## E[realized | filled] sign by offset\n")
+    body.append(
+        "| offset (bp) | n_cells | median E[either] (bp) | frac negative | "
+        "median breakeven |"
+    )
+    body.append("|---:|---:|---:|---:|---:|")
+    for off_key, go in cell_df.groupby("offset_bps", sort=True):
+        off_f = float(cast(float, off_key))
+        e_arr = go["mean_pnl_either_filled"].dropna().to_numpy()
+        be_arr = go["model_accuracy_breakeven"].dropna().to_numpy()
+        med_e = float(np.median(e_arr)) if e_arr.size else float("nan")
+        frac_neg = float((e_arr < 0).mean()) if e_arr.size else float("nan")
+        med_be = float(np.median(be_arr)) if be_arr.size else float("nan")
+        body.append(
+            f"| {off_f:+.1f} | {len(go)} | {med_e:+.3f} | {frac_neg:.1%} | {med_be:.3f} |"
+        )
+
+    # Per-symbol "tradeable" cells: E[realized | filled] > 0 AND
+    # 0.5 < breakeven < 0.55 (a long-bias model with a realistic edge can
+    # overcome the Dilemma). Cells with E < 0 have breakeven < 0.5 by math,
+    # which is the contrarian zone — NOT tradeable for a directional model.
+    tradeable_mask = (
+        (cell_df["mean_pnl_either_filled"] > 0)
+        & (cell_df["model_accuracy_breakeven"] > 0.5)
+        & (cell_df["model_accuracy_breakeven"] < 0.55)
+    )
+    tradeable = cell_df.loc[tradeable_mask].sort_values("model_accuracy_breakeven")
+    body.append(
+        f"\n## Tradeable cells (E[either] > 0 AND 50% < breakeven < 55%): "
+        f"{len(tradeable)} of {n_cells}\n"
+    )
+    if tradeable.empty:
+        body.append(
+            "_No cells satisfy E[realized | filled] > 0 AND breakeven in (0.5, "
+            "0.55). The Maker's Dilemma is uniformly severe — every cell either "
+            "has negative E (contrarian zone) or requires accuracy above 55%._\n"
+        )
+    else:
+        body.append(
+            "| symbol | horizon | offset (bp) | n_windows | fill_rate_either | "
+            "E[either] (bp) | breakeven |"
+        )
+        body.append("|---|---:|---:|---:|---:|---:|---:|")
+        _append_cell_rows_md(body, tradeable)
+
+    # Top 10 cells by lowest breakeven among ones where E > 0 (the meaningful
+    # subset for a long-bias model). If no cells have E > 0, fall back to
+    # showing the LEAST-NEGATIVE E cells with their breakeven (still in
+    # the contrarian zone but informative).
+    body.append("\n## Top 10 cells by lowest breakeven (E[either] > 0 only)\n")
+    pos_e = cell_df.loc[cell_df["mean_pnl_either_filled"] > 0].dropna(
+        subset=["model_accuracy_breakeven"]
+    )
+    if pos_e.empty:
+        body.append(
+            "_No cell has positive E[realized | filled]; falling back to "
+            "least-negative E[either] cells (these are still in the "
+            "contrarian zone — breakeven < 0.5)._\n"
+        )
+        top = (
+            cell_df.dropna(subset=["mean_pnl_either_filled"])
+            .sort_values("mean_pnl_either_filled", ascending=False)
+            .head(10)
+        )
+    else:
+        top = pos_e.sort_values("model_accuracy_breakeven").head(10)
+    body.append(
+        "| symbol | horizon | offset (bp) | n_windows | fill_rate_either | "
+        "E[either] (bp) | breakeven |"
+    )
+    body.append("|---|---:|---:|---:|---:|---:|---:|")
+    _append_cell_rows_md(body, top)
+
+    # Verdict — the controlling question is E[realized | filled]. If E < 0
+    # broadly, the Dilemma is real and a long-bias maker model cannot work
+    # regardless of skill (the breakeven < 0.5 result means even infinite skill
+    # would be paying fees on losing-trade fills). If E > 0 broadly but the
+    # implied breakeven is above what the v1 model demonstrated, it's a reach.
+    body.append("\n## Verdict\n")
+    if frac_negative_e > 0.9:
+        verdict = (
+            "**The maker pivot fails the adverse-selection test.** "
+            f"E[realized | filled] is negative in {frac_negative_e:.1%} of "
+            f"cells (universe median **{universe_median_e_either:+.2f} bp**). "
+            "Filled limits are systematically followed by adverse mid moves — "
+            "the Maker's Dilemma pattern (Albers 2025) is empirically present "
+            "across the entire universe. The implied universe-wide median "
+            f"`model_accuracy_breakeven` of **{universe_median_breakeven:.3f}** "
+            f"is below 0.5, which means a long-bias model needs to be "
+            f"*contrarian* (predict against its own signal) to break even on "
+            f"filled trades — i.e. the strategy fundamentally cannot rest "
+            f"limits and profit on average. The cost-band advantage reported "
+            f"in `maker_sensitivity.md` (~289/300 cells alive at "
+            f"{maker_fee_bps_per_side:+.1f} bp/side under the slippage=0 "
+            f"assumption) is illusory once adverse selection is incorporated. "
+            f"Tradeable-cell count "
+            f"(E > 0 AND 0.5 < breakeven < 0.55): "
+            f"**{len(tradeable)} of {n_cells}**."
+        )
+    elif universe_median_breakeven < 0.55 and universe_median_e_either > 0:
+        verdict = (
+            f"**The maker pivot partially survives.** Universe-wide median "
+            f"E[realized | filled] is **{universe_median_e_either:+.2f} bp** "
+            f"(positive) and median breakeven is "
+            f"**{universe_median_breakeven:.3f}** — below the 55% bar. "
+            f"{len(tradeable)} of {n_cells} cells satisfy E > 0 AND breakeven "
+            f"in (0.5, 0.55). The strategy is feasible if the model can be "
+            f"deployed selectively to those cells."
+        )
+    elif universe_median_breakeven < 0.6 and universe_median_e_either > 0:
+        verdict = (
+            f"**The maker pivot is on the bubble.** Universe-wide median "
+            f"E[realized | filled] is **{universe_median_e_either:+.2f} bp** "
+            f"and median breakeven is **{universe_median_breakeven:.3f}** — "
+            f"between the 55% and 60% thresholds. "
+            f"{len(tradeable)} cells have a tradeable breakeven. Viable only "
+            f"if the encoder can hit ~58-60% on the surviving subset."
+        )
+    else:
+        verdict = (
+            f"**The maker pivot fails on accuracy reach.** Universe-wide "
+            f"median E[realized | filled] is "
+            f"**{universe_median_e_either:+.2f} bp** and median breakeven is "
+            f"**{universe_median_breakeven:.3f}** — outside any realistic "
+            f"model's reach. The pivot needs a model that's never been "
+            f"demonstrated on this data."
+        )
+    body.append(verdict + "\n")
+
+    body.append("\n## Methodological flags\n")
+    body.append(
+        "* **OB cadence ~24 s.** At short horizons (H10) on liquid symbols the "
+        "horizon may be sub-second, in which case the [anchor_ts, horizon_end_ts] "
+        "range contains zero or one snapshots and fill detection is conservative "
+        "(we miss intra-snapshot trade-throughs). Treat fill rates at H10 as a "
+        "**lower bound**.\n"
+    )
+    body.append(
+        "* **Symmetric-limit assumption.** This sim posts both bid and ask every "
+        "window with no model conditioning. A directional model would post only "
+        "the side it's predicting, which changes the conditional fill mix. The "
+        "breakeven number assumes the realized PnL distribution under the "
+        "symmetric strategy is representative of the model-conditional one — "
+        "this is an approximation, not a derivation.\n"
+    )
+    body.append(
+        "* **Mid-vs-VWAP exit.** `mid_at_horizon` is computed from "
+        "`anchor_mid × exp(sum_log_return)` where `log_return` is per-event "
+        "VWAP-to-VWAP. This is mid-anchored at the start, VWAP-anchored at the "
+        "exit — a small bias for cross-side flow at the exit event.\n"
+    )
+    body.append(
+        "* **No fill-time PnL.** Realized PnL marks to `mid_at_horizon` "
+        "regardless of how early the fill happened within the horizon. A fill "
+        "in the first second of a 30-second H100 window holds for the full 30 s; "
+        "an earlier exit would have a different (and probably better) PnL. "
+        "This biases the realized PnL estimate slightly negative for filled "
+        "bids in down-trending windows (and vice-versa).\n"
+    )
+
+    out_path.write_text("\n".join(body))
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1013,9 +1712,93 @@ def main() -> None:
             "one-paragraph cross-reference (taker verdict left intact)."
         ),
     )
+    parser.add_argument(
+        "--adverse-selection",
+        action="store_true",
+        help=(
+            "Run the maker-mode adverse-selection sim on the cached OB grid. "
+            "For every window, posts symmetric limits at "
+            "anchor_mid × (1 ± offset/1e4) for offset ∈ {1, 2, 5} bp, detects "
+            "fills against [anchor_ts, ts_at_event(anchor+H)] OB snapshots, "
+            "and computes realized PnL at mid_at_horizon. Writes "
+            "maker_adverse_selection_per_window.parquet (gitignored), "
+            "maker_adverse_selection_table.csv, and "
+            "maker_adverse_selection.md."
+        ),
+    )
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
+
+    if args.adverse_selection:
+        cache_dir = args.cache_dir
+        all_shards = sorted(cache_dir.glob("*.npz"))
+        all_shards = [
+            p for p in all_shards if p.stem.split("__")[1] < APRIL_HELDOUT_START
+        ]
+        if args.symbols:
+            wanted = set(args.symbols)
+            all_shards = [p for p in all_shards if p.stem.split("__")[0] in wanted]
+        else:
+            wanted = set(SYMBOLS)
+            all_shards = [p for p in all_shards if p.stem.split("__")[0] in wanted]
+
+        if args.max_shards_per_symbol is not None:
+            from collections import defaultdict
+
+            by_sym: dict[str, list[Path]] = defaultdict(list)
+            for p in all_shards:
+                by_sym[p.stem.split("__")[0]].append(p)
+            capped: list[Path] = []
+            for paths in by_sym.values():
+                if len(paths) <= args.max_shards_per_symbol:
+                    capped.extend(paths)
+                else:
+                    idx = rng.choice(
+                        len(paths), size=args.max_shards_per_symbol, replace=False
+                    )
+                    idx.sort()
+                    capped.extend([paths[i] for i in idx])
+            all_shards = sorted(capped)
+
+        print(
+            f"[adverse-selection] Processing {len(all_shards)} shards...",
+            flush=True,
+        )
+        all_rows: list[dict] = []
+        for i, p in enumerate(all_shards):
+            if i % 50 == 0:
+                print(f"  [{i}/{len(all_shards)}] {p.name}", flush=True)
+            rows = process_shard_adverse_selection(p, rng=rng)
+            all_rows.extend(rows)
+
+        if not all_rows:
+            raise RuntimeError(
+                "No adverse-selection rows produced — check cache_dir and "
+                "symbols filter."
+            )
+
+        per_window_df = pd.DataFrame(all_rows)
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        per_window_path = args.out_dir / "maker_adverse_selection_per_window.parquet"
+        per_window_df.to_parquet(per_window_path, index=False)
+        print(
+            f"Wrote {len(per_window_df)} per-window rows → {per_window_path}",
+            flush=True,
+        )
+
+        cell_df = aggregate_adverse_selection(per_window_df)
+        csv_path = args.out_dir / "maker_adverse_selection_table.csv"
+        cell_df.to_csv(csv_path, index=False, float_format="%.6g")
+        print(
+            f"Wrote {len(cell_df)} (sym,horizon,offset) cells → {csv_path}",
+            flush=True,
+        )
+
+        md_path = args.out_dir / "maker_adverse_selection.md"
+        write_adverse_selection_md(cell_df, md_path)
+        print(f"Wrote {md_path}", flush=True)
+        return
 
     if args.maker_sweep:
         per_window_path = args.out_dir / "per_window.parquet"

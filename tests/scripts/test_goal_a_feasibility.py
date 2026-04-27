@@ -14,12 +14,16 @@ import pytest
 from scripts.goal_a_feasibility import (
     add_accuracy_stress_columns,
     add_maker_headroom_columns,
+    aggregate_adverse_selection,
     aggregate_cells,
+    best_bid_ask_from_levels,
     compute_maker_sensitivity_table,
+    detect_fill_in_range,
     forward_log_return,
     headroom_at_accuracy_bps,
     headroom_bps,
     maker_headroom_at_accuracy_bps,
+    model_accuracy_breakeven,
     simulate_taker_fill,
     survivors_for_accuracy,
 )
@@ -495,3 +499,241 @@ def test_compute_maker_sensitivity_table_fill_proxy_filters() -> None:
     # So n_cells_alive >= 1, but n_cells_alive_with_fill_proxy == 0
     assert int(row["n_cells_alive"]) == 1
     assert int(row["n_cells_alive_with_fill_proxy"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Adverse-selection sim — fill detection on a synthetic OB grid
+# ---------------------------------------------------------------------------
+
+
+def test_best_bid_ask_from_levels_basic() -> None:
+    """L1 IS the best by parquet convention — confirm the helper picks it."""
+    bp = np.array([99.0, 98.5, 98.0])
+    bq = np.array([10.0, 10.0, 10.0])
+    ap = np.array([100.0, 100.5, 101.0])
+    aq = np.array([10.0, 10.0, 10.0])
+    bb, ba = best_bid_ask_from_levels(bp, bq, ap, aq)
+    assert bb == 99.0
+    assert ba == 100.0
+
+
+def test_best_bid_ask_from_levels_skips_missing_l1() -> None:
+    """If L1 has qty=0, fall through to L2."""
+    bp = np.array([99.0, 98.5, 98.0])
+    bq = np.array([0.0, 10.0, 10.0])  # L1 missing on bid
+    ap = np.array([100.0, 100.5, 101.0])
+    aq = np.array([10.0, 10.0, 10.0])
+    bb, ba = best_bid_ask_from_levels(bp, bq, ap, aq)
+    assert bb == 98.5  # falls through to L2
+    assert ba == 100.0
+
+
+def test_best_bid_ask_from_levels_one_sided_book() -> None:
+    """Empty bid side → returns NaN."""
+    bp = np.array([0.0, 0.0, 0.0])
+    bq = np.array([0.0, 0.0, 0.0])
+    ap = np.array([100.0, 100.5, 101.0])
+    aq = np.array([10.0, 10.0, 10.0])
+    bb, ba = best_bid_ask_from_levels(bp, bq, ap, aq)
+    assert np.isnan(bb)
+    assert np.isnan(ba)
+
+
+def test_bid_fills_when_ask_crosses_through() -> None:
+    """A snapshot in [anchor_ts, horizon_end_ts] with best_ask <= bid_price
+    triggers a bid fill. Symmetric for the ask side."""
+    # OB grid: 5 snapshots at ts = [0, 100, 200, 300, 400]
+    snap_ts = np.array([0, 100, 200, 300, 400], dtype=np.int64)
+    # best_ask drops to 99.5 at ts=200 — this should fill a bid posted at 99.5
+    snap_best_bids = np.array([99.0, 99.0, 99.0, 99.0, 99.0])
+    snap_best_asks = np.array([100.0, 100.0, 99.5, 100.0, 100.0])
+
+    # Anchor at ts=50, horizon end at ts=350 → range covers ts=100, 200, 300
+    bid_filled, ask_filled = detect_fill_in_range(
+        snap_best_bids=snap_best_bids,
+        snap_best_asks=snap_best_asks,
+        snap_ts=snap_ts,
+        anchor_ts=50,
+        horizon_end_ts=350,
+        bid_price=99.5,  # ask drops to 99.5 at ts=200 — should fill
+        ask_price=100.5,  # bid never reaches 100.5 — no fill
+    )
+    assert bid_filled is True
+    assert ask_filled is False
+
+
+def test_no_fill_when_book_stays_above_bid() -> None:
+    """If best_ask never <= bid_price in range, bid does not fill."""
+    snap_ts = np.array([0, 100, 200, 300, 400], dtype=np.int64)
+    snap_best_bids = np.array([99.0, 99.0, 99.0, 99.0, 99.0])
+    snap_best_asks = np.array([100.0, 100.1, 100.2, 100.1, 100.0])  # never <= 99.5
+
+    bid_filled, ask_filled = detect_fill_in_range(
+        snap_best_bids=snap_best_bids,
+        snap_best_asks=snap_best_asks,
+        snap_ts=snap_ts,
+        anchor_ts=50,
+        horizon_end_ts=350,
+        bid_price=99.5,
+        ask_price=100.5,
+    )
+    assert bid_filled is False
+    assert ask_filled is False
+
+
+def test_ask_fills_when_bid_crosses_up() -> None:
+    """Symmetric to the bid case: best_bid >= ask_price triggers ask fill."""
+    snap_ts = np.array([0, 100, 200, 300, 400], dtype=np.int64)
+    # best_bid spikes to 100.5 at ts=200 — fills an ask posted at 100.5
+    snap_best_bids = np.array([99.0, 99.0, 100.5, 99.0, 99.0])
+    snap_best_asks = np.array([100.0, 100.0, 101.0, 100.0, 100.0])
+
+    bid_filled, ask_filled = detect_fill_in_range(
+        snap_best_bids=snap_best_bids,
+        snap_best_asks=snap_best_asks,
+        snap_ts=snap_ts,
+        anchor_ts=50,
+        horizon_end_ts=350,
+        bid_price=98.5,  # ask never drops that low → no bid fill
+        ask_price=100.5,
+    )
+    assert bid_filled is False
+    assert ask_filled is True
+
+
+def test_no_fill_when_horizon_window_contains_no_snapshots() -> None:
+    """If the snapshot grid has no entries in [anchor, horizon_end], no fill."""
+    snap_ts = np.array([0, 1000, 2000], dtype=np.int64)
+    snap_best_bids = np.array([99.0, 99.0, 99.0])
+    snap_best_asks = np.array([100.0, 100.0, 100.0])
+    # Anchor at ts=100, horizon_end at ts=900 → no snapshots in range
+    bid_filled, ask_filled = detect_fill_in_range(
+        snap_best_bids=snap_best_bids,
+        snap_best_asks=snap_best_asks,
+        snap_ts=snap_ts,
+        anchor_ts=100,
+        horizon_end_ts=900,
+        bid_price=99.99,  # at this price the L1 snapshot WOULD fill, but
+        ask_price=100.01,  # the snapshot at ts=0 is BEFORE the range
+    )
+    assert bid_filled is False
+    assert ask_filled is False
+
+
+def test_nan_snapshots_treated_as_no_cross() -> None:
+    """NaN best bid/ask in the range must not trigger spurious fills."""
+    snap_ts = np.array([0, 100, 200, 300, 400], dtype=np.int64)
+    snap_best_bids = np.array([99.0, 99.0, np.nan, 99.0, 99.0])
+    snap_best_asks = np.array([100.0, 100.0, np.nan, 100.0, 100.0])
+
+    bid_filled, ask_filled = detect_fill_in_range(
+        snap_best_bids=snap_best_bids,
+        snap_best_asks=snap_best_asks,
+        snap_ts=snap_ts,
+        anchor_ts=150,
+        horizon_end_ts=250,  # only the NaN snapshot at ts=200 is in range
+        bid_price=99.99,
+        ask_price=100.01,
+    )
+    assert bid_filled is False
+    assert ask_filled is False
+
+
+# ---------------------------------------------------------------------------
+# model_accuracy_breakeven math
+# ---------------------------------------------------------------------------
+
+
+def test_breakeven_accuracy_zero_realized_pnl_equals_50_percent() -> None:
+    """When E[realized | filled] = 0 AND maker_fee = 0, breakeven = 0.5."""
+    p = model_accuracy_breakeven(
+        expected_realized_pnl_bps=0.0, maker_fee_bps_per_side=0.0
+    )
+    assert abs(p - 0.5) < 1e-12
+
+
+def test_breakeven_zero_pnl_nonzero_fee_is_unreachable() -> None:
+    """E=0 with positive fee → +inf (no accuracy can break even)."""
+    p = model_accuracy_breakeven(
+        expected_realized_pnl_bps=0.0, maker_fee_bps_per_side=1.5
+    )
+    assert p == float("inf")
+
+
+def test_breakeven_positive_pnl_below_50_when_fee_negative() -> None:
+    """A rebate (fee < 0) and positive E should give breakeven < 0.5."""
+    # fee = -1, E = 100 → breakeven = 0.5 + (-1)/100 = 0.49
+    p = model_accuracy_breakeven(
+        expected_realized_pnl_bps=100.0, maker_fee_bps_per_side=-1.0
+    )
+    assert abs(p - 0.49) < 1e-12
+
+
+def test_breakeven_positive_pnl_with_pacifica_fee() -> None:
+    """At the actual Pacifica maker fee +1.5 bp/side and E=10 bp,
+    breakeven = 0.5 + 1.5/10 = 0.65."""
+    p = model_accuracy_breakeven(
+        expected_realized_pnl_bps=10.0, maker_fee_bps_per_side=1.5
+    )
+    assert abs(p - 0.65) < 1e-12
+
+
+def test_breakeven_negative_pnl_below_50_signals_dilemma() -> None:
+    """Maker's Dilemma: E < 0 → breakeven < 0.5 (need to be contrarian)."""
+    # E = -10, fee = +1.5 → breakeven = 0.5 + 1.5 / -10 = 0.35
+    p = model_accuracy_breakeven(
+        expected_realized_pnl_bps=-10.0, maker_fee_bps_per_side=1.5
+    )
+    assert abs(p - 0.35) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# aggregate_adverse_selection: end-to-end on a tiny per-window DataFrame
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_adverse_selection_basic_no_dilemma() -> None:
+    """One cell, 4 windows, all bids fill with E[realized] = +20 bp.
+    With maker_fee = 1.5: breakeven = 0.5 + 1.5/20 = 0.575."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * 4,
+            "horizon": [100] * 4,
+            "offset_bps": [2.0] * 4,
+            "bid_filled": [True, True, True, True],
+            "ask_filled": [False, False, False, False],
+            "realized_bid_pnl_bps": [10.0, 20.0, 30.0, 20.0],
+            "realized_ask_pnl_bps": [float("nan")] * 4,
+        }
+    )
+    out = aggregate_adverse_selection(df, maker_fee_bps_per_side=1.5)
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["fill_rate_bid"] == 1.0
+    assert row["fill_rate_ask"] == 0.0
+    assert abs(float(row["mean_pnl_bid_filled"]) - 20.0) < 1e-9
+    # mean_pnl_either_filled aggregates bid_pnl + ask_pnl finite-only
+    # → only bid fills → mean = 20
+    assert abs(float(row["mean_pnl_either_filled"]) - 20.0) < 1e-9
+    # breakeven = 0.5 + 1.5 / 20 = 0.575
+    assert abs(float(row["model_accuracy_breakeven"]) - 0.575) < 1e-9
+
+
+def test_aggregate_adverse_selection_dilemma_negative_e() -> None:
+    """All filled bids precede a drop → E[realized | filled] < 0 → breakeven < 0.5."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["X"] * 3,
+            "horizon": [100] * 3,
+            "offset_bps": [2.0] * 3,
+            "bid_filled": [True, True, True],
+            "ask_filled": [False, False, False],
+            "realized_bid_pnl_bps": [-5.0, -10.0, -15.0],
+            "realized_ask_pnl_bps": [float("nan")] * 3,
+        }
+    )
+    out = aggregate_adverse_selection(df, maker_fee_bps_per_side=1.5)
+    row = out.iloc[0]
+    assert float(row["mean_pnl_bid_filled"]) == -10.0
+    # Breakeven = 0.5 + 1.5 / -10 = 0.35 → contrarian zone
+    assert abs(float(row["model_accuracy_breakeven"]) - 0.35) < 1e-9
