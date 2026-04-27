@@ -20,16 +20,59 @@
 | Cascade direction LR | Failed (AUC=0.441 < majority); marginal-long net-negative | `cascade_direction.md`, `cascade_marginal_long.md` |
 | **Cascade real-label OOS** (Apr 14-26) | **AUC=0.778, generalizes** | `cascade_precursor_oos.md` |
 
-## Next concrete move
+## Next concrete move (REVISED 2026-04-27 PM after council round)
 
-**Encoder retrain on cascade-onset target.** v1's CNN architecture (376K param dilated CNN, RF=253), pretraining objective and head swapped: end-to-end binary cross-entropy on the merged Apr 1-26 cascade label, walk-forward day-blocked CV. Goal: lift OOS AUC from 0.778 (flat-LR baseline) to 0.85+, which would push top-1% precision into tradeable range under maker fee economics (1.5bp/side per researcher-14's Pacifica fee-schedule research).
+**Phase 0: Random-init encoder linear probe vs unified-CV flat-LR.** CPU-minutes
+test that arbitrates whether the encoder-retrain program is worth GPU compute.
+Council-1 + council-5 + council-6 converged on this in
+`docs/council-reviews/2026-04-27-encoder-retrain-protocol.md`. End-to-end
+fine-tune is unfalsifiable at n=96 OOS cascades — must run the cheap probe first.
 
-**Owner:** dispatch to builder-8 + runpod-7 (H100 likely needed). ~1-2 days work, ~$10-20 compute.
+**Plan:** `docs/experiments/goal-a-v2/2026-04-27-random-init-probe-plan.md`.
+Two phases:
+- Phase 0a: re-evaluate flat-LR (83-dim) under unified 5-fold day-blocked CV
+  on merged Apr 1-26 (retires the 0.778 reference baseline; old OOS number was
+  biased by holdout consumption).
+- Phase 0b: forward-pass each (200, 17) window through frozen random-init
+  `TapeEncoder` → 256-dim global embedding. `LogisticRegression` head. Same
+  CV partition. Paired day-clustered bootstrap on the delta.
 
-**Pre-dispatch obligations:**
-- The cascade label has only ~169 events at H500 across the full Apr 1-26 dataset. Small-data regime — need careful regularization, no hyperparameter search, train/val splits day-blocked not random.
-- Anti-amnesia: April 14-26 holdout has been DELIBERATELY consumed (2026-04-27, commit `b0de994` and the cache rebuild). No untouched cascade-labeled holdout remains. Future evaluation requires either (a) waiting for new data accrual past Apr 27, or (b) splitting the merged dataset.
-- v1's CNN code is in `tape/encoder.py` + `tape/pretrain.py`. The cascade-prediction head needs to be added. Re-use BatchNorm + dilated conv stack; replace MEM decoder + SimCLR projection head with a binary classification head over global-pool embedding.
+**Decision tree from Phase 0b** (post-result, see protocol doc):
+1. Probe ≥ flat-LR + 2pp, delta CI excludes 0 → light end-to-end fine-tune,
+   skip pretraining.
+2. Probe ≈ flat-LR (delta CI overlaps 0) → end-to-end fine-tune once at
+   council-6 regularization recipe; if it fails Tier A, stop the program.
+3. Probe < flat-LR by > 2pp → architecture bottleneck; decide pretrain vs
+   end-to-end with reg.
+
+**Three-tier success bar (council-5)** when we get to the encoder-retrain phase:
+- Tier A: OOS AUC lower bound (day-clustered) > 0.833 AND > flat-LR by ≥ 3pp
+  on ≥ 3 of {SUI, AVAX, PENGU, XRP} AND ≥ 2 NEW symbols cross AUC > 0.65.
+- Tier B: point 0.81–0.85, delta CI overlaps 0 — file as "no causal claim", stop.
+- Tier C: point ≤ 0.78 OR lower bound ≤ 0.73 OR per-symbol gain entirely on the
+  same SUI/AVAX/PENGU/XRP — kill.
+
+**Owner:** dispatch to builder-8 (implement Phase 0a + 0b pipeline), then
+reviewer-10, then validator-11 to run + grade.
+
+**Compute:** Phase 0 = < 30 CPU-minutes, no GPU. Encoder retrain compute
+budget unlocked only if Phase 0 result is actionable per decision tree.
+
+**Pre-dispatch obligations (binding):**
+- Re-evaluate flat-LR (83-dim) under SAME 5-fold day-blocked CV partition
+  encoder probe will use. Both numbers come from one run.
+- 600-event embargo at fold boundaries.
+- 3 random encoder seeds {0, 1, 2}, report MEDIAN.
+- BatchNorm gotcha: `model.eval()` + decide between `track_running_stats=False`
+  vs single warmup pass; document.
+- Per CLAUDE.md gotcha #17: April 14-26 holdout consumed — Phase 0 evaluates
+  ONLY via the unified CV protocol. No "OOS test" remains.
+
+**v2 architecture decisions (deferred, not yet ratified):**
+- v1's CNN code is in `tape/model.py` (`TapeEncoder`, `EncoderConfig`),
+  `tape/finetune.py` (`FineTunedModel`, `DirectionHead`), `tape/pretrain.py`
+  (MEM+SimCLR loop). Cascade-prediction head needs a `CascadeHead` analog
+  (single-output BCE) — implement only when Phase 0 greenlights it.
 
 ## Stack — extended
 
