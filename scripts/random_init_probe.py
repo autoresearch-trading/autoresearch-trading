@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -967,7 +966,6 @@ def _build_per_symbol_table(
 def _build_fold_table(
     *,
     sym: np.ndarray,
-    dates: np.ndarray,
     fold_idx: np.ndarray,
     proba: np.ndarray,
     labels: np.ndarray,
@@ -1246,7 +1244,7 @@ def _run_pipeline(
             k=N_FOLDS,
         )
         a = _pooled_auc(oof.proba, oof.labels)
-        boot_mean, boot_lo, boot_hi = day_clustered_bootstrap_auc(
+        _, boot_lo, boot_hi = day_clustered_bootstrap_auc(
             proba=oof.proba,
             labels=oof.labels.astype(np.int64),
             dates=date_arr,
@@ -1274,15 +1272,13 @@ def _run_pipeline(
     median_oof = enc_oof_per_seed[median_seed]
 
     print(f"[5/6] Paired bootstrap on delta = enc_seed{median_seed} − flat-LR")
-    delta_point, delta_lo, delta_hi, _aucs_a, _aucs_b = (
-        paired_day_clustered_bootstrap_delta(
-            proba_a=oof_flat.proba,
-            proba_b=median_oof.proba,
-            labels=y.astype(np.int64),
-            dates=date_arr,
-            n_boot=N_BOOT,
-            seed=999,
-        )
+    delta_point, delta_lo, delta_hi, *_ = paired_day_clustered_bootstrap_delta(
+        proba_a=oof_flat.proba,
+        proba_b=median_oof.proba,
+        labels=y.astype(np.int64),
+        dates=date_arr,
+        n_boot=N_BOOT,
+        seed=999,
     )
     print(f"      → delta={delta_point:+.4f} CI=[{delta_lo:+.4f}, {delta_hi:+.4f}]")
 
@@ -1308,7 +1304,6 @@ def _run_pipeline(
     # Fold-level CSV
     fold_flat = _build_fold_table(
         sym=sym,
-        dates=date_arr,
         fold_idx=oof_flat.fold_idx,
         proba=oof_flat.proba,
         labels=y.astype(np.int64),
@@ -1318,7 +1313,6 @@ def _run_pipeline(
     for seed, oof in enc_oof_per_seed.items():
         f_enc = _build_fold_table(
             sym=sym,
-            dates=date_arr,
             fold_idx=oof.fold_idx,
             proba=oof.proba,
             labels=y.astype(np.int64),
