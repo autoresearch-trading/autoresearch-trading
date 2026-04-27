@@ -74,7 +74,7 @@ The interpretation question — does the encoder read tape volume-price phenomen
 | Cross-symbol-same-hour vs cross-symbol-diff-hour cosine delta (the SimCLR-trained-for axis) | +0.037 | SimCLR alignment signal is **3.8× weaker** than the per-symbol clustering |
 | Per-symbol RankMe (median 41.4) vs pooled RankMe (64.2) | ratio 0.65 | Each symbol uses fewer directions than the pool — consistent with per-symbol-clustered geometry |
 
-**Calibrated claim (replaces prior "undetermined" framing):** The encoder produces a **per-symbol-clustered representation with linearly-extractable directional signal** (+1pp at H500, temporally stable). The +0.037 cross-symbol same-hour cosine delta indicates a weak shared geometry — most plausibly the universal sign-of-flow predicate (consistent with council-2's Cont-de Larrard symbol-specific OFI framing). The +0.139 same-symbol delta and 0.934 symbol-ID probe indicate the dominant geometric structure is per-symbol clustering, not Wyckoff-phenomenological tape state.
+**Calibrated claim (replaces prior "undetermined" framing):** The encoder produces a **per-symbol-clustered representation with linearly-extractable directional signal** (+1pp at H500, temporally stable). The +0.037 cross-symbol same-hour cosine delta indicates a weak shared geometry — possibly the universal sign-of-flow predicate (untested at the +0.037 magnitude against an appropriate null distribution; consistent with council-2's Cont-de Larrard symbol-specific OFI framing). The +0.139 same-symbol delta and 0.934 symbol-ID probe indicate the dominant geometric structure is per-symbol clustering, not Wyckoff-phenomenological tape state.
 
 **What this rules out:** A strong "encoder reads universal tape phenomenology that transfers across symbols" claim. The cross-symbol invariance the spec hoped for was not earned.
 
@@ -84,7 +84,7 @@ The interpretation question — does the encoder read tape volume-price phenomen
 - `docs/council-reviews/2026-04-27-tape-state-paired-probe-c4-design.md`
 - `docs/council-reviews/2026-04-27-tape-state-paired-probe-c5-falsifiability.md`
 
-The interpretation framing above does NOT depend on running this diagnostic; it is grounded in the cohesion + RankMe + symbol-ID evidence already collected. If a future program revisits this question on a different stack (different objective, different data, different architecture), c-4's bucket fix and c-5's falsifiability spine are the starting point.
+The interpretation framing above does NOT depend on running this diagnostic; it is grounded in the cohesion + RankMe + symbol-ID evidence already collected. *Source artifacts for the existing diagnostics: cohesion deltas reported in `docs/experiments/step5-cluster-cohesion.md` (driver: `scripts/cluster_cohesion.py`); RankMe in `runs/step4-r1-perhorizon/rankme-feb-mar.json`; symbol-ID probe in the encoder evaluation logs from the same Gate 1 probe run.* If a future program revisits this question on a different stack (different objective, different data, different architecture), c-4's bucket fix and c-5's falsifiability spine are the starting point.
 
 ## Open questions and what would close them
 
