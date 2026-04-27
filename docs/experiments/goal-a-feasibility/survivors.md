@@ -57,3 +57,7 @@ _No cells survive at this accuracy._
 | ENA | $1k | H500 | 70.85 bp | 2.43 bp | -2.72 bp | 43.3% | fail |
 | PUMP | $10k | H500 | 100.50 bp | 5.53 bp | -3.48 bp | 43.2% | fail |
 | HYPE | $10k | H500 | 62.31 bp | 2.25 bp | -4.07 bp | 37.8% | fail |
+
+## Maker-mode cross-reference
+
+The taker verdict above (zero cells alive at 55%/57.5%/60% accuracy under 6 bp/side fee + book-walk slippage) is computed under taker execution. A complementary maker-mode sweep (`maker_sensitivity.md`) parameterises the maker fee from a 2 bp rebate to a 6 bp fee per side, with slippage set to zero (the load-bearing simplification — adverse selection is not modelled). The breakeven maker fee per accuracy regime is reported there. The taker verdict in this file is unchanged.

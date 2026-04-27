@@ -72,6 +72,26 @@ ACCURACY_REGIMES: tuple[float, ...] = (0.55, 0.575, 0.60)
 SURVIVOR_FRAC_POS_THRESHOLD: float = 0.55
 SURVIVOR_HEADROOM_THRESHOLD_BPS: float = 0.0
 
+# Maker-mode sensitivity sweep range (bps per side). Negative = rebate;
+# positive = fee. Pacifica taker is +6 bp/side; we sweep below that to map
+# how much rebate would be needed to flip the universe alive.
+MAKER_FEES_BPS_SWEEP: tuple[float, ...] = (
+    -2.0,
+    -1.0,
+    0.0,
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+)
+
+# Fill-proxy threshold: |edge_bps| >= 1 bp counts as "mid traversed >=1 tick"
+# This is a defensible cross-symbol simplification — true tick sizes are
+# symbol-dependent. See `add_maker_headroom_columns` docstring for caveats.
+MAKER_FILL_PROXY_BPS: float = 1.0
+
 # Index of log_return in the cached features tensor (col 0 per FEATURE_NAMES)
 _LOG_RETURN_IDX = FEATURE_NAMES.index("log_return")
 
@@ -401,6 +421,273 @@ def add_accuracy_stress_columns(
     return df
 
 
+# ---------------------------------------------------------------------------
+# Maker-mode cost band (parameterised by maker fee/rebate, NO slippage)
+# ---------------------------------------------------------------------------
+
+
+def maker_headroom_at_accuracy_bps(
+    *,
+    edge_bps: float,
+    maker_fee_bps: float,
+    accuracy: float,
+) -> float:
+    """Maker-mode headroom (bps) under iid directional accuracy `p`.
+
+    Math:
+        gross_pnl_bps      = (2p − 1) × |edge_bps|        # accuracy-stressed
+        maker_cost_bps     = 2 × maker_fee_bps            # both legs, signed
+        maker_headroom_bps = gross_pnl_bps − maker_cost_bps  # NO slippage
+
+    Sign convention: `maker_fee_bps > 0` is a fee paid both legs, `< 0` is a
+    rebate earned both legs. cost = 2 × maker_fee_bps preserves that sign.
+
+    Load-bearing simplification: maker execution does NOT cross the spread, so
+    slippage contribution is zero. In reality this is replaced by:
+      (a) fill-rate risk (we may not get filled),
+      (b) adverse-selection risk (we get filled when we shouldn't have).
+    Both are out of scope for this first-cut analysis. The fill-proxy column
+    in `add_maker_headroom_columns` is a coarse partial mitigant for (a).
+    """
+    edge_signal = (2.0 * accuracy - 1.0) * abs(edge_bps)
+    cost = 2.0 * maker_fee_bps  # signed: positive = fee, negative = rebate
+    return edge_signal - cost
+
+
+def _fmt_fee_for_col(fee: float) -> str:
+    """Render a maker-fee number for a column suffix.  -1.0→'-1', 0.0→'0',
+    3.5→'3p5'.  Stable for the sweep we run (integer bps); gracefully handles
+    halves if we ever extend the grid.
+    """
+    if float(fee).is_integer():
+        return str(int(fee))
+    return ("{:g}".format(fee)).replace(".", "p")
+
+
+def add_maker_headroom_columns(
+    per_window_df: pd.DataFrame,
+    *,
+    accuracies: Iterable[float] = ACCURACY_REGIMES,
+    maker_fees_bps: Iterable[float] = MAKER_FEES_BPS_SWEEP,
+    fill_proxy_bps: float = MAKER_FILL_PROXY_BPS,
+) -> pd.DataFrame:
+    """Append maker-mode headroom columns + a fill-proxy boolean per window.
+
+    Adds:
+      * `maker_fill_proxy_bool`: True iff `|edge_bps| >= fill_proxy_bps`.
+        Approximates "mid traversed >=1 tick from anchor mid within the
+        horizon" by reusing the realised log-return magnitude. NaN edge → False.
+        Caveats: edge is computed from VWAP cumsum, not anchor-mid → forward-mid;
+        we don't have anchor-mid-aligned forward mid in the parquet. VWAP-based
+        proxy is mid-anchored enough for a coarse cross-symbol filter.
+      * `maker_headroom_acc_<X>_fee_<F>_bps` for each (accuracy, maker_fee) pair:
+        (2p − 1) × |edge_bps| − 2 × maker_fee_bps. NO slippage by design.
+
+    Limit explicitly NOT modelled:
+      - queue position / time priority
+      - partial fills (we treat fill as binary)
+      - adverse selection (we'd get filled when the model is wrong, magnifying
+        the (1-p) leg of the gross PnL — a bigger effect than fees in practice)
+    A real fill-rate study needs raw limit-order event data which we don't have.
+    """
+    df = per_window_df.copy()
+    edge = df["edge_bps"].to_numpy(dtype=np.float64)
+    abs_edge = np.abs(edge)
+
+    # Fill proxy: |edge_bps| >= threshold (1 bp = ~1 tick proxy). NaN → False.
+    fill_proxy = np.isfinite(edge) & (abs_edge >= fill_proxy_bps)
+    df["maker_fill_proxy_bool"] = fill_proxy
+
+    for acc in accuracies:
+        acc_suffix = _accuracy_suffix(acc).lstrip("_")  # '55', '575', '60'
+        # Compute the gross signal once per accuracy
+        gross = (2.0 * acc - 1.0) * abs_edge  # NaN propagates from edge
+        for fee in maker_fees_bps:
+            fee_suffix = _fmt_fee_for_col(fee)
+            cost = 2.0 * fee  # signed scalar
+            col = f"maker_headroom_acc_{acc_suffix}_fee_{fee_suffix}_bps"
+            df[col] = gross - cost
+    return df
+
+
+def compute_maker_sensitivity_table(
+    per_window_df: pd.DataFrame,
+    *,
+    maker_fees_bps: Iterable[float] = MAKER_FEES_BPS_SWEEP,
+    accuracies: Iterable[float] = ACCURACY_REGIMES,
+    frac_pos_threshold: float = SURVIVOR_FRAC_POS_THRESHOLD,
+    headroom_threshold_bps: float = SURVIVOR_HEADROOM_THRESHOLD_BPS,
+    fill_proxy_bps: float = MAKER_FILL_PROXY_BPS,
+) -> pd.DataFrame:
+    """Per (maker_fee, accuracy) → number of (symbol,size,horizon) cells alive.
+
+    A cell is "alive" iff:
+        median maker_headroom > headroom_threshold_bps  AND
+        frac_positive maker_headroom > frac_pos_threshold
+
+    Two flavours reported:
+      * `n_cells_alive`: cells that pass on raw headroom.
+      * `n_cells_alive_with_fill_proxy`: cells that ALSO have median
+         `maker_fill_proxy_bool` > frac_pos_threshold (i.e. a majority of the
+         windows in the cell have edge >= 1 bp — proxy for "would have filled").
+
+    Also reports `top_5_cells_by_median_headroom` as a comma-joined string of
+    `SYM:$Sk:Hh` tags, sorted by median headroom desc.
+    """
+    fee_list = list(maker_fees_bps)
+    acc_list = list(accuracies)
+
+    df = add_maker_headroom_columns(
+        per_window_df,
+        accuracies=acc_list,
+        maker_fees_bps=fee_list,
+        fill_proxy_bps=fill_proxy_bps,
+    )
+    fillable_mask_full = df["fillable"].to_numpy(dtype=bool)
+    fill_proxy_full = df["maker_fill_proxy_bool"].to_numpy(dtype=bool)
+
+    rows: list[dict] = []
+    # Pre-group once for speed — same groupby reused per (acc, fee) cell.
+    grouped = df.groupby(["symbol", "size_usd", "horizon"], sort=True)
+    # Cache group indices to avoid repeated label scans
+    group_indices: list[tuple[tuple[str, float, int], np.ndarray]] = []
+    for key, idx in grouped.indices.items():
+        group_indices.append((cast(tuple[str, float, int], key), np.asarray(idx)))
+
+    for acc in acc_list:
+        acc_suffix = _accuracy_suffix(acc).lstrip("_")
+        for fee in fee_list:
+            fee_suffix = _fmt_fee_for_col(fee)
+            col = f"maker_headroom_acc_{acc_suffix}_fee_{fee_suffix}_bps"
+            head_full = df[col].to_numpy(dtype=np.float64)
+            valid_full = fillable_mask_full & np.isfinite(head_full)
+
+            n_alive = 0
+            n_alive_proxy = 0
+            cell_records: list[tuple[float, str]] = []  # (median, label)
+            for key, idx in group_indices:
+                sym, size, h = key
+                local_valid = valid_full[idx]
+                if not local_valid.any():
+                    continue
+                local_head = head_full[idx][local_valid]
+                if local_head.size == 0:
+                    continue
+                med = float(np.median(local_head))
+                frac_pos = float((local_head > 0).mean())
+                cell_alive = (
+                    med > headroom_threshold_bps and frac_pos > frac_pos_threshold
+                )
+                if cell_alive:
+                    n_alive += 1
+                    label = f"{sym}:${int(size)//1000}k:H{int(h)}"
+                    cell_records.append((med, label))
+                    # Apply fill-proxy filter on the same valid windows
+                    local_fp = fill_proxy_full[idx][local_valid]
+                    if local_fp.size > 0:
+                        frac_fp = float(local_fp.mean())
+                        if frac_fp > frac_pos_threshold:
+                            n_alive_proxy += 1
+
+            top5 = sorted(cell_records, key=lambda t: -t[0])[:5]
+            top5_str = ", ".join(f"{label}({med:+.2f}bp)" for med, label in top5)
+
+            rows.append(
+                {
+                    "maker_fee_bps": float(fee),
+                    "accuracy": float(acc),
+                    "n_cells_alive": int(n_alive),
+                    "n_cells_alive_with_fill_proxy": int(n_alive_proxy),
+                    "top_5_cells_by_median_headroom": top5_str,
+                }
+            )
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["accuracy", "maker_fee_bps"])
+        .reset_index(drop=True)
+    )
+
+
+def write_maker_sensitivity_md(
+    sens_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    accuracies: Iterable[float] = ACCURACY_REGIMES,
+    fill_proxy_bps: float = MAKER_FILL_PROXY_BPS,
+) -> dict[float, float | None]:
+    """Emit `maker_sensitivity.md`. Returns the per-accuracy "breakeven" maker
+    fee — the highest maker_fee_bps at which `n_cells_alive >= 1`.
+
+    Returns None for an accuracy regime if no cells are alive at any swept fee.
+    """
+    breakeven: dict[float, float | None] = {}
+    body: list[str] = []
+    body.append("# Goal-A Maker-Mode Cost-Band Sensitivity\n")
+    body.append(
+        "Sensitivity sweep over maker-mode fees (bps per side). "
+        "Negative = rebate; positive = fee. **Slippage assumed = 0** under "
+        "maker execution (we post a limit at our chosen price; we do not cross "
+        "the spread). This is the load-bearing simplification of this analysis. "
+        "In reality, the equivalent risk under maker execution is **adverse "
+        "selection** (we get filled when the model is wrong), which this "
+        "first-cut model does not incorporate.\n"
+    )
+    body.append(
+        "**Maker headroom** = (2p − 1) × |edge_bps| − 2 × maker_fee_bps. "
+        f"**Fill-proxy** = fraction of windows with |edge_bps| ≥ "
+        f"{fill_proxy_bps:g} bp (rough cross-symbol approximation of "
+        "'mid traverses ≥1 tick within horizon'). A cell is alive iff "
+        "median headroom > 0 AND frac_positive headroom > "
+        f"{SURVIVOR_FRAC_POS_THRESHOLD:.2f}.\n"
+    )
+    body.append(
+        "**Caveats explicitly NOT modelled**: queue position, partial fills, "
+        "adverse selection, symbol-specific tick sizes. A real fill-rate "
+        "study needs raw limit-order event data — which we do not have.\n"
+    )
+
+    for acc in accuracies:
+        sub = sens_df.loc[sens_df["accuracy"] == acc].sort_values("maker_fee_bps")
+        body.append(f"\n## Accuracy = {acc:.3f} ({acc*100:g}%)\n")
+        body.append(
+            "| maker_fee_bps | n_cells_alive | n_cells_alive (with fill-proxy) | "
+            "top 5 cells by median headroom |"
+        )
+        body.append("|---:|---:|---:|---|")
+        # Breakeven = the LARGEST maker_fee_bps at which n_cells_alive >= 1
+        be: float | None = None
+        for _, row in sub.iterrows():
+            fee = float(row["maker_fee_bps"])
+            n_alive = int(row["n_cells_alive"])
+            n_alive_fp = int(row["n_cells_alive_with_fill_proxy"])
+            top = str(row["top_5_cells_by_median_headroom"]) or "_(none)_"
+            body.append(f"| {fee:+.1f} | {n_alive} | {n_alive_fp} | {top} |")
+            if n_alive >= 1 and (be is None or fee > be):
+                be = fee
+        breakeven[acc] = be
+        if be is None:
+            body.append(
+                f"\n_No cell is alive at any swept maker_fee_bps in "
+                f"[{min(MAKER_FEES_BPS_SWEEP):+.1f}, {max(MAKER_FEES_BPS_SWEEP):+.1f}] "
+                f"at accuracy {acc:.3f}._\n"
+            )
+        else:
+            body.append(
+                f"\n**Breakeven maker fee at {acc*100:g}% accuracy: "
+                f"≤ {be:+.1f} bp/side** "
+                "(highest swept fee at which ≥1 cell is alive on raw headroom).\n"
+            )
+    body.append("\n## Cross-reference\n")
+    body.append(
+        "See `survivors.md` for the taker-mode (6 bp/side + slip) verdict. "
+        "Under taker execution, zero cells survive at any of "
+        "55%/57.5%/60% accuracy.\n"
+    )
+
+    out_path.write_text("\n".join(body))
+    return breakeven
+
+
 def aggregate_cells(
     per_window_df: pd.DataFrame,
     *,
@@ -716,9 +1003,72 @@ def main() -> None:
             "CSV with per-accuracy stats, and writes survivors.md."
         ),
     )
+    parser.add_argument(
+        "--maker-sweep",
+        action="store_true",
+        help=(
+            "Run the maker-mode cost-band sensitivity sweep on an existing "
+            "per_window.parquet under --out-dir. Writes maker_sensitivity.csv "
+            "and maker_sensitivity.md. Also patches survivors.md with a "
+            "one-paragraph cross-reference (taker verdict left intact)."
+        ),
+    )
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
+
+    if args.maker_sweep:
+        per_window_path = args.out_dir / "per_window.parquet"
+        if not per_window_path.exists():
+            raise FileNotFoundError(
+                f"--maker-sweep requires {per_window_path} to exist. "
+                "Run the full pipeline first."
+            )
+        print(f"Loading {per_window_path}...", flush=True)
+        per_window_df = pd.read_parquet(per_window_path)
+        print(
+            f"  Loaded {len(per_window_df)} rows. Computing maker sensitivity "
+            f"over fees {MAKER_FEES_BPS_SWEEP} × accuracies {ACCURACY_REGIMES}...",
+            flush=True,
+        )
+        sens_df = compute_maker_sensitivity_table(per_window_df)
+        csv_path = args.out_dir / "maker_sensitivity.csv"
+        sens_df.to_csv(csv_path, index=False, float_format="%.6g")
+        print(f"  Wrote {len(sens_df)} sensitivity rows → {csv_path}", flush=True)
+
+        md_path = args.out_dir / "maker_sensitivity.md"
+        breakeven = write_maker_sensitivity_md(sens_df, md_path)
+        for acc, be in breakeven.items():
+            be_str = f"{be:+.1f}" if be is not None else "no cells alive"
+            print(f"  acc={acc:.3f}: breakeven maker_fee = {be_str}", flush=True)
+        print(f"  Wrote {md_path}", flush=True)
+
+        # Patch survivors.md with a one-paragraph cross-reference.
+        survivors_path = args.out_dir / "survivors.md"
+        if survivors_path.exists():
+            current = survivors_path.read_text()
+            xref_marker = "## Maker-mode cross-reference"
+            if xref_marker not in current:
+                xref = (
+                    f"\n\n{xref_marker}\n\n"
+                    "The taker verdict above (zero cells alive at 55%/57.5%/60% "
+                    "accuracy under 6 bp/side fee + book-walk slippage) is "
+                    "computed under taker execution. A complementary maker-mode "
+                    "sweep (`maker_sensitivity.md`) parameterises the maker fee "
+                    "from a 2 bp rebate to a 6 bp fee per side, with slippage "
+                    "set to zero (the load-bearing simplification — adverse "
+                    "selection is not modelled). The breakeven maker fee per "
+                    "accuracy regime is reported there. The taker verdict in "
+                    "this file is unchanged.\n"
+                )
+                survivors_path.write_text(current.rstrip() + xref)
+                print(f"  Patched {survivors_path} with maker xref.", flush=True)
+            else:
+                print(
+                    f"  {survivors_path} already has maker xref — no change.",
+                    flush=True,
+                )
+        return
 
     if args.accuracy_stress_only:
         per_window_path = args.out_dir / "per_window.parquet"

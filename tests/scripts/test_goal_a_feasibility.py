@@ -13,10 +13,13 @@ import pytest
 
 from scripts.goal_a_feasibility import (
     add_accuracy_stress_columns,
+    add_maker_headroom_columns,
     aggregate_cells,
+    compute_maker_sensitivity_table,
     forward_log_return,
     headroom_at_accuracy_bps,
     headroom_bps,
+    maker_headroom_at_accuracy_bps,
     simulate_taker_fill,
     survivors_for_accuracy,
 )
@@ -324,3 +327,171 @@ def test_survivors_for_accuracy_handles_missing_columns() -> None:
     )
     out = survivors_for_accuracy(cell_df, accuracy=0.60)
     assert out.empty
+
+
+# ---------------------------------------------------------------------------
+# maker_headroom_at_accuracy_bps math (no slippage; signed maker fee)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "accuracy, edge, maker_fee, expected",
+    [
+        # zero-fee zero-rebate: cost=0 → headroom = (2p-1)*|edge|
+        (0.55, 100.0, 0.0, 10.0),
+        (0.575, 100.0, 0.0, 15.0),
+        (0.60, 100.0, 0.0, 20.0),
+        # pure rebate: maker_fee = -1.0 bp → cost = -2 bp; headroom = gross + 2
+        (0.55, 100.0, -1.0, 10.0 + 2.0),
+        # pure fee: maker_fee = +3.0 bp → cost = +6 bp; headroom = gross - 6
+        (0.60, 100.0, 3.0, 20.0 - 6.0),
+        # p=1.0 perfect oracle, zero fee: headroom = |edge|
+        (1.0, 50.0, 0.0, 50.0),
+        # negative edge magnitude handled (uses |edge|)
+        (0.60, -100.0, 3.0, 20.0 - 6.0),
+        # rebate larger than gross signal → headroom positive even at p=0.5
+        (0.5, 100.0, -5.0, 0.0 + 10.0),
+    ],
+)
+def test_maker_headroom_at_accuracy_bps(
+    accuracy: float, edge: float, maker_fee: float, expected: float
+) -> None:
+    h = maker_headroom_at_accuracy_bps(
+        edge_bps=edge, maker_fee_bps=maker_fee, accuracy=accuracy
+    )
+    assert abs(h - expected) < 1e-9, (
+        f"acc={accuracy}, edge={edge}, maker_fee={maker_fee}: "
+        f"got {h}, want {expected}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# add_maker_headroom_columns: vectorised maker-mode columns
+# ---------------------------------------------------------------------------
+
+
+def test_add_maker_headroom_columns_basic() -> None:
+    """Vectorised maker headroom columns must equal the scalar function.
+
+    Also checks the fill_proxy column: True iff |edge_bps| >= 1.0.
+    """
+    df = pd.DataFrame(
+        {
+            "symbol": ["A", "B", "C"],
+            "size_usd": [1000.0] * 3,
+            "horizon": [500] * 3,
+            "fillable": [True, True, True],
+            "slip_avg_bps": [0.5, 1.0, 3.0],
+            "edge_bps": [0.4, 30.0, 100.0],  # row 0: edge<1bp → fill_proxy False
+        }
+    )
+    out = add_maker_headroom_columns(
+        df, accuracies=(0.55, 0.60), maker_fees_bps=(-1.0, 0.0, 3.0)
+    )
+    # Required columns
+    for fee in ("-1", "0", "3"):
+        assert f"maker_fill_proxy_bool" in out.columns
+        for acc in ("55", "60"):
+            col = f"maker_headroom_acc_{acc}_fee_{fee}_bps"
+            assert col in out.columns
+    # Row 0: edge=0.4 → |edge| < 1bp → fill_proxy False
+    assert bool(out.loc[0, "maker_fill_proxy_bool"]) is False
+    # Row 1: edge=30 → fill_proxy True
+    assert bool(out.loc[1, "maker_fill_proxy_bool"]) is True
+    # Row 2 at acc=0.60, maker_fee=3.0: gross = 0.20*100 = 20, cost=6, headroom=14
+    assert abs(float(out.loc[2, "maker_headroom_acc_60_fee_3_bps"]) - 14.0) < 1e-9
+    # Row 1 at acc=0.55, maker_fee=-1.0 (rebate): gross=3, cost=-2, headroom=5
+    assert abs(float(out.loc[1, "maker_headroom_acc_55_fee_-1_bps"]) - 5.0) < 1e-9
+
+
+def test_add_maker_headroom_columns_nan_propagates() -> None:
+    """NaN edge_bps → NaN maker headroom; fill_proxy is False (not NaN)."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["A"],
+            "size_usd": [1000.0],
+            "horizon": [500],
+            "fillable": [True],
+            "slip_avg_bps": [1.0],
+            "edge_bps": [float("nan")],
+        }
+    )
+    out = add_maker_headroom_columns(df, accuracies=(0.60,), maker_fees_bps=(0.0,))
+    assert np.isnan(out.loc[0, "maker_headroom_acc_60_fee_0_bps"])
+    # NaN edge → fill_proxy is False (treat as not-fillable)
+    assert bool(out.loc[0, "maker_fill_proxy_bool"]) is False
+
+
+# ---------------------------------------------------------------------------
+# compute_maker_sensitivity_table: end-to-end on a tiny per-window df
+# ---------------------------------------------------------------------------
+
+
+def test_compute_maker_sensitivity_table_shape_and_breakeven() -> None:
+    """Two cells × two windows each.  At maker_fee=0, accuracy=0.60:
+
+      - cell A: edge_med=100 → gross=20 → cost=0 → headroom=20 (alive)
+      - cell B: edge_med=10  → gross=2  → cost=0 → headroom=2  (alive)
+
+    At maker_fee=+3.0, accuracy=0.60:
+      - cell A: gross=20 - cost=6 → 14 (alive)
+      - cell B: gross=2  - cost=6 → -4 (dead)
+    """
+    df = pd.DataFrame(
+        {
+            "symbol": ["A", "A", "B", "B"],
+            "size_usd": [1000.0] * 4,
+            "horizon": [500] * 4,
+            "fillable": [True] * 4,
+            "slip_avg_bps": [1.0] * 4,
+            "edge_bps": [100.0, 100.0, 10.0, 10.0],
+        }
+    )
+    sens = compute_maker_sensitivity_table(
+        df,
+        maker_fees_bps=(0.0, 3.0),
+        accuracies=(0.60,),
+    )
+    # Shape: 2 fees × 1 accuracy = 2 rows
+    assert len(sens) == 2
+    # At fee=0: both cells alive
+    row_zero = sens.loc[
+        (sens["maker_fee_bps"] == 0.0) & (sens["accuracy"] == 0.60)
+    ].iloc[0]
+    assert int(row_zero["n_cells_alive"]) == 2
+    # At fee=3: only cell A alive
+    row_three = sens.loc[
+        (sens["maker_fee_bps"] == 3.0) & (sens["accuracy"] == 0.60)
+    ].iloc[0]
+    assert int(row_three["n_cells_alive"]) == 1
+    # Both rows must include the with-fill-proxy count (edge=100 and 10 are >1bp)
+    assert int(row_zero["n_cells_alive_with_fill_proxy"]) == 2
+    assert int(row_three["n_cells_alive_with_fill_proxy"]) == 1
+    # top_5_cells_by_median_headroom is a string field with comma-joined cells
+    assert isinstance(row_zero["top_5_cells_by_median_headroom"], str)
+    assert "A" in row_zero["top_5_cells_by_median_headroom"]
+
+
+def test_compute_maker_sensitivity_table_fill_proxy_filters() -> None:
+    """Cell with edge < 1 bp is alive on raw headroom but pruned by fill proxy."""
+    # edge=0.4 → |edge| < 1bp → fill_proxy False on every row
+    # At maker_fee = -5 (rebate of 5 bp/leg): cost=-10. gross at p=0.60 = 0.08
+    # headroom = 0.08 + 10 = 10.08 (alive on cost)
+    df = pd.DataFrame(
+        {
+            "symbol": ["X"] * 3,
+            "size_usd": [1000.0] * 3,
+            "horizon": [500] * 3,
+            "fillable": [True] * 3,
+            "slip_avg_bps": [0.0] * 3,
+            "edge_bps": [0.4, 0.4, 0.4],
+        }
+    )
+    sens = compute_maker_sensitivity_table(
+        df, maker_fees_bps=(-5.0,), accuracies=(0.60,)
+    )
+    row = sens.iloc[0]
+    # Cell is "alive on headroom" but fill_proxy is False (edge < 1bp every window)
+    # So n_cells_alive >= 1, but n_cells_alive_with_fill_proxy == 0
+    assert int(row["n_cells_alive"]) == 1
+    assert int(row["n_cells_alive_with_fill_proxy"]) == 0
