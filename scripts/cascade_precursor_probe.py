@@ -4489,6 +4489,1012 @@ def _emit_robustness_markdown(
 
 
 # ---------------------------------------------------------------------------
+# OOS test (--oos-test) — Apr 14-26 generalization
+# ---------------------------------------------------------------------------
+#
+# Question: does the in-sample LR fit on Apr 1-13 (real cause-flag cascade label,
+# 83-dim flat features, balanced class-weight) — which produced pooled cross-
+# symbol AUC = 0.815 [0.772, 0.848] at H500 with leave-one-day-out CV — generalize
+# to Apr 14-26?  This is the ONLY test of out-of-sample generalization for the
+# cascade-precursor program.
+#
+# Protocol:
+#   1. Train ONE universe-wide LR on ALL Apr 1-13 data (no LOO-CV; the test set
+#      is genuinely held-out).  Same hyperparameters as in-sample
+#      (LogisticRegression(class_weight='balanced', C=1.0), StandardScaler).
+#   2. Apply to Apr 14-26 cache shards (stride=200 evaluation windows).
+#   3. Compute pooled + per-symbol metrics with day-clustered bootstrap CIs.
+#   4. Shuffled-baseline OOS: same protocol but labels permuted within day on
+#      Apr 14-26.  Sanity check that AUC ≈ 0.50 (no leakage).
+#
+# Hard constraint: Apr 14-26 has been DELIBERATELY consumed as the holdout for
+# this test (gotcha #17).  After this run, no untouched cascade-labeled holdout
+# remains.  The unsafe-loaders below intentionally bypass the APRIL_HELDOUT_START
+# guard — they are ONLY called from the OOS pipeline.
+
+OOS_DIAGNOSTIC_START: str = "2026-04-14"
+OOS_DIAGNOSTIC_END_INCLUSIVE: str = "2026-04-26"
+OOS_HORIZONS: tuple[int, ...] = (100, 500)
+N_BOOT_OOS: int = 1000
+PER_SYMBOL_MIN_CASCADES_OOS: int = 3  # OOS smaller — 3-cascade floor per prompt
+
+
+def _oos_diagnostic_dates() -> list[str]:
+    """Apr 14 through Apr 26 (inclusive) as `YYYY-MM-DD` strings."""
+    return [f"2026-04-{d:02d}" for d in range(14, 27)]
+
+
+def _is_oos_diagnostic_date(date_str: str) -> bool:
+    """True iff date is in [OOS_DIAGNOSTIC_START, OOS_DIAGNOSTIC_END_INCLUSIVE]."""
+    return OOS_DIAGNOSTIC_START <= date_str <= OOS_DIAGNOSTIC_END_INCLUSIVE
+
+
+def _fit_universe_lr(
+    X: np.ndarray, y: np.ndarray
+) -> tuple[StandardScaler | None, LogisticRegression | None, float]:
+    """Fit a single universe-wide LR + StandardScaler on (X, y).
+
+    Returns (scaler, lr, const_pred) where:
+      * (scaler, lr) is the fit pair if y has both classes; const_pred is unused.
+      * (None, None, const_pred) if y is degenerate; const_pred is the constant
+        probability to return (= y.mean()).
+    """
+    if len(np.unique(y)) < 2 or len(X) == 0:
+        const = float(y.mean()) if len(y) > 0 else 0.0
+        return None, None, const
+    scaler = StandardScaler().fit(X)
+    lr = LogisticRegression(
+        C=1.0, max_iter=1_000, class_weight="balanced", solver="lbfgs"
+    ).fit(scaler.transform(X), y)
+    return scaler, lr, float("nan")
+
+
+def _apply_universe_lr_proba(
+    bundle: tuple[StandardScaler | None, LogisticRegression | None, float],
+    X: np.ndarray,
+) -> np.ndarray:
+    """Apply a fitted bundle from `_fit_universe_lr` and return P(class=1)."""
+    scaler, lr, const = bundle
+    if lr is None or scaler is None:
+        return np.full(len(X), const if math.isfinite(const) else 0.0, dtype=np.float64)
+    proba = lr.predict_proba(scaler.transform(X))
+    classes = list(lr.classes_)
+    pos_idx = classes.index(1) if 1 in classes else (1 if proba.shape[1] > 1 else 0)
+    return proba[:, pos_idx].astype(np.float64)
+
+
+def _filter_per_symbol_oos_eligible(
+    sym_arr: np.ndarray, y: np.ndarray, *, min_cascades: int
+) -> list[str]:
+    """Return symbols (sorted) with ≥ `min_cascades` real cascades in `y`."""
+    out: list[str] = []
+    for sym in sorted(np.unique(sym_arr).tolist()):
+        mask = sym_arr == sym
+        if int(y[mask].sum()) >= min_cascades:
+            out.append(sym)
+    return out
+
+
+# --- Unsafe loaders (Apr 14+ permitted, called ONLY from OOS pipeline) ---
+
+
+def _load_shard_unsafe(path: Path) -> dict:
+    """Load all keys from an .npz shard, BYPASSING the APRIL_HELDOUT_START guard.
+
+    Use ONLY from the OOS pipeline.  The user has authorized consuming the
+    holdout for this run; the guard remains active in every other code path.
+    """
+    with np.load(path, allow_pickle=False) as z:
+        return {k: z[k] for k in z.files}
+
+
+def _load_liq_ts_for_symbol_date_unsafe(
+    symbol: str, date_str: str
+) -> np.ndarray | None:
+    """Liquidation timestamps for (symbol, date_str), bypassing the holdout guard.
+
+    Use ONLY from the OOS pipeline.  Returns None if raw parquet is missing,
+    if the cause column is unavailable, or if duckdb fails.
+    """
+    if date_str < APRIL_START:
+        # Pre-April raw data has no `cause` column (CLAUDE.md schema)
+        return None
+    base = Path(f"data/trades/symbol={symbol}/date={date_str}")
+    if not base.exists():
+        return None
+    parquet_files = list(base.glob("*.parquet"))
+    if not parquet_files:
+        return None
+    q = (
+        f"SELECT ts_ms FROM read_parquet('{base}/*.parquet') "
+        f"WHERE cause IN ('market_liquidation', 'backstop_liquidation') "
+        f"ORDER BY ts_ms"
+    )
+    try:
+        df = duckdb.query(q).to_df()
+    except Exception:
+        return None
+    return df["ts_ms"].to_numpy(dtype=np.int64)
+
+
+def _build_oos_day_batch(
+    cache_dir: Path,
+    symbol: str,
+    date_str: str,
+    horizons: tuple[int, ...] = OOS_HORIZONS,
+) -> RealDayBatch | None:
+    """Build a RealDayBatch for (symbol, date_str) on Apr 14-26 (OOS).
+
+    Mirrors `_build_real_day_batch` but uses unsafe loaders.  Returns None if
+    the cache shard or raw-trade parquet is unavailable, or if the shard is
+    empty or has no events.
+    """
+    if not _is_oos_diagnostic_date(date_str):
+        return None
+    shard_path = cache_dir / f"{symbol}__{date_str}.npz"
+    if not shard_path.exists():
+        return None
+    payload = _load_shard_unsafe(shard_path)
+    features: np.ndarray = payload["features"]
+    event_ts: np.ndarray = payload["event_ts"].astype(np.int64)
+    n_events = features.shape[0]
+    if n_events < WINDOW_LEN:
+        return None
+    last_valid_start = n_events - WINDOW_LEN
+    if last_valid_start < 0:
+        return None
+    starts = np.arange(0, last_valid_start + 1, STRIDE_EVAL, dtype=np.int64)
+    if len(starts) == 0:
+        return None
+    anchors = starts + WINDOW_LEN - 1
+    anchor_ts = event_ts[anchors].astype(np.int64)
+
+    flat_X = np.empty((len(starts), FLAT_DIM), dtype=np.float32)
+    for i, s in enumerate(starts):
+        flat_X[i] = extract_flat_features(features[s : s + WINDOW_LEN])
+
+    liq_ts = _load_liq_ts_for_symbol_date_unsafe(symbol, date_str)
+    if liq_ts is None:
+        return None  # raw parquet missing → can't validate
+
+    real_labels: dict[int, np.ndarray] = {}
+    real_valid: dict[int, np.ndarray] = {}
+    for h in horizons:
+        end_idx = anchors + h
+        valid = end_idx < n_events
+        real_valid[h] = valid
+        real_labels[h] = _real_cascade_label_with_event_ts(
+            anchor_ts=anchor_ts,
+            window_starts=starts,
+            event_ts=event_ts,
+            horizon=h,
+            liq_ts=liq_ts,
+        )
+    return RealDayBatch(
+        symbol=symbol,
+        date=date_str,
+        flat_X=flat_X,
+        anchor_ts=anchor_ts,
+        window_starts=starts,
+        real_labels=real_labels,
+        real_valid=real_valid,
+    )
+
+
+def _gather_oos_batches(
+    cache_dir: Path,
+    symbols: tuple[str, ...],
+    dates: list[str],
+    horizons: tuple[int, ...] = OOS_HORIZONS,
+) -> list[RealDayBatch]:
+    """Build all OOS RealDayBatch objects across (symbol × date) on Apr 14-26."""
+    out: list[RealDayBatch] = []
+    for symbol in symbols:
+        for date_str in dates:
+            b = _build_oos_day_batch(cache_dir, symbol, date_str, horizons=horizons)
+            if b is not None:
+                out.append(b)
+    return out
+
+
+def _oos_per_cell_metrics(
+    *,
+    df: pd.DataFrame,
+    proba_col: str,
+    shuffled_proba_col: str,
+    label_col: str = "real_cascade_label",
+    date_col: str = "date",
+    n_boot: int = N_BOOT_OOS,
+    seed: int = 0,
+) -> dict[str, float | bool]:
+    """Compute pooled OOS metrics with day-clustered bootstrap CIs.
+
+    Returns dict with: n_total, n_cascades, base_rate, n_days,
+    auc_oos, auc_oos_lo, auc_oos_hi,
+    auc_shuffled_oos, auc_shuffled_oos_lo, auc_shuffled_oos_hi,
+    precision_top_1pct_oos, precision_top_1pct_oos_lo, precision_top_1pct_oos_hi,
+    lift_oos, signal_distinguishable_from_shuffled.
+    """
+    n_total = int(len(df))
+    if n_total == 0:
+        return {
+            "n_total": 0,
+            "n_cascades": 0,
+            "base_rate": float("nan"),
+            "n_days": 0,
+            "auc_oos": float("nan"),
+            "auc_oos_lo": float("nan"),
+            "auc_oos_hi": float("nan"),
+            "auc_shuffled_oos": float("nan"),
+            "auc_shuffled_oos_lo": float("nan"),
+            "auc_shuffled_oos_hi": float("nan"),
+            "precision_top_1pct_oos": float("nan"),
+            "precision_top_1pct_oos_lo": float("nan"),
+            "precision_top_1pct_oos_hi": float("nan"),
+            "lift_oos": float("nan"),
+            "signal_distinguishable_from_shuffled": False,
+        }
+
+    labels = df[label_col].to_numpy(dtype=np.int64)
+    n_cascades = int(labels.sum())
+    base_rate = float(labels.mean())
+    n_days = int(df[date_col].nunique())  # type: ignore[arg-type]
+
+    # Day-clustered bootstrap AUC for real and shuffled
+    auc_pt, auc_lo, auc_hi = _day_clustered_bootstrap_auc(
+        df,
+        proba_col=proba_col,
+        label_col=label_col,
+        date_col=date_col,
+        n_boot=n_boot,
+        seed=seed,
+    )
+    auc_sh_pt, auc_sh_lo, auc_sh_hi = _day_clustered_bootstrap_auc(
+        df,
+        proba_col=shuffled_proba_col,
+        label_col=label_col,
+        date_col=date_col,
+        n_boot=n_boot,
+        seed=seed + 11,
+    )
+    # Day-clustered bootstrap precision-at-top-1%
+    prec_pt, prec_lo, prec_hi = _day_clustered_bootstrap_precision_at_top(
+        df,
+        proba_col=proba_col,
+        label_col=label_col,
+        date_col=date_col,
+        top_pct=TOP_PCT_REAL,
+        n_boot=n_boot,
+        seed=seed + 22,
+    )
+    if math.isfinite(prec_pt) and math.isfinite(base_rate) and base_rate > 0:
+        lift = float(prec_pt / base_rate)
+    else:
+        lift = float("nan")
+
+    dist = _signal_distinguishable_from_baseline(
+        real_lo=auc_lo, real_hi=auc_hi, baseline_lo=auc_sh_lo, baseline_hi=auc_sh_hi
+    )
+
+    return {
+        "n_total": n_total,
+        "n_cascades": n_cascades,
+        "base_rate": base_rate,
+        "n_days": n_days,
+        "auc_oos": auc_pt,
+        "auc_oos_lo": auc_lo,
+        "auc_oos_hi": auc_hi,
+        "auc_shuffled_oos": auc_sh_pt,
+        "auc_shuffled_oos_lo": auc_sh_lo,
+        "auc_shuffled_oos_hi": auc_sh_hi,
+        "precision_top_1pct_oos": prec_pt,
+        "precision_top_1pct_oos_lo": prec_lo,
+        "precision_top_1pct_oos_hi": prec_hi,
+        "lift_oos": lift,
+        "signal_distinguishable_from_shuffled": bool(dist),
+    }
+
+
+def _run_oos_pipeline(
+    cache_dir: Path,
+    symbols: tuple[str, ...],
+    out_dir: Path,
+    *,
+    horizons: tuple[int, ...] = OOS_HORIZONS,
+    n_boot: int = N_BOOT_OOS,
+    seed: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Run the OOS test on Apr 14-26.
+
+    Returns (per_window_df, per_cell_df, summary_dict).  Per-cell dataframe
+    includes BOTH the in-sample row (from cascade_precursor_real_table.csv)
+    and the OOS row, side-by-side, for each (horizon, scope, symbol).
+    """
+    # ---- 1. Gather in-sample (Apr 1-13) batches and fit universe LR ----
+    is_dates = _april_diagnostic_dates()
+    print(
+        f"[oos-test] gathering Apr 1-13 (in-sample) batches for "
+        f"{len(symbols)} symbols × {len(is_dates)} dates..."
+    )
+    is_batches = _gather_real_batches(cache_dir, symbols, is_dates, horizons=horizons)
+    if not is_batches:
+        raise RuntimeError(
+            "No Apr 1-13 batches built — cannot fit OOS LR.  Cache or raw "
+            "parquets may be missing."
+        )
+    # ---- 2. Gather OOS (Apr 14-26) batches ----
+    oos_dates = _oos_diagnostic_dates()
+    print(
+        f"[oos-test] gathering Apr 14-26 (OOS) batches for "
+        f"{len(symbols)} symbols × {len(oos_dates)} dates..."
+    )
+    oos_batches = _gather_oos_batches(cache_dir, symbols, oos_dates, horizons=horizons)
+    if not oos_batches:
+        raise RuntimeError(
+            "No Apr 14-26 OOS batches built — cache shards or raw parquets may "
+            "be missing.  Check that --consume-holdout was run."
+        )
+    n_oos_dates = len({b.date for b in oos_batches})
+    n_oos_syms = len({b.symbol for b in oos_batches})
+    print(
+        f"[oos-test] OOS coverage: {len(oos_batches)} (sym, date) batches "
+        f"across {n_oos_syms} symbols and {n_oos_dates} dates"
+    )
+
+    per_cell_rows: list[dict] = []
+    per_window_rows: list[dict] = []
+    summary: dict[str, dict] = {}
+
+    rng = np.random.default_rng(seed + 7777)
+
+    for h in horizons:
+        # ---- Stack training (Apr 1-13) at horizon h ----
+        Xtr, ytr, _, dtr, _ = _stack_real_batches_at_horizon(is_batches, h)
+        if len(ytr) == 0 or ytr.sum() == 0:
+            print(
+                f"[oos-test] H{h}: no in-sample cascades; skipping " "(degenerate fit)"
+            )
+            continue
+        n_is_total = int(len(ytr))
+        n_is_cascades = int(ytr.sum())
+        n_is_days = int(np.unique(dtr).size)
+        print(
+            f"[oos-test] H{h} TRAIN (Apr 1-13): n_total={n_is_total}, "
+            f"n_cascades={n_is_cascades}, n_days={n_is_days}"
+        )
+
+        # ---- Fit one LR on the full Apr 1-13 fold ----
+        bundle = _fit_universe_lr(Xtr, ytr.astype(np.int64))
+
+        # ---- Stack OOS (Apr 14-26) at horizon h ----
+        Xoos, yoos, soos, doos, aoos = _stack_real_batches_at_horizon(oos_batches, h)
+        if len(yoos) == 0:
+            print(
+                f"[oos-test] H{h} OOS: no valid OOS windows (horizon overruns); "
+                "skipping"
+            )
+            continue
+        n_oos_total = int(len(yoos))
+        n_oos_cascades = int(yoos.sum())
+        unique_oos_dates = sorted(np.unique(doos).tolist())
+        print(
+            f"[oos-test] H{h} OOS  (Apr 14-26): n_total={n_oos_total}, "
+            f"n_cascades={n_oos_cascades}, n_days={len(unique_oos_dates)}"
+        )
+
+        # ---- Predict on OOS ----
+        proba_oos = _apply_universe_lr_proba(bundle, Xoos)
+
+        # ---- Shuffled-OOS baseline: shuffle labels within day (preserves
+        #      per-day base rate), apply SAME LR.  This is the right control:
+        #      it tests whether the shuffled-OOS AUC ≈ 0.50 (no information
+        #      leakage from any features that perfectly correlate with date).
+        # ---- We shuffle the LABELS, not the predictions, then re-evaluate
+        #      AUC on (proba_oos, y_shuf).  The bootstrap then handles CI.
+        y_shuf = _shuffle_labels_within_day(
+            yoos.astype(np.int64), doos, seed=seed + 333
+        )
+
+        # ---- Top-1% boolean per-window ----
+        n_top = max(1, int(round(n_oos_total * TOP_PCT_REAL)))
+        order = np.argsort(-proba_oos, kind="stable")
+        top_1pct_oos_bool = np.zeros(n_oos_total, dtype=bool)
+        top_1pct_oos_bool[order[:n_top]] = True
+
+        # ---- Build per-window dataframe for pooled metrics ----
+        df_pool = pd.DataFrame(
+            {
+                "symbol": soos.astype(str),
+                "date": doos.astype(str),
+                "anchor_ts": aoos.astype(np.int64),
+                "horizon": int(h),
+                "real_cascade_label": yoos.astype(np.int64),
+                "shuffled_cascade_label": y_shuf.astype(np.int64),
+                "pred_proba_oos": proba_oos,
+                "top_1pct_oos_bool": top_1pct_oos_bool,
+            }
+        )
+
+        # ---- Pooled metrics (day-clustered bootstrap) ----
+        # For shuffled-baseline we use the SAME proba but evaluate against
+        # the shuffled labels — equivalent to a label permutation test.
+        # The day-clustered bootstrap uses the real label column; for shuffled
+        # we re-call the helper with proba_col=pred_proba_oos and
+        # label_col=shuffled_cascade_label.
+        pooled_metrics = _oos_per_cell_metrics_for_pooled(
+            df_pool, n_boot=n_boot, seed=seed + 100 * h
+        )
+        pooled_metrics_typed: dict[str, float | bool | str | int] = dict(pooled_metrics)
+        pooled_metrics_typed["horizon"] = int(h)
+        pooled_metrics_typed["scope"] = "pooled"
+        pooled_metrics_typed["symbol"] = "ALL"
+        pooled_metrics_typed["fold"] = "oos"
+        per_cell_rows.append(pooled_metrics_typed)
+        summary[f"pooled_H{h}"] = pooled_metrics
+
+        # ---- Append per-window rows ----
+        for i in range(n_oos_total):
+            per_window_rows.append(
+                {
+                    "symbol": str(soos[i]),
+                    "date": str(doos[i]),
+                    "anchor_ts": int(aoos[i]),
+                    "horizon": int(h),
+                    "real_cascade_label": int(yoos[i]),
+                    "shuffled_cascade_label": int(y_shuf[i]),
+                    "pred_proba_oos": float(proba_oos[i]),
+                    "top_1pct_oos_bool": bool(top_1pct_oos_bool[i]),
+                }
+            )
+
+        # ---- Per-symbol cells (≥ PER_SYMBOL_MIN_CASCADES_OOS at H) ----
+        eligible = _filter_per_symbol_oos_eligible(
+            soos, yoos, min_cascades=PER_SYMBOL_MIN_CASCADES_OOS
+        )
+        for sym in eligible:
+            mask = soos == sym
+            df_sym = pd.DataFrame(df_pool[mask]).copy().reset_index(drop=True)
+            sym_metrics = _oos_per_cell_metrics_for_pooled(
+                df_sym, n_boot=n_boot, seed=seed + 200 * h + abs(hash(sym)) % 1000
+            )
+            sym_metrics_typed: dict[str, float | bool | str | int] = dict(sym_metrics)
+            sym_metrics_typed["horizon"] = int(h)
+            sym_metrics_typed["scope"] = "per_symbol"
+            sym_metrics_typed["symbol"] = sym
+            sym_metrics_typed["fold"] = "oos"
+            per_cell_rows.append(sym_metrics_typed)
+
+        # Suppress unused-rng lint
+        _ = rng
+
+    per_cell_df = pd.DataFrame(per_cell_rows)
+    per_window_df = pd.DataFrame(per_window_rows)
+    return per_window_df, per_cell_df, summary
+
+
+def _oos_per_cell_metrics_for_pooled(
+    df: pd.DataFrame,
+    *,
+    n_boot: int = N_BOOT_OOS,
+    seed: int = 0,
+) -> dict[str, float | bool]:
+    """Wrap `_oos_per_cell_metrics` with the OOS column conventions.
+
+    Real cascade label column = `real_cascade_label`.
+    Shuffled label column     = `shuffled_cascade_label` (bootstrap evaluates
+        AUC of pred_proba_oos against the shuffled labels — i.e., a permutation
+        test).
+    """
+    n_total = int(len(df))
+    if n_total == 0:
+        return {
+            "n_total": 0,
+            "n_cascades": 0,
+            "base_rate": float("nan"),
+            "n_days": 0,
+            "auc_oos": float("nan"),
+            "auc_oos_lo": float("nan"),
+            "auc_oos_hi": float("nan"),
+            "auc_shuffled_oos": float("nan"),
+            "auc_shuffled_oos_lo": float("nan"),
+            "auc_shuffled_oos_hi": float("nan"),
+            "precision_top_1pct_oos": float("nan"),
+            "precision_top_1pct_oos_lo": float("nan"),
+            "precision_top_1pct_oos_hi": float("nan"),
+            "lift_oos": float("nan"),
+            "signal_distinguishable_from_shuffled": False,
+        }
+
+    labels = df["real_cascade_label"].to_numpy(dtype=np.int64)
+    n_cascades = int(labels.sum())
+    base_rate = float(labels.mean()) if n_total > 0 else float("nan")
+    n_days = int(df["date"].nunique())  # type: ignore[arg-type]
+
+    auc_pt, auc_lo, auc_hi = _day_clustered_bootstrap_auc(
+        df,
+        proba_col="pred_proba_oos",
+        label_col="real_cascade_label",
+        date_col="date",
+        n_boot=n_boot,
+        seed=seed,
+    )
+    auc_sh_pt, auc_sh_lo, auc_sh_hi = _day_clustered_bootstrap_auc(
+        df,
+        proba_col="pred_proba_oos",
+        label_col="shuffled_cascade_label",
+        date_col="date",
+        n_boot=n_boot,
+        seed=seed + 11,
+    )
+    prec_pt, prec_lo, prec_hi = _day_clustered_bootstrap_precision_at_top(
+        df,
+        proba_col="pred_proba_oos",
+        label_col="real_cascade_label",
+        date_col="date",
+        top_pct=TOP_PCT_REAL,
+        n_boot=n_boot,
+        seed=seed + 22,
+    )
+    if math.isfinite(prec_pt) and math.isfinite(base_rate) and base_rate > 0:
+        lift = float(prec_pt / base_rate)
+    else:
+        lift = float("nan")
+
+    dist = _signal_distinguishable_from_baseline(
+        real_lo=auc_lo, real_hi=auc_hi, baseline_lo=auc_sh_lo, baseline_hi=auc_sh_hi
+    )
+    return {
+        "n_total": n_total,
+        "n_cascades": n_cascades,
+        "base_rate": base_rate,
+        "n_days": n_days,
+        "auc_oos": auc_pt,
+        "auc_oos_lo": auc_lo,
+        "auc_oos_hi": auc_hi,
+        "auc_shuffled_oos": auc_sh_pt,
+        "auc_shuffled_oos_lo": auc_sh_lo,
+        "auc_shuffled_oos_hi": auc_sh_hi,
+        "precision_top_1pct_oos": prec_pt,
+        "precision_top_1pct_oos_lo": prec_lo,
+        "precision_top_1pct_oos_hi": prec_hi,
+        "lift_oos": lift,
+        "signal_distinguishable_from_shuffled": bool(dist),
+    }
+
+
+def _load_in_sample_pooled_for_oos_table(
+    in_sample_table_path: Path,
+) -> pd.DataFrame:
+    """Load the in-sample cascade_precursor_real_table.csv and return only the
+    columns + rows needed for side-by-side OOS comparison.
+
+    Returns DataFrame with columns: scope, horizon, symbol, fold, n_total,
+    n_cascades, base_rate, auc_in_sample, auc_in_sample_lo, auc_in_sample_hi,
+    precision_top_1pct_in_sample.  Empty DataFrame if file missing.
+    """
+    if not in_sample_table_path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(in_sample_table_path)
+    needed = {"scope", "horizon", "symbol", "auc", "auc_lo", "auc_hi"}
+    if not needed.issubset(df.columns):
+        return pd.DataFrame()
+    out = pd.DataFrame(
+        df[
+            [
+                "scope",
+                "horizon",
+                "symbol",
+                "n_total",
+                "n_cascades",
+                "base_rate",
+                "auc",
+                "auc_lo",
+                "auc_hi",
+                "precision_at_top_1pct",
+            ]
+        ]
+    ).copy()
+    out = out.rename(
+        columns={
+            "auc": "auc_in_sample",
+            "auc_lo": "auc_in_sample_lo",
+            "auc_hi": "auc_in_sample_hi",
+            "precision_at_top_1pct": "precision_top_1pct_in_sample",
+        }
+    )
+    out["fold"] = "in_sample"
+    return out
+
+
+def _emit_oos_markdown(
+    per_cell_oos: pd.DataFrame,
+    per_cell_in_sample: pd.DataFrame,
+    out_path: Path,
+    *,
+    horizons: tuple[int, ...],
+    elapsed_sec: float,
+    notes: list[str] | None = None,
+) -> None:
+    """Render the OOS markdown verdict per the prompt's required outline."""
+    lines: list[str] = []
+    lines.append(
+        "# Goal-A cascade-precursor (OOS test) — does AUC=0.815 generalize to Apr 14-26?"
+    )
+    lines.append("")
+    lines.append(
+        "**Question.** The Apr 1-13 in-sample LR (83-dim flat features, balanced "
+        "class weight, leave-one-day-out CV) reported pooled cross-symbol AUC = "
+        "**0.815 [0.772, 0.848]** at H500 with day-clustered bootstrap, and "
+        "top-1% precision = 27.6% (lift 6.86×).  The marginal-long strategy at "
+        "top-1% / 0.5% / 0.1% was net-negative — not directly tradeable.  "
+        "**This run tests whether the AUC=0.815 signal generalizes to Apr 14-26 "
+        "(genuinely held-out at the time of the in-sample fit).**"
+    )
+    lines.append("")
+    lines.append(
+        "**Protocol.** ONE universe-wide LR (`LogisticRegression(class_weight="
+        "'balanced', C=1.0)`) fit on ALL Apr 1-13 data — no leave-one-day-out, "
+        "since the test set is genuinely held-out.  Stride=200 evaluation "
+        "windows on Apr 14-26 cache shards.  Real cascade label = any "
+        "`cause IN ('market_liquidation', 'backstop_liquidation')` fill in "
+        "(anchor_ts, ts_at(anchor + H)].  Day-clustered bootstrap CI "
+        f"(resample the {int(per_cell_oos['n_days'].max()) if not per_cell_oos.empty else 0} "  # type: ignore[arg-type]
+        "OOS days with replacement, 1000 iters).  Shuffled-OOS baseline: "
+        "labels permuted within day on the same OOS predictions (label "
+        "permutation test).  Per-symbol cells reported for symbols with ≥ 3 "
+        "real cascades on Apr 14-26 at H500."
+    )
+    lines.append("")
+    lines.append(
+        "**Hard constraint (anti-amnesia).** The Apr 14+ holdout has been "
+        "DELIBERATELY consumed for this test.  After this run, no untouched "
+        "cascade-labeled holdout remains; future OOS evaluations require "
+        "either (a) waiting for new data accrual, or (b) splitting the merged "
+        "Apr 1-26 dataset.  This is the binding generalization test for the "
+        "cascade-precursor program."
+    )
+    lines.append("")
+
+    # ---------- 1. Sample size ----------
+    lines.append("## 1. Sample size on OOS (Apr 14-26)")
+    lines.append("")
+    pooled_oos: pd.DataFrame = pd.DataFrame(
+        per_cell_oos[per_cell_oos["scope"] == "pooled"]
+    ).copy()
+    if pooled_oos.empty:
+        lines.append("**No pooled OOS cells produced — see flags below.**")
+    else:
+        lines.append("| H | n_total (windows) | n_cascades | base rate | n_days |")
+        lines.append("|---|---|---|---|---|")
+        for h in horizons:
+            sub = pooled_oos[pooled_oos["horizon"] == h]
+            if sub.empty:
+                lines.append(f"| H{h} | — | — | — | — |")
+                continue
+            r = sub.iloc[0]
+            lines.append(
+                f"| H{h} | {int(r['n_total'])} | {int(r['n_cascades'])} | "
+                f"{float(r['base_rate']):.4f} | {int(r['n_days'])} |"
+            )
+        lines.append("")
+    lines.append("")
+
+    # ---------- 2. Pooled OOS AUC + side-by-side with in-sample ----------
+    lines.append("## 2. Pooled cross-symbol AUC OOS vs in-sample")
+    lines.append("")
+    lines.append(
+        "| H | AUC OOS (day-clustered) | AUC in-sample | Δ_AUC | "
+        "AUC OOS shuffled (day-clustered) |"
+    )
+    lines.append("|---|---|---|---|---|")
+    pooled_is_lookup: dict[int, dict] = {}
+    if not per_cell_in_sample.empty:
+        is_pooled = per_cell_in_sample[
+            (per_cell_in_sample["scope"] == "pooled")
+            & (per_cell_in_sample["symbol"] == "ALL")
+        ]
+        for _, row in is_pooled.iterrows():
+            try:
+                h_i = int(row["horizon"])  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            pooled_is_lookup[h_i] = {
+                "auc": float(row["auc_in_sample"]),  # type: ignore[arg-type]
+                "lo": float(row["auc_in_sample_lo"]),  # type: ignore[arg-type]
+                "hi": float(row["auc_in_sample_hi"]),  # type: ignore[arg-type]
+            }
+
+    for h in horizons:
+        sub = pooled_oos[pooled_oos["horizon"] == h]
+        if sub.empty:
+            lines.append(f"| H{h} | — | — | — | — |")
+            continue
+        r = sub.iloc[0]
+        auc_oos = float(r["auc_oos"])
+        auc_oos_lo = float(r["auc_oos_lo"])
+        auc_oos_hi = float(r["auc_oos_hi"])
+        auc_sh = float(r["auc_shuffled_oos"])
+        auc_sh_lo = float(r["auc_shuffled_oos_lo"])
+        auc_sh_hi = float(r["auc_shuffled_oos_hi"])
+        is_row = pooled_is_lookup.get(h)
+        if is_row is None or not math.isfinite(is_row["auc"]):
+            is_str = "—"
+            delta = "—"
+        else:
+            is_str = f"{is_row['auc']:.3f} [{is_row['lo']:.3f}, {is_row['hi']:.3f}]"
+            delta_v = auc_oos - is_row["auc"]
+            delta = f"{delta_v:+.3f}"
+        lines.append(
+            f"| H{h} | {auc_oos:.3f} [{auc_oos_lo:.3f}, {auc_oos_hi:.3f}] | "
+            f"{is_str} | {delta} | "
+            f"{auc_sh:.3f} [{auc_sh_lo:.3f}, {auc_sh_hi:.3f}] |"
+        )
+    lines.append("")
+
+    # ---------- 3. Distinguishability ----------
+    lines.append("## 3. Distinguishable from shuffled-OOS baseline?")
+    lines.append("")
+    lines.append(
+        "Binding statistical test: real-OOS AUC CI lower bound must strictly "
+        "exceed shuffled-OOS AUC CI upper bound (day-clustered bootstrap)."
+    )
+    lines.append("")
+    if pooled_oos.empty:
+        lines.append("**Cannot evaluate — no pooled OOS cells.**")
+    else:
+        for h in horizons:
+            sub = pooled_oos[pooled_oos["horizon"] == h]
+            if sub.empty:
+                continue
+            r = sub.iloc[0]
+            verdict = (
+                "**DISTINGUISHABLE**"
+                if bool(r["signal_distinguishable_from_shuffled"])
+                else "**NOT distinguishable**"
+            )
+            gap = float(r["auc_oos_lo"]) - float(r["auc_shuffled_oos_hi"])
+            lines.append(
+                f"* H{h}: real OOS CI [{float(r['auc_oos_lo']):.3f}, "
+                f"{float(r['auc_oos_hi']):.3f}] vs shuffled OOS CI "
+                f"[{float(r['auc_shuffled_oos_lo']):.3f}, "
+                f"{float(r['auc_shuffled_oos_hi']):.3f}] → {verdict} "
+                f"(lo - shuffled_hi = {gap:+.3f})."
+            )
+    lines.append("")
+
+    # ---------- 4. Precision-at-top-1% OOS ----------
+    lines.append("## 4. OOS precision-at-top-1% (lift over base rate)")
+    lines.append("")
+    lines.append(
+        "In-sample held precision-at-top-1% = 27.6% at H500 (lift 6.86×).  "
+        "Does this hold OOS?"
+    )
+    lines.append("")
+    if pooled_oos.empty:
+        lines.append("**No pooled OOS cells available.**")
+    else:
+        lines.append("| H | base rate | precision@top-1% OOS (day-clustered) | lift |")
+        lines.append("|---|---|---|---|")
+        for h in horizons:
+            sub = pooled_oos[pooled_oos["horizon"] == h]
+            if sub.empty:
+                continue
+            r = sub.iloc[0]
+            base = float(r["base_rate"])
+            prec = float(r["precision_top_1pct_oos"])
+            prec_lo = float(r["precision_top_1pct_oos_lo"])
+            prec_hi = float(r["precision_top_1pct_oos_hi"])
+            lift = float(r["lift_oos"])
+            prec_s = (
+                f"{prec:.4f} [{prec_lo:.4f}, {prec_hi:.4f}]"
+                if math.isfinite(prec)
+                else "—"
+            )
+            lift_s = f"{lift:.2f}" if math.isfinite(lift) else "—"
+            lines.append(f"| H{h} | {base:.4f} | {prec_s} | {lift_s} |")
+    lines.append("")
+
+    # ---------- 5. Per-symbol OOS distribution ----------
+    lines.append(
+        "## 5. Per-symbol OOS distribution (≥ 3 cascades, AUC > 0.65 OOS @ H500)"
+    )
+    lines.append("")
+    per_sym_oos: pd.DataFrame = pd.DataFrame(
+        per_cell_oos[per_cell_oos["scope"] == "per_symbol"]
+    ).copy()
+    if per_sym_oos.empty:
+        lines.append(
+            "**No per-symbol OOS cells — no symbols had ≥ 3 cascades on Apr 14-26.**"
+        )
+    else:
+        lines.append(
+            "Symbols with ≥ 3 OOS cascades at the horizon of interest "
+            "(descriptive only; multiple-comparisons not adjusted)."
+        )
+        lines.append("")
+        lines.append(
+            "| symbol | H | n_cascades | AUC OOS (day-clustered) | " "AUC > 0.65 OOS? |"
+        )
+        lines.append("|---|---|---|---|---|")
+        for h in horizons:
+            sub_df: pd.DataFrame = pd.DataFrame(
+                per_sym_oos[per_sym_oos["horizon"] == h]
+            ).sort_values("auc_oos", ascending=False)
+            for _, r in sub_df.iterrows():
+                auc_v = float(r["auc_oos"])  # type: ignore[arg-type]
+                lo_v = float(r["auc_oos_lo"])  # type: ignore[arg-type]
+                hi_v = float(r["auc_oos_hi"])  # type: ignore[arg-type]
+                clears = math.isfinite(auc_v) and auc_v > 0.65
+                lines.append(
+                    f"| {r['symbol']} | H{int(r['horizon'])} | "  # type: ignore[arg-type]
+                    f"{int(r['n_cascades'])} | "  # type: ignore[arg-type]
+                    f"{auc_v:.3f} [{lo_v:.3f}, {hi_v:.3f}] | "
+                    f"{'YES' if clears else 'NO'} |"
+                )
+        lines.append("")
+        # Aggregate: how many symbols clear AUC > 0.65 at H500?
+        h500_per_sym = per_sym_oos[per_sym_oos["horizon"] == 500]
+        clears_h500 = 0
+        for _, r in h500_per_sym.iterrows():
+            auc_v = float(r["auc_oos"])  # type: ignore[arg-type]
+            if math.isfinite(auc_v) and auc_v > 0.65:
+                clears_h500 += 1
+        n_h500 = int(len(h500_per_sym))
+        lines.append(
+            f"**{clears_h500} / {n_h500} per-symbol cells clear AUC > 0.65 OOS at H500.**"
+        )
+    lines.append("")
+
+    # ---------- 6. AVAX OOS ----------
+    lines.append("## 6. AVAX OOS (held out from v1 contrastive training)")
+    lines.append("")
+    avax_rows = per_sym_oos[
+        (per_sym_oos["symbol"] == "AVAX") & (per_sym_oos["horizon"] == 500)
+    ]
+    if avax_rows.empty:
+        lines.append(
+            "**AVAX did not meet the ≥ 3-cascade threshold at H500 OOS — no "
+            "per-symbol cell.**  AVAX was excluded from v1 contrastive "
+            "training, but the cascade LR did not use that encoder; AVAX is "
+            "treated as just another per-symbol cell here."
+        )
+    else:
+        r = avax_rows.iloc[0]
+        auc_v = float(r["auc_oos"])
+        lo_v = float(r["auc_oos_lo"])
+        hi_v = float(r["auc_oos_hi"])
+        n_cas = int(r["n_cascades"])
+        lines.append(
+            f"AVAX OOS at H500: AUC = {auc_v:.3f} [{lo_v:.3f}, {hi_v:.3f}]  "
+            f"(n_cascades = {n_cas}).  AVAX was excluded from v1 contrastive "
+            "training; the cascade LR did not use that encoder, so AVAX is "
+            "just another per-symbol cell here."
+        )
+    lines.append("")
+
+    # ---------- 7. Verdict ----------
+    lines.append("## 7. Verdict (per decision matrix)")
+    lines.append("")
+    if pooled_oos.empty:
+        lines.append("**INCONCLUSIVE — no pooled OOS cells.**  See flags below.")
+    else:
+        # Use H500 as the binding cut (per prompt: "Pooled is the binding cut").
+        h500 = pooled_oos[pooled_oos["horizon"] == 500]
+        if h500.empty:
+            lines.append("**INCONCLUSIVE — no H500 pooled OOS cell.**")
+        else:
+            r = h500.iloc[0]
+            auc = float(r["auc_oos"])
+            lo = float(r["auc_oos_lo"])
+            sh_hi = float(r["auc_shuffled_oos_hi"])
+            dist = bool(r["signal_distinguishable_from_shuffled"])
+            prec_oos = float(r["precision_top_1pct_oos"])
+
+            if (
+                math.isfinite(auc)
+                and auc > 0.75
+                and math.isfinite(lo)
+                and lo > 0.65
+                and dist
+            ):
+                verdict = (
+                    "**GENERALIZES.**  H500 OOS AUC > 0.75, CI lower bound > "
+                    "0.65, distinguishable from shuffled-OOS baseline.  The "
+                    "Apr 1-13 in-sample signal extends to Apr 14-26.  "
+                    f"Precision-at-top-1% OOS = {prec_oos:.4f}.  Encoder "
+                    "retrain on the merged Apr 1-26 dataset (~150 cascades) "
+                    "is worth committing GPU compute to."
+                )
+            elif math.isfinite(auc) and 0.60 <= auc <= 0.75:
+                verdict = (
+                    "**PARTIALLY GENERALIZES.**  H500 OOS AUC in [0.60, 0.75]. "
+                    " Decision depends on per-symbol distribution and whether "
+                    "precision-at-top-1% holds at in-sample levels.  Encoder "
+                    "retrain is conditional on the per-symbol heatmap."
+                )
+            elif math.isfinite(lo) and lo > sh_hi and math.isfinite(auc) and auc > 0.65:
+                # Edge case: AUC slightly below 0.75 but still distinguishable.
+                # Treat as partial.
+                verdict = (
+                    "**PARTIALLY GENERALIZES.**  H500 OOS AUC distinguishable "
+                    "from shuffled but the lower bound is below the 'fully "
+                    "generalizes' 0.65 threshold.  Per-symbol patterns should "
+                    "drive next steps."
+                )
+            else:
+                verdict = (
+                    "**FAILS TO GENERALIZE.**  H500 OOS AUC < 0.60 or CI lower "
+                    "bound overlaps the shuffled-OOS baseline.  The in-sample "
+                    "result was overfit to the Apr 1-13 distribution.  The "
+                    "cascade-precursor program kills cleanly here."
+                )
+            lines.append(verdict)
+    lines.append("")
+
+    # ---------- 8. Methodological flags ----------
+    lines.append("## 8. Methodological flags")
+    lines.append("")
+    lines.append(
+        "* **Day-clustered bootstrap is the binding test.**  Per-window "
+        "bootstrap on tightly clustered cascade data understates uncertainty "
+        "(prior commit `e2715ec` proved this).  All AUC and precision CIs in "
+        "this writeup resample the OOS days with replacement."
+    )
+    lines.append("")
+    lines.append(
+        "* **Single LR fit, no fold-CV.**  Apr 14-26 is genuinely held-out, "
+        "so the protocol is fit-once-on-train, predict-once-on-test.  No "
+        "model selection, no hyperparameter search."
+    )
+    lines.append("")
+    lines.append(
+        "* **Apples-to-apples with in-sample.**  Same 83-dim flat features, "
+        "same `LogisticRegression(class_weight='balanced', C=1.0)`, same "
+        "cascade label definition (`cause IN ('market_liquidation', "
+        "'backstop_liquidation')`).  Per-symbol minimum is 3 cascades on OOS "
+        "(vs 5 in-sample) because the OOS window is shorter."
+    )
+    lines.append("")
+    lines.append(
+        "* **Holdout permanently consumed.**  The Apr 14+ data was loaded by "
+        "this script via the unsafe-loader code path.  No untouched cascade-"
+        "labeled holdout remains; future OOS evaluation requires new data "
+        "accrual or merged-dataset splitting."
+    )
+    lines.append("")
+    lines.append(
+        "* **Distribution-shift caveat.**  If Apr 14-26 has a structurally "
+        "different cascade frequency or volatility regime than Apr 1-13, the "
+        "OOS gap can reflect domain shift rather than overfit.  Compare base "
+        "rate and n_cascades across the two folds before drawing strong "
+        "conclusions."
+    )
+    lines.append("")
+    lines.append(
+        "* **Shuffled-OOS AUC > 0.50 is expected under cascade contagion.**  "
+        "The shuffled-OOS baseline permutes labels WITHIN each day (preserving "
+        "per-day cascade count).  Day-clustered bootstrap resamples days with "
+        "replacement: if the LR's day-mean prediction correlates with the "
+        "day's cascade rate (volatility regime), the shuffled AUC drifts above "
+        "0.5 even though the within-day rank carries no signal.  The "
+        "distinguishability test (real-lo > shuffled-hi) correctly accounts "
+        "for this — the real AUC must exceed the contagion floor, not the "
+        "0.5 chance line."
+    )
+    lines.append("")
+    if notes:
+        for note in notes:
+            lines.append(f"* {note}")
+            lines.append("")
+
+    lines.append(
+        f"_OOS pipeline ran in {elapsed_sec:.1f} s.  CPU-only.  "
+        f"Apr 14+ holdout permanently consumed by this run._"
+    )
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -4570,6 +5576,18 @@ def main() -> int:
             "computes pooled + per-symbol PnL with day-clustered bootstrap "
             "CIs, and compares against the LR-direction strategy.  Emits "
             "cascade_marginal_long.md + cascade_marginal_long_table.csv."
+        ),
+    )
+    parser.add_argument(
+        "--oos-test",
+        action="store_true",
+        help=(
+            "Run the OOS generalization test on Apr 14-26 (consumes the "
+            "holdout — gotcha #17).  Trains ONE universe-wide LR on Apr 1-13 "
+            "real cause-flag labels, applies to Apr 14-26 stride=200 windows, "
+            "and emits cascade_precursor_oos_per_window.parquet, "
+            "cascade_precursor_oos_table.csv, and cascade_precursor_oos.md "
+            "with day-clustered bootstrap CIs."
         ),
     )
     parser.add_argument(
@@ -4710,6 +5728,54 @@ def main() -> int:
         print(f"[cascade-direction] done in {elapsed:.1f} s")
         print(f"[cascade-direction] wrote {out_csv}")
         print(f"[cascade-direction] wrote {out_md}")
+        return 0
+
+    if args.oos_test:
+        # ---------- OOS test: Apr 14-26 generalization (consumes holdout) ----------
+        oos_horizons: tuple[int, ...] = tuple(h for h in horizons if h in OOS_HORIZONS)
+        if not oos_horizons:
+            oos_horizons = OOS_HORIZONS
+        print(
+            f"[oos-test] Apr 14-26 OOS test | horizons={oos_horizons} | "
+            f"symbols={len(symbols)} | cache={args.cache} | "
+            f"n_boot={int(args.n_boot)}"
+        )
+        try:
+            oos_per_window_df, oos_per_cell_df, _ = _run_oos_pipeline(
+                args.cache,
+                symbols,
+                out_dir,
+                horizons=oos_horizons,
+                n_boot=int(args.n_boot),
+                seed=int(args.seed),
+            )
+        except RuntimeError as exc:
+            print(f"[oos-test] BLOCKER: {exc}")
+            return 1
+
+        # Side-by-side in-sample lookup table
+        is_table_path = out_dir / "cascade_precursor_real_table.csv"
+        in_sample_df = _load_in_sample_pooled_for_oos_table(is_table_path)
+
+        oos_per_window_path = out_dir / "cascade_precursor_oos_per_window.parquet"
+        oos_per_cell_path = out_dir / "cascade_precursor_oos_table.csv"
+        oos_md_path = out_dir / "cascade_precursor_oos.md"
+
+        oos_per_window_df.to_parquet(oos_per_window_path, index=False)
+        oos_per_cell_df.to_csv(oos_per_cell_path, index=False)
+
+        elapsed = time.time() - t0
+        _emit_oos_markdown(
+            oos_per_cell_df,
+            in_sample_df,
+            oos_md_path,
+            horizons=oos_horizons,
+            elapsed_sec=elapsed,
+        )
+        print(f"[oos-test] done in {elapsed:.1f} s")
+        print(f"[oos-test] wrote {oos_per_window_path}")
+        print(f"[oos-test] wrote {oos_per_cell_path}")
+        print(f"[oos-test] wrote {oos_md_path}")
         return 0
 
     if args.cascade_real:

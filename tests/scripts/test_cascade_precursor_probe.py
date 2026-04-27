@@ -629,3 +629,101 @@ def test_per_day_expected_gross_formula():
     assert abs(out["cost_per_trigger_bps"] - 10.0) < 1e-9
     assert abs(out["net_per_trigger_bps"] - 10.0) < 1e-9
     assert abs(out["per_day_gross_bps"] - 10.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# OOS test (--oos-test) — Apr 14-26 generalization
+# ---------------------------------------------------------------------------
+
+
+def test_oos_diagnostic_dates_listing():
+    """Helper returns Apr 14-26 calendar dates inclusive (13 dates)."""
+    from scripts.cascade_precursor_probe import _oos_diagnostic_dates
+
+    out = _oos_diagnostic_dates()
+    assert out[0] == "2026-04-14"
+    assert out[-1] == "2026-04-26"
+    assert len(out) == 13
+    assert out == sorted(out)
+
+
+def test_is_oos_diagnostic_date_predicate():
+    """Predicate returns True only for dates in [2026-04-14, 2026-04-26]."""
+    from scripts.cascade_precursor_probe import _is_oos_diagnostic_date
+
+    assert _is_oos_diagnostic_date("2026-04-14")
+    assert _is_oos_diagnostic_date("2026-04-26")
+    assert not _is_oos_diagnostic_date("2026-04-13")
+    assert not _is_oos_diagnostic_date("2026-04-27")
+    assert not _is_oos_diagnostic_date("2026-03-31")
+
+
+def test_fit_universe_lr_returns_callable_predictor():
+    """A single LR fit on (X, y) returns a (scaler, lr) bundle that yields finite
+    P(class=1) on a held-out X_test.  Reused for OOS prediction.
+    """
+    from scripts.cascade_precursor_probe import (
+        _apply_universe_lr_proba,
+        _fit_universe_lr,
+    )
+
+    rng = np.random.default_rng(2026)
+    n_train, n_test, d = 800, 200, 83
+    Xtr = rng.standard_normal(size=(n_train, d)).astype(np.float32)
+    # Inject signal in first feature so LR is non-degenerate.
+    ytr = (Xtr[:, 0] > 0).astype(np.int64)
+    bundle = _fit_universe_lr(Xtr, ytr)
+    Xte = rng.standard_normal(size=(n_test, d)).astype(np.float32)
+    proba = _apply_universe_lr_proba(bundle, Xte)
+    assert proba.shape == (n_test,)
+    assert np.isfinite(proba).all()
+    assert proba.min() >= 0.0 and proba.max() <= 1.0
+
+
+def test_fit_universe_lr_degenerate_returns_constant_predictor():
+    """All-zero training labels → constant prediction (no fit)."""
+    from scripts.cascade_precursor_probe import (
+        _apply_universe_lr_proba,
+        _fit_universe_lr,
+    )
+
+    Xtr = np.zeros((10, 5), dtype=np.float32)
+    ytr = np.zeros(10, dtype=np.int64)
+    bundle = _fit_universe_lr(Xtr, ytr)
+    Xte = np.zeros((3, 5), dtype=np.float32)
+    proba = _apply_universe_lr_proba(bundle, Xte)
+    assert proba.shape == (3,)
+    # constant 0 prediction
+    assert np.all(proba == 0.0)
+
+
+def test_oos_perm_shuffle_preserves_per_day_base_rate():
+    """OOS shuffled-baseline shuffle preserves the cascade count per day."""
+    from scripts.cascade_precursor_probe import _shuffle_labels_within_day
+
+    dates = np.array(["2026-04-14"] * 50 + ["2026-04-15"] * 50 + ["2026-04-16"] * 100)
+    y = np.zeros(200, dtype=np.int8)
+    y[5:10] = 1  # 5 cascades in 4-14
+    y[55:57] = 1  # 2 cascades in 4-15
+    y[150:153] = 1  # 3 cascades in 4-16
+    rng_seed = 42
+    y_shuf = _shuffle_labels_within_day(y, dates, seed=rng_seed)
+    # Per-day cascade count is preserved
+    for d, n_expected in [("2026-04-14", 5), ("2026-04-15", 2), ("2026-04-16", 3)]:
+        mask = dates == d
+        assert int(y_shuf[mask].sum()) == n_expected, f"mismatch for {d}"
+
+
+def test_oos_per_symbol_filter_keeps_min_cascade_count():
+    """Per-symbol OOS rows only emit for symbols with ≥ min_cascades at H."""
+    from scripts.cascade_precursor_probe import _filter_per_symbol_oos_eligible
+
+    sym_arr = np.array(["BTC"] * 100 + ["ETH"] * 100 + ["DOGE"] * 100, dtype="<U16")
+    y = np.zeros(300, dtype=np.int8)
+    y[0:5] = 1  # BTC: 5
+    y[100:103] = 1  # ETH: 3
+    # DOGE: 0
+    eligible = _filter_per_symbol_oos_eligible(sym_arr, y, min_cascades=3)
+    assert sorted(eligible) == ["BTC", "ETH"]
+    eligible_strict = _filter_per_symbol_oos_eligible(sym_arr, y, min_cascades=5)
+    assert eligible_strict == ["BTC"]
