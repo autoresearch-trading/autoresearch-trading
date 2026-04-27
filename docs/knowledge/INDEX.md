@@ -2,12 +2,13 @@
 
 Auto-maintained by the compile-knowledge skill. Do not edit manually.
 
-Last compiled: 2026-04-27 (program freeze)
+Last compiled: 2026-04-27 (v2 program closure)
 
 ## Concepts
 
 - [Book Walk](concepts/book-walk.md) — spread-normalized order aggressiveness (feature 6); unsigned
 - [Bootstrap Methodology](concepts/bootstrap-methodology.md) — 1000-resample CI + N=50 shuffled null + class-prior; required on small-n probes
+- [Cascade-Onset Prediction](concepts/cascade-onset-prediction.md) — Pacifica-unique label; flat-LR AUC=0.8373 unified-CV; encoder cannot extract beyond hand features
 - [Climax Score](concepts/climax-score.md) — Wyckoff climax via min(z_qty, z_return); rolling 1000-event sigma; max 0.256 ≪ pre-reg threshold 3.0
 - [Contrastive Learning](concepts/contrastive-learning.md) — SimCLR NT-Xent; τ=0.5→0.3; measured cross-symbol delta +0.037 on step3-r2
 - [Cross-Symbol Invariance](concepts/cross-symbol-invariance.md) — SimCLR cluster geometry; +0.037 delta vs +0.1 threshold; 4× weaker than symbol-ID
@@ -15,6 +16,7 @@ Last compiled: 2026-04-27 (program freeze)
 - [Effort vs Result](concepts/effort-vs-result.md) — Wyckoff absorption detection; rolling-median normalized return term
 - [Gate 0 Baseline Grid](concepts/gate0-baseline.md) — 4-baseline publishing grid (PCA, RP, Majority, Shuffled); NOT a threshold-gate
 - [Kyle Lambda](concepts/kyle-lambda.md) — price impact per unit signed flow; real trade-attributed in cache layer, OB-proxy in feature module
+- [Manifold Deficiency](concepts/manifold-deficiency.md) — encoder embedding lacks task signal extractable by ANY head; 5b adapter test = standard cheap arbiter
 - [Masked Event Modeling](concepts/mem-pretraining.md) — primary pretraining objective; 20-event blocks; mask-first-then-encode (identity-task bug fixed)
 - [Order Event Grouping](concepts/order-event-grouping.md) — same-timestamp trades = one order; dedup required before grouping
 - [Orderbook Alignment](concepts/orderbook-alignment.md) — 24s snapshot cadence, np.searchsorted alignment, staleness implications
@@ -44,12 +46,15 @@ Last compiled: 2026-04-27 (program freeze)
 - [NT-Xent Temperature](decisions/ntxent-temperature.md) — τ=0.5→0.3; ImageNet default 0.1 too cold for financial data
 - [OB Cadence 24s](decisions/ob-cadence-24s.md) — measured ~24s not ~3s; cascading impact on kyle_lambda, cum_ofi
 - [OB Level Zero-Fill](decisions/ob-level-zero-fill.md) — `np.zeros`, not `np.full(nan)`; missing levels = zero liquidity, not unknown
-- [Path A Program Closure](decisions/path-a-program-closure.md) — close + publish on 2026-04-27; Goal-A abandoned for this stack; reusable pipeline + methodology + features carry over
+- [Path A Program Closure](decisions/path-a-program-closure.md) — close + publish on 2026-04-27; Goal-A v1 abandoned for this stack; reusable pipeline + methodology + features carry over
 - [Path D — Drop Battery](decisions/path-d-drop-battery.md) — multi-probe battery dropped without measurement (climax threshold 30× empirical max); anti-amnesia disclosure pattern
 - [Per-Snapshot Kyle Lambda](decisions/per-snapshot-kyle-lambda.md) — 50 snapshots (~20 min) not 50 events; fixes 10x variance inflation
 - [Pivot to Representation Learning](decisions/pivot-to-representation-learning.md) — from supervised Sortino to self-supervised MEM+contrastive
+- [Pre-Flight Economics Audit](decisions/pre-flight-economics-audit.md) — mandatory before any encoder retrain; v1+v2 closure pattern formalized
+- [Random-Init Probe Protocol](decisions/random-init-probe-protocol.md) — 2-stage cheap arbiter (linear + 5b adapter) before any pretraining; <1 CPU-hour, $0
 - [SimCLR Augmentations Strengthened](decisions/simclr-augmentations-strengthened.md) — jitter ±10→±25; new σ=0.10 timing-feature noise for session decorrelation
 - [Symbol-ID Probe Reframed Aspirational](decisions/symbol-id-probe-reframed-aspirational.md) — <20% target goal for future universality-targeting runs; other diagnostics remain binding
+- [V2 Program Closure](decisions/v2-program-closure.md) — close 2026-04-27; cascade-onset encoder dead; 4 re-entry conditions documented
 
 ## Experiments
 
@@ -62,7 +67,10 @@ Last compiled: 2026-04-27 (program freeze)
 - [Gate 4 Temporal Stability PASS](experiments/gate4-temporal-stability-pass.md) — Oct-Nov vs Dec-Jan probes both eval'd on Feb+Mar; <3pp drop on 19/24; +0.6pp mean drift
 - [Multi-Probe Battery Path D](experiments/multi-probe-battery-path-d.md) — climax label fires 0% on held-out (max 0.256 ≪ threshold 3.0); dropped without measurement
 - [Per-Symbol Surrogate Sweep](experiments/per-symbol-surrogate-sweep.md) — 5 in-sample symbols, 1/20 CI separations = chance rate, validates reframe
+- [Phase 0 Random-Init Probe](experiments/phase0-random-init-probe.md) — Goal-A v2: paired delta -0.18 [-0.26, -0.11]; ARCH_BOTTLENECK fired
+- [Phase 1 5b Adapter Test](experiments/phase1-adapter-test.md) — Goal-A v2: paired delta -0.13 [-0.20, -0.06]; only 4pp closure of 18pp gap; KILL confirmed
 - [Step 3 Run-0 Collapse Diagnosis](experiments/step3-run0-collapse-diagnosis.md) — three probe bugs + MEM identity-task bug invalidated run-0 signal
 - [Tape-State Diagnostic Off-Ramp](experiments/tape-state-diagnostic-off-ramp.md) — c-4 designed, c-5 rejected pre-commit; ~80% confirm-or-abort odds; soft adjudication wins
-- [v11 MLP Baseline](experiments/v11-baseline.md) — Sortino=0.353, walk-forward=0.261; MLP ceiling reached, motivated pivot
-- [v11 Prior Architecture Reference](experiments/v11-prior-architecture-reference.md) — main-branch v11 architecture summary for context
+- [V11 MLP Baseline](experiments/v11-baseline.md) — Sortino=0.353, walk-forward=0.261; MLP ceiling reached, motivated pivot
+- [V11 Prior Architecture Reference](experiments/v11-prior-architecture-reference.md) — main-branch v11 architecture summary for context
+- [V2 Program Closure](experiments/v2-program-closure.md) — meta-experiment: 50 CPU-min, $0; 3 kill arguments converged; tag v2-program-closed
