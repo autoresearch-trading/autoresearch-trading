@@ -1,5 +1,61 @@
 # Research State
 
+## Status (2026-04-27 PM-late II — Phase 1 complete, KILL verdict — encoder retrain dead)
+
+**Phase 1 result (commit `7705319`).** Council-6's 5b non-linear adapter test on
+the frozen random-init `TapeEncoder` closes only **4pp of the 18pp Phase 0 gap**.
+Pooled adapter AUC = **0.6941 [min 0.6571, max 0.7496]** (median seed=2);
+flat-LR AUC = 0.8373 (exact match to Phase 0 — CV partition consistent, no
+methodology bug); paired delta = **−0.1307 [−0.2003, −0.0577]**, CI firmly
+below zero. All 7/7 sanity checks pass.
+
+**Decision tier fires: KILL_ARCH_BOTTLENECK_CONFIRMED.** The encoder
+architecture cannot extract cascade signal beyond what hand features capture,
+even with a non-linear adapter head. Council convergence:
+- Council-5's STOP recommendation is now **empirically validated**.
+- Council-4's prediction (CNN claw-back at 3-8pp at most) holds at 4pp.
+- Council-6's 5b test was the right $0 falsifier.
+
+**Program decision: STOP cascade-onset encoder retrain.** No further compute on
+this task. The two cheap experiments (Phase 0 linear probe, Phase 1 adapter)
+have established that:
+1. Hand features dominate the (200, 17) tape sequence representation for
+   cascade prediction (manifold deficiency, not linearity artifact).
+2. Even if AUC could be lifted, the Maker's Dilemma kills strategy
+   economics (E[realized|filled] = -7.89bp; encoder cannot solve adverse
+   selection; council-5 review).
+3. The April holdout has been deliberately consumed (gotcha #17), so any
+   further evaluation requires fresh data accrual or merged-dataset splitting.
+
+## Open question (2026-04-27 PM-late II) — What's Goal-A v3?
+
+The user's MEMORY frames the goal as **"profitable trading edge via novel use
+of this specific dataset — not 'any tradeable strategy', not a portfolio
+piece. Novelty must come from what this data has that public datasets don't."**
+
+Cascade-onset prediction is dead. Three candidate v3 framings (council-5 PR2
+synthesis):
+
+1. **TAKER-side Pacifica-unique signal.** Council-5's preferred pivot: Maker's
+   Dilemma math reverses for taker-side execution. Find a signal where the
+   trade is priced AT THE QUOTE, not behind it. Cause-flag conditioning on
+   liquidation-driven flow is one candidate. Goal: identify a Pacifica-unique
+   signal where the optimal execution is taker-side, then build a strategy
+   around it. Cost: ~1-2 weeks of feasibility analysis on the existing 4453
+   shards. Compute: $0 (all CPU).
+
+2. **Wait for fresh data accrual.** ~30 days post-Apr-26 would rebuild a
+   real holdout. Could rerun cascade-onset evaluation cleanly, or pursue (1)
+   with a real holdout. Cost: 30 days wall-clock, $0.
+
+3. **Wind down Goal-A entirely.** v1 closed (`v1-program-closed`); v2
+   established that the hand-feature ceiling is real for cascade-onset on
+   this venue. The dataset may not have a tradeable signal beyond
+   already-priced microstructure. Council-5 PR1 raised this as a possible
+   outcome.
+
+The user makes the call.
+
 ## Status (2026-04-27 PM-late — Phase 0 complete, ARCH_BOTTLENECK verdict)
 
 **Phase 0 result (commit `3110abc`).** Random-init `TapeEncoder` linear probe vs
@@ -192,3 +248,4 @@ Council needs to weigh in (council-5, council-6, possibly council-4).
 - Goal-A v2 feasibility commits: `4ae3102`, `b4132cd`, `9509d1a`, `2c7dee7`, `1fa7063`, `e5ae29c`, `b80fa2e`, `f3a7b49`, `60f06d9`, `e2715ec`, `7231019`, `6113de9`, `b0de994`.
 - Holdout consumption commit: pending (cache rebuild + `--consume-holdout` flag in this session).
 - Goal-A v2 Phase 0 commits: `64e3587` (impl), `694d14c` (cleanups), `3110abc` (run + result).
+- Goal-A v2 Phase 1 commits: `ae821f7` (impl), `bc4ef3b` (cleanups), `7705319` (run + result).
