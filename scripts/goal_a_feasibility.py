@@ -46,13 +46,15 @@ import pandas as pd
 
 from tape.constants import (
     APRIL_HELDOUT_START,
+    APRIL_START,
     DIRECTION_HORIZONS,
     FEATURE_NAMES,
     STRIDE_EVAL,
     SYMBOLS,
     WINDOW_LEN,
 )
-from tape.io_parquet import load_ob_day
+from tape.dedup import dedup_trades_pre_april, filter_trades_april
+from tape.io_parquet import load_ob_day, load_trades_day
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -101,6 +103,32 @@ PACIFICA_MAKER_FEE_BPS: float = 1.5
 # main book-walk pipeline because we now do per-window OB-snapshot range scans
 # over the horizon, not just an at-anchor snapshot lookup).
 ADVERSE_WINDOWS_PER_SHARD_CAP: int = 200
+
+# ---- Open-imbalance feasibility config ----
+# Rolling-window for per-symbol causal P95/P99/P90 — same as v1 ROLLING_WINDOW
+# (gotcha #4: NEVER use global statistics; rolling 1000-window per-symbol).
+OPEN_IMBALANCE_ROLLING_WINDOW: int = 1000
+# Min number of prior windows before we trust the rolling cutoff. Below this,
+# we emit NaN and the window is excluded from extreme-frequency math.
+OPEN_IMBALANCE_MIN_PERIODS: int = 200
+# Percentile cutoffs to sweep — top 1%, 5%, 10% of |signal|.
+OPEN_IMBALANCE_PERCENTILES: tuple[float, ...] = (0.90, 0.95, 0.99)
+# Taker fee bps/side at Pacifica — same constant the parent feasibility uses
+# elsewhere, but documented here for the novelty test cost band. The novelty
+# test uses TAKER pricing because we are measuring directional bets in extreme
+# regimes (we cross the spread to enter and exit).
+OPEN_IMB_TAKER_FEE_BPS_PER_SIDE: float = 4.0
+# Average slippage from prior runs (median taker round-trip slip on the v1
+# universe was ~0 bp at $1k notional in liquid symbols, ~5–20 bp on illiquid
+# alts at larger sizes). For the novelty test we use a flat per-side estimate
+# because we are not size-conditional here. Documented as a methodological flag.
+OPEN_IMB_SLIP_BPS_PER_SIDE: float = 1.0
+# Subsample cap per shard. We sweep two signals × three percentiles per
+# (symbol, horizon) cell so we only need O(2k) windows per shard for stable
+# tail estimates.
+OPEN_IMB_WINDOWS_PER_SHARD_CAP: int = 2000
+# Eps guard for the imbalance ratio denominator.
+_OPEN_IMB_EPS: float = 1e-9
 
 # Index of log_return in the cached features tensor (col 0 per FEATURE_NAMES)
 _LOG_RETURN_IDX = FEATURE_NAMES.index("log_return")
@@ -1670,6 +1698,882 @@ def write_adverse_selection_md(
 
 
 # ---------------------------------------------------------------------------
+# Open-imbalance novelty test
+# ---------------------------------------------------------------------------
+#
+# For each window, compute on the deduped raw event stream over the last
+# WINDOW_LEN events:
+#
+#   open_imbalance = (open_long_qty − open_short_qty) /
+#                    max(open_long_qty + open_short_qty, eps)
+#
+#     — DEX-novel signal: the "new positioning" imbalance that public CEX
+#       data cannot replicate (CEX trade tape lacks the per-fill is_open
+#       label).
+#
+#   flow_imbalance = (buy_qty − sell_qty) /
+#                    max(buy_qty + sell_qty, eps)
+#
+#     where buy = {open_long, close_short} (taker buys), sell =
+#     {open_short, close_long} (taker sells). This is what you'd compute
+#     on a CEX without the open/close label — the standard OFI control.
+#
+# Both signals are rolling-percentile-thresholded per symbol (causal,
+# strict per-symbol — gotcha #4) to define an "extreme regime". The
+# strategy enters in the direction of the signal when |signal| > rolling
+# P-threshold and exits at horizon h. Per-cell aggregates report the
+# realised signed return distribution; the novelty test compares the
+# `open` headline cells against the matched `flow` cells.
+
+
+def compute_event_open_flow_qty(deduped_trades: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate deduped raw trades into per-event side-keyed quantities.
+
+    Input: a DataFrame already passed through `dedup_trades_pre_april` or
+    `filter_trades_april` — i.e. one row per fill, with columns
+    {ts_ms, qty, side}.
+
+    Output: one row per unique ts_ms with columns
+        ts_ms, open_long_qty, open_short_qty, close_long_qty, close_short_qty
+    Sorted by ts_ms ascending. Missing-side combinations are 0 (not NaN).
+
+    Vectorised via pandas pivot_table — no Python event loop.
+    """
+    if len(deduped_trades) == 0:
+        return pd.DataFrame(
+            {
+                "ts_ms": pd.Series([], dtype=np.int64),
+                "open_long_qty": pd.Series([], dtype=float),
+                "open_short_qty": pd.Series([], dtype=float),
+                "close_long_qty": pd.Series([], dtype=float),
+                "close_short_qty": pd.Series([], dtype=float),
+            }
+        )
+
+    # Pivot: rows = ts_ms, columns = side, values = sum(qty)
+    pivot = (
+        deduped_trades.pivot_table(
+            index="ts_ms",
+            columns="side",
+            values="qty",
+            aggfunc="sum",
+            fill_value=0.0,
+        )
+        .reset_index()
+        .rename_axis(columns=None)
+    )
+    # Ensure all four side columns exist (fill_value=0.0 handles missing rows
+    # but pivot_table doesn't create columns for sides that don't appear at all
+    # in the day).
+    for side in ("open_long", "open_short", "close_long", "close_short"):
+        if side not in pivot.columns:
+            pivot[side] = 0.0
+    out = pd.DataFrame(
+        {
+            "ts_ms": pivot["ts_ms"].to_numpy(dtype=np.int64),
+            "open_long_qty": pivot["open_long"].to_numpy(dtype=float),
+            "open_short_qty": pivot["open_short"].to_numpy(dtype=float),
+            "close_long_qty": pivot["close_long"].to_numpy(dtype=float),
+            "close_short_qty": pivot["close_short"].to_numpy(dtype=float),
+        }
+    )
+    return out.sort_values("ts_ms").reset_index(drop=True)
+
+
+def compute_open_imbalance_per_event(
+    aggr: pd.DataFrame,
+    *,
+    eps: float = _OPEN_IMB_EPS,
+) -> pd.DataFrame:
+    """Per-event open_imbalance and flow_imbalance from side-keyed quantities.
+
+    Input columns: ts_ms, open_long_qty, open_short_qty, close_long_qty,
+    close_short_qty. Output preserves these and appends the two imbalances.
+
+    Sign conventions:
+      * open_imbalance > 0  : new long-positioning dominates this event.
+      * open_imbalance < 0  : new short-positioning dominates this event.
+      * flow_imbalance > 0  : taker-buy notional dominates (open_long + close_short).
+      * flow_imbalance < 0  : taker-sell notional dominates (open_short + close_long).
+
+    Eps-guarded: when no opens (or no flow at all) → imbalance = 0 (not NaN).
+    """
+    out = aggr.copy()
+    ol = aggr["open_long_qty"].to_numpy(dtype=float)
+    os_ = aggr["open_short_qty"].to_numpy(dtype=float)
+    cl = aggr["close_long_qty"].to_numpy(dtype=float)
+    cs = aggr["close_short_qty"].to_numpy(dtype=float)
+
+    open_denom = ol + os_
+    flow_buy = ol + cs  # open_long + close_short = taker buys
+    flow_sell = os_ + cl  # open_short + close_long = taker sells
+    flow_denom = flow_buy + flow_sell
+
+    out["open_imbalance"] = np.where(
+        open_denom > eps, (ol - os_) / np.maximum(open_denom, eps), 0.0
+    )
+    out["flow_imbalance"] = np.where(
+        flow_denom > eps, (flow_buy - flow_sell) / np.maximum(flow_denom, eps), 0.0
+    )
+    return out
+
+
+def rolling_quantile_causal(
+    arr: np.ndarray,
+    *,
+    window: int,
+    q: float,
+    min_periods: int = 1,
+) -> np.ndarray:
+    """Causal rolling q-th quantile of `arr`.
+
+    Element i uses arr[max(0, i-window+1) : i+1]. STRICT causal — never
+    peeks at future values. This is gotcha #4: never use global statistics.
+
+    Vectorised via pandas. NaN propagates from the input; positions with
+    fewer than `min_periods` valid elements return NaN.
+    """
+    s = pd.Series(arr)
+    return s.rolling(window=window, min_periods=min_periods).quantile(q).to_numpy()
+
+
+def build_open_imbalance_per_window(
+    shard_path: Path,
+    *,
+    horizons: Iterable[int] = DIRECTION_HORIZONS,
+    cap: int = OPEN_IMB_WINDOWS_PER_SHARD_CAP,
+    rng: np.random.Generator,
+) -> list[dict]:
+    """Per-window open + flow imbalance + signed forward returns for a shard.
+
+    Pipeline:
+      1. Skip if date >= APRIL_HELDOUT_START (gotcha #17).
+      2. Load deduped raw trades (gotchas #3, #19) → per-event side-keyed
+         quantities → per-event open/flow imbalance.
+      3. Align to the cached `event_ts` (the cache may have dropped pre-OB
+         events; we keep only events that survived alignment).
+      4. For each window's anchor (= last event of the window), compute the
+         imbalance across the LAST 200 events at the anchor — i.e., aggregate
+         per-event open/flow flows over the window (sum of qty on each side,
+         then the same imbalance formula on aggregates).
+      5. Compute signed forward log returns from the cached log_return col.
+
+    Returns one row per (window, horizon).
+    """
+    sym, date = shard_path.stem.split("__")
+    if date >= APRIL_HELDOUT_START:
+        return []
+
+    with np.load(shard_path, allow_pickle=False) as z:
+        features = z["features"]
+        cache_event_ts = z["event_ts"].astype(np.int64)
+
+    n_events = features.shape[0]
+    starts = _list_window_starts(n_events, stride=STRIDE_EVAL)
+    if len(starts) == 0:
+        return []
+    starts = _subsample_starts(starts, cap, rng)
+    anchors = starts + WINDOW_LEN - 1
+    anchor_ts = cache_event_ts[anchors]
+
+    # Forward signed log returns per horizon (vectorised cumulative trick —
+    # mirrors process_shard exactly).
+    log_returns = features[:, _LOG_RETURN_IDX].astype(np.float64)
+    cum = np.concatenate([[0.0], np.cumsum(log_returns)])
+    fwd_by_h: dict[int, np.ndarray] = {}
+    for h in horizons:
+        end = anchors + h
+        valid = end < n_events
+        out = np.full(len(anchors), np.nan, dtype=np.float64)
+        out[valid] = cum[end[valid] + 1] - cum[anchors[valid] + 1]
+        fwd_by_h[h] = out
+
+    # Load + dedup raw trades using the same dispatch as cache.build_symbol_day.
+    raw = load_trades_day(sym, date)
+    if raw is None or len(raw) == 0:
+        return []
+    if "side" not in raw.columns:
+        # Defensive: if the raw schema doesn't have `side`, the analysis is
+        # impossible and we should drop the shard. Documented in verdict.
+        return []
+    if date >= APRIL_START:
+        if "event_type" not in raw.columns:
+            return []
+        deduped = filter_trades_april(raw)
+    else:
+        deduped = dedup_trades_pre_april(raw)
+    if len(deduped) == 0:
+        return []
+
+    # Per-event side-keyed quantity aggregates, then align to cache events
+    aggr = compute_event_open_flow_qty(deduped)
+    if len(aggr) == 0:
+        return []
+    # Inner-join on ts_ms — drops events the cache excluded (e.g. pre-first-OB)
+    # AND drops aggr rows with no matching cache row. Resulting frame is sorted
+    # by ts_ms ascending.
+    aligned = (
+        pd.DataFrame({"ts_ms": cache_event_ts})
+        .merge(aggr, on="ts_ms", how="left")
+        .fillna(0.0)
+    )
+    assert (
+        len(aligned) == n_events
+    ), f"Alignment broke: cache has {n_events} events, aligned has {len(aligned)}"
+
+    # Per-event side-keyed quantities, indexed by cache-event order
+    ol_e = aligned["open_long_qty"].to_numpy(dtype=float)
+    os_e = aligned["open_short_qty"].to_numpy(dtype=float)
+    cl_e = aligned["close_long_qty"].to_numpy(dtype=float)
+    cs_e = aligned["close_short_qty"].to_numpy(dtype=float)
+
+    # Window-level aggregates: sum of side-qty across the LAST 200 events at
+    # each anchor. Vectorised via cumulative sums:
+    #   sum(arr[start:end+1]) = cum[end+1] - cum[start]
+    # Window covers events [start, anchor] (inclusive) — i.e. anchor-WINDOW_LEN+1
+    # to anchor → cum[anchor+1] - cum[anchor-WINDOW_LEN+1].
+    def _win_sum(arr: np.ndarray) -> np.ndarray:
+        c = np.concatenate([[0.0], np.cumsum(arr)])
+        # window indices: starts (=anchor - WINDOW_LEN + 1) → starts.
+        # sum = c[anchor+1] - c[start]  with start = anchor - WINDOW_LEN + 1
+        return c[anchors + 1] - c[starts]
+
+    ol_w = _win_sum(ol_e)
+    os_w = _win_sum(os_e)
+    cl_w = _win_sum(cl_e)
+    cs_w = _win_sum(cs_e)
+
+    open_denom_w = ol_w + os_w
+    flow_buy_w = ol_w + cs_w
+    flow_sell_w = os_w + cl_w
+    flow_denom_w = flow_buy_w + flow_sell_w
+
+    open_imb = np.where(
+        open_denom_w > _OPEN_IMB_EPS,
+        (ol_w - os_w) / np.maximum(open_denom_w, _OPEN_IMB_EPS),
+        0.0,
+    )
+    flow_imb = np.where(
+        flow_denom_w > _OPEN_IMB_EPS,
+        (flow_buy_w - flow_sell_w) / np.maximum(flow_denom_w, _OPEN_IMB_EPS),
+        0.0,
+    )
+
+    # Per-window rows. Rolling percentiles are computed AFTER the full universe
+    # is collected (caller does it per-symbol), because rolling is a per-symbol
+    # operation that needs all windows of that symbol in chronological order.
+    rows: list[dict] = []
+    for w_idx in range(len(anchors)):
+        row: dict[str, float | int | str | bool] = {
+            "symbol": sym,
+            "date": date,
+            "window_start": int(starts[w_idx]),
+            "anchor_ts": int(anchor_ts[w_idx]),
+            "open_imbalance": float(open_imb[w_idx]),
+            "flow_imbalance": float(flow_imb[w_idx]),
+            "open_long_qty_window": float(ol_w[w_idx]),
+            "open_short_qty_window": float(os_w[w_idx]),
+            "close_long_qty_window": float(cl_w[w_idx]),
+            "close_short_qty_window": float(cs_w[w_idx]),
+        }
+        for h in horizons:
+            fr = fwd_by_h[h][w_idx]
+            row[f"fwd_log_return_h{h}"] = float(fr) if np.isfinite(fr) else float("nan")
+        rows.append(row)
+    return rows
+
+
+def attach_rolling_percentiles_per_symbol(
+    df: pd.DataFrame,
+    *,
+    percentiles: Iterable[float] = OPEN_IMBALANCE_PERCENTILES,
+    window: int = OPEN_IMBALANCE_ROLLING_WINDOW,
+    min_periods: int = OPEN_IMBALANCE_MIN_PERIODS,
+) -> pd.DataFrame:
+    """Per-symbol causal rolling percentile of |open_imbalance| and
+    |flow_imbalance|.
+
+    Each percentile gets its own column: rolling_p{pct}_{open|flow}_abs.
+    Strict per-symbol — never borrows distribution from other symbols. Strict
+    causal — uses min_periods to gate early-history NaN.
+
+    Sorts within each symbol by anchor_ts ascending before rolling.
+    """
+    out = df.copy().sort_values(["symbol", "anchor_ts"]).reset_index(drop=True)
+    out["abs_open_imbalance"] = np.abs(out["open_imbalance"].to_numpy(dtype=float))
+    out["abs_flow_imbalance"] = np.abs(out["flow_imbalance"].to_numpy(dtype=float))
+    for pct in percentiles:
+        pct_int = int(round(pct * 100))
+        for kind, col in (
+            ("open", "abs_open_imbalance"),
+            ("flow", "abs_flow_imbalance"),
+        ):
+            new_col = f"rolling_p{pct_int}_{kind}_abs"
+            out[new_col] = (
+                out.groupby("symbol", sort=False)[col]
+                .transform(
+                    lambda x: x.rolling(
+                        window=window, min_periods=min_periods
+                    ).quantile(pct)
+                )
+                .to_numpy(dtype=float)
+            )
+    return out
+
+
+def aggregate_open_imbalance_cells(
+    per_window_df: pd.DataFrame,
+    *,
+    signal_kind: str,
+    percentile_cutoff: float,
+    taker_fee_bps_per_side: float = OPEN_IMB_TAKER_FEE_BPS_PER_SIDE,
+    slip_bps: float = OPEN_IMB_SLIP_BPS_PER_SIDE,
+) -> pd.DataFrame:
+    """Per (symbol, horizon, signal_kind, percentile_cutoff) extreme-regime stats.
+
+    Expected input columns:
+      * symbol, horizon
+      * `<signal_kind>_imbalance` (e.g. open_imbalance or flow_imbalance)
+      * `rolling_p{pct}_{signal_kind}_abs` (the cutoff column for this
+        percentile)
+      * fwd_log_return (the forward log return at the row's horizon — caller
+        is responsible for melting horizon columns into a single column)
+
+    Or: a long-form DataFrame where each row already represents one
+    (symbol, horizon, signal_value, cutoff, fwd_log_return) — used in unit
+    tests with a flat schema. Detect by column presence:
+        - if `rolling_p{pct}_{signal_kind}_abs` is present → use it.
+        - elif `rolling_p95_{signal_kind}_abs` is present → use it for
+          backwards-compatible test fixtures hardcoded at P95.
+
+    Sign convention:
+      signed_return = sign(signal) × fwd_log_return × 1e4
+    where positive imbalance → long position, negative → short.
+
+    Per-cell metrics:
+      * n_total_windows, n_extreme_windows, extreme_frequency
+      * mean/median/p25/p75 signed_return_extreme (in bps)
+      * frac_positive_signed_return_extreme
+      * gross_extreme_bps = |mean_signed_return_extreme|
+      * cost_round_trip_bps = 2 × fee + 2 × slip
+      * headroom_extreme_bps = gross - cost
+      * per_day_expected_gross_bps = extreme_frequency × headroom × ~n_windows_per_day
+
+    NOTE: per_day_expected_gross_bps assumes 1 window per second of trading at
+    stride=200 (trade-event clock). The caller scales this back into a
+    per-day volume figure separately when reporting; here it is just
+    `extreme_frequency × headroom`.
+    """
+    pct_int = int(round(percentile_cutoff * 100))
+    signal_col = f"{signal_kind}_imbalance"
+    cutoff_col = f"rolling_p{pct_int}_{signal_kind}_abs"
+    if cutoff_col not in per_window_df.columns:
+        # Test-fixture compat: P95 hardcoded
+        cutoff_col = f"rolling_p95_{signal_kind}_abs"
+    cost_round_trip = 2.0 * taker_fee_bps_per_side + 2.0 * slip_bps
+
+    rows: list[dict] = []
+    grouped = per_window_df.groupby(["symbol", "horizon"], sort=True)
+    for key, g in grouped:
+        sym, h = cast(tuple[str, int], key)
+        signal = g[signal_col].to_numpy(dtype=float)
+        cutoff = g[cutoff_col].to_numpy(dtype=float)
+        # Forward return column: prefer 'fwd_log_return' (test fixtures);
+        # fall back to per-horizon column if present
+        if "fwd_log_return" in g.columns:
+            fwd = g["fwd_log_return"].to_numpy(dtype=float)
+        else:
+            fwd = g[f"fwd_log_return_h{int(h)}"].to_numpy(dtype=float)
+
+        # Valid windows = finite cutoff (rolling has warmed up) + finite fwd
+        finite_mask = np.isfinite(cutoff) & np.isfinite(fwd) & np.isfinite(signal)
+        n_total = int(finite_mask.sum())
+        if n_total == 0:
+            continue
+
+        # Extreme-regime mask: |signal| > rolling cutoff (strict >, not >=,
+        # so we exclude the cutoff value itself — defensible against ties)
+        abs_signal = np.abs(signal)
+        extreme_mask = finite_mask & (abs_signal > cutoff)
+        n_extreme = int(extreme_mask.sum())
+        extreme_freq = n_extreme / n_total if n_total > 0 else 0.0
+
+        # Signed return: sign(signal) × fwd × 1e4. For signal == 0, sign = 0;
+        # but extreme_mask requires |signal| > cutoff > 0, so excluded anyway.
+        if n_extreme > 0:
+            sign = np.sign(signal[extreme_mask])
+            fwd_ext = fwd[extreme_mask]
+            signed_ret_bps = sign * fwd_ext * 1e4
+            mean_signed = float(np.mean(signed_ret_bps))
+            median_signed = float(np.median(signed_ret_bps))
+            p25_signed = float(np.quantile(signed_ret_bps, 0.25))
+            p75_signed = float(np.quantile(signed_ret_bps, 0.75))
+            frac_positive = float((signed_ret_bps > 0).mean())
+            gross = float(np.abs(mean_signed))
+            headroom = gross - cost_round_trip
+        else:
+            mean_signed = float("nan")
+            median_signed = float("nan")
+            p25_signed = float("nan")
+            p75_signed = float("nan")
+            frac_positive = float("nan")
+            gross = float("nan")
+            headroom = float("nan")
+
+        rows.append(
+            {
+                "symbol": sym,
+                "horizon": int(h),
+                "signal_kind": signal_kind,
+                "percentile_cutoff": float(percentile_cutoff),
+                "n_total_windows": n_total,
+                "n_extreme_windows": n_extreme,
+                "extreme_frequency": float(extreme_freq),
+                "mean_signed_return_extreme": mean_signed,
+                "median_signed_return_extreme": median_signed,
+                "p25_signed_return_extreme": p25_signed,
+                "p75_signed_return_extreme": p75_signed,
+                "frac_positive_signed_return_extreme": frac_positive,
+                "gross_extreme_bps": gross,
+                "cost_round_trip_bps": float(cost_round_trip),
+                "headroom_extreme_bps": (
+                    float(headroom) if np.isfinite(headroom) else float("nan")
+                ),
+                "per_day_expected_gross_bps": (
+                    float(extreme_freq * headroom)
+                    if np.isfinite(headroom)
+                    else float("nan")
+                ),
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["symbol", "horizon", "signal_kind", "percentile_cutoff"])
+        .reset_index(drop=True)
+    )
+
+
+def melt_per_window_to_long(
+    per_window_df: pd.DataFrame,
+    *,
+    horizons: Iterable[int] = DIRECTION_HORIZONS,
+) -> pd.DataFrame:
+    """Reshape from wide (one row per window, per-horizon fwd_log_return cols)
+    to long (one row per (window, horizon) with a single fwd_log_return col).
+
+    Required because aggregate_open_imbalance_cells groups by horizon and
+    reads a single fwd_log_return column.
+    """
+    horizon_list = list(horizons)
+    fwd_cols = [f"fwd_log_return_h{h}" for h in horizon_list]
+    id_vars = [c for c in per_window_df.columns if c not in fwd_cols]
+    melted = per_window_df.melt(
+        id_vars=id_vars,
+        value_vars=fwd_cols,
+        var_name="_horizon_col",
+        value_name="fwd_log_return",
+    )
+    melted["horizon"] = (
+        melted["_horizon_col"].str.replace("fwd_log_return_h", "").astype(int)
+    )
+    return melted.drop(columns=["_horizon_col"]).reset_index(drop=True)
+
+
+def write_open_imbalance_md(
+    cells_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    headline_pct: float = 0.95,
+    headline_horizon: int = 100,
+    extreme_freq_floor: float = 0.005,
+    extreme_freq_ceiling: float = 0.10,
+    frac_pos_threshold: float = 0.55,
+    taker_fee_bps_per_side: float = OPEN_IMB_TAKER_FEE_BPS_PER_SIDE,
+    slip_bps: float = OPEN_IMB_SLIP_BPS_PER_SIDE,
+) -> None:
+    """Emit `open_imbalance.md`. Answers the six prompts in order."""
+    body: list[str] = []
+    body.append("# Goal-A Novelty Test — Extreme-Regime Open-Flow Imbalance\n")
+    body.append(
+        "This is a feasibility test of a hypothesis distinct from v1's "
+        "every-window direction prediction:\n"
+    )
+    body.append(
+        "**Hypothesis.** People opening new positions are systematically more "
+        "informed than people closing existing positions (closes include "
+        "profit-takers, stop-outs, mark-to-market exits; opens are conviction "
+        "trades). A signed *new-positioning imbalance* "
+        "`(open_long_qty − open_short_qty) / (open_long_qty + open_short_qty)` "
+        "should carry stronger directional information in its tails than "
+        "standard order-flow imbalance — which doesn't have the open/close "
+        "label and therefore cannot distinguish conviction from exit.\n"
+    )
+    body.append(
+        "**Strategy under test.** Trade only when |signal| > rolling per-symbol "
+        "P-cutoff (top 1/5/10% of magnitude). Per-trade gross is much larger "
+        "than v1's every-window math because we trade only when signal is "
+        "unambiguous; trade frequency is low enough that fees aren't compounded "
+        "across 200 micro-bets.\n"
+    )
+    body.append(
+        f"**Cost band.** Taker, {taker_fee_bps_per_side:g} bp/side fee + "
+        f"{slip_bps:g} bp/side slip = "
+        f"{2 * taker_fee_bps_per_side + 2 * slip_bps:g} bp round-trip.\n"
+    )
+    body.append(
+        "**Novelty bar.** If `open_imbalance` performs IDENTICALLY to "
+        "`flow_imbalance` (standard OFI), the open/close split is not "
+        "load-bearing and the hypothesis is dead — public CEX data would "
+        "capture the same edge. If `open` beats `flow` by a defensible "
+        "margin on headline cells, the per-fill `is_open` label is "
+        "load-bearing and the DEX-only data has unique value.\n"
+    )
+
+    n_total_cells = int(len(cells_df))
+
+    # ---- Distribution check ----
+    body.append("\n## 1. Distribution check — does the cutoff fire often enough?\n")
+    body.append(
+        "We require the extreme regime to fire on at least "
+        f"`{extreme_freq_floor:.1%}` of windows (so it's tradeable) but at most "
+        f"`{extreme_freq_ceiling:.1%}` (so it's a real tail). At each "
+        "(percentile, signal_kind), we report the median extreme-frequency "
+        "across symbols.\n"
+    )
+    body.append(
+        "| percentile | signal | universe-median extreme_freq | min sym | max sym |"
+    )
+    body.append("|---:|---:|---:|---:|---:|")
+    for pct in sorted(cells_df["percentile_cutoff"].unique().tolist()):
+        for sk in ("open", "flow"):
+            sub = cells_df[
+                (cells_df["percentile_cutoff"] == pct)
+                & (cells_df["signal_kind"] == sk)
+                & (cells_df["horizon"] == headline_horizon)
+            ]
+            if sub.empty:
+                continue
+            freq_series = cast(pd.Series, sub["extreme_frequency"]).dropna()
+            freqs = np.asarray(freq_series.tolist(), dtype=float)
+            if freqs.size == 0:
+                continue
+            body.append(
+                f"| {pct:.2f} | {sk} | {float(np.median(freqs)):.3%} | "
+                f"{float(np.min(freqs)):.3%} | {float(np.max(freqs)):.3%} |"
+            )
+
+    # ---- Headline directional accuracy ----
+    body.append(
+        f"\n## 2. Headline directional accuracy "
+        f"(open_imbalance, P{int(headline_pct*100)}, H{headline_horizon})\n"
+    )
+    head = cells_df[
+        (cells_df["signal_kind"] == "open")
+        & (cells_df["percentile_cutoff"] == headline_pct)
+        & (cells_df["horizon"] == headline_horizon)
+        & cells_df["frac_positive_signed_return_extreme"].notna()
+    ]
+    if head.empty:
+        body.append("_No data in headline cell._\n")
+        headline_med = float("nan")
+        n_above_55 = 0
+        n_above_60 = 0
+    else:
+        fracs = np.asarray(
+            head["frac_positive_signed_return_extreme"].tolist(), dtype=float
+        )
+        headline_med = float(np.median(fracs))
+        n_above_55 = int((fracs > frac_pos_threshold).sum())
+        n_above_60 = int((fracs > 0.60).sum())
+        body.append(
+            f"Universe-wide median `frac_positive_signed_return_extreme` "
+            f"at (open, P{int(headline_pct*100)}, H{headline_horizon}): "
+            f"**{headline_med:.4f}**\n"
+        )
+        body.append(
+            f"* Symbols with frac_positive > {frac_pos_threshold:.2f}: "
+            f"**{n_above_55}** of {len(head)}\n"
+        )
+        body.append(
+            f"* Symbols with frac_positive > 0.60: "
+            f"**{n_above_60}** of {len(head)}\n"
+        )
+        body.append(
+            f"* v1 universe-wide ceiling for direction prediction: 0.514. "
+            f"Hypothesis demands > 0.55 here.\n"
+        )
+
+    # ---- Cost-band-adjusted survivors ----
+    body.append("\n## 3. Cost-band-adjusted survivor count\n")
+    body.append(
+        f"Survivor cell = `headroom_extreme_bps > 0` AND "
+        f"`frac_positive_signed_return_extreme > {frac_pos_threshold:.2f}` AND "
+        f"`extreme_frequency >= {extreme_freq_floor:.1%}`.\n"
+    )
+    survivors_full = cast(
+        pd.DataFrame,
+        cells_df[
+            (cells_df["headroom_extreme_bps"] > 0)
+            & (cells_df["frac_positive_signed_return_extreme"] > frac_pos_threshold)
+            & (cells_df["extreme_frequency"] >= extreme_freq_floor)
+        ].copy(),
+    )
+    body.append(
+        f"Total survivor cells (across all signal_kinds × percentiles × "
+        f"horizons × symbols): **{len(survivors_full)}** of "
+        f"{n_total_cells}.\n"
+    )
+    body.append("\n### Per-signal × per-percentile breakdown\n")
+    body.append("| signal | percentile | survivors |")
+    body.append("|---|---|---:|")
+    for sk in ("open", "flow"):
+        for pct in sorted(cells_df["percentile_cutoff"].unique().tolist()):
+            n = int(
+                (
+                    (survivors_full["signal_kind"] == sk)
+                    & (survivors_full["percentile_cutoff"] == pct)
+                ).sum()
+            )
+            body.append(f"| {sk} | {pct:.2f} | {n} |")
+
+    # Top 3 survivors by per-day expected gross
+    if not survivors_full.empty:
+        top3 = (
+            survivors_full.sort_values("per_day_expected_gross_bps", ascending=False)
+            .head(3)
+            .reset_index(drop=True)
+        )
+        body.append("\n### Top 3 survivor cells by per-day expected gross\n")
+        body.append(
+            "| symbol | horizon | signal | percentile | extreme_freq | "
+            "frac_positive | gross (bp) | headroom (bp) | per-day expected (bp) |"
+        )
+        body.append("|---|---:|---|---:|---:|---:|---:|---:|---:|")
+        symbols_list = top3["symbol"].tolist()
+        horizons_list = top3["horizon"].tolist()
+        sks_list = top3["signal_kind"].tolist()
+        pcts_list = top3["percentile_cutoff"].tolist()
+        freqs_list = top3["extreme_frequency"].tolist()
+        fracs_list = top3["frac_positive_signed_return_extreme"].tolist()
+        gross_list = top3["gross_extreme_bps"].tolist()
+        head_list = top3["headroom_extreme_bps"].tolist()
+        pd_gross_list = top3["per_day_expected_gross_bps"].tolist()
+        for sym, hor, sk, pct, freq, frac, gross, hroom, pd_g in zip(
+            symbols_list,
+            horizons_list,
+            sks_list,
+            pcts_list,
+            freqs_list,
+            fracs_list,
+            gross_list,
+            head_list,
+            pd_gross_list,
+            strict=True,
+        ):
+            body.append(
+                f"| {sym} | H{int(float(hor))} | "
+                f"{sk} | {float(pct):.2f} | "
+                f"{float(freq):.3%} | "
+                f"{float(frac):.4f} | "
+                f"{float(gross):+.2f} | "
+                f"{float(hroom):+.2f} | "
+                f"{float(pd_g):+.4f} |"
+            )
+
+    # ---- Novelty test ----
+    body.append("\n## 4. Novelty test — does open_imbalance beat flow_imbalance?\n")
+    body.append(
+        "For every (symbol, horizon, percentile) cell where BOTH `open` and "
+        "`flow` have a finite mean_signed_return_extreme, we compare the "
+        "two by `mean_signed_return_extreme`. If the open-flow signal is "
+        "load-bearing, `open` should win on a clear majority of cells.\n"
+    )
+    pivot = cells_df.pivot_table(
+        index=["symbol", "horizon", "percentile_cutoff"],
+        columns="signal_kind",
+        values="mean_signed_return_extreme",
+        aggfunc="first",
+    ).reset_index()
+    if "open" in pivot.columns and "flow" in pivot.columns:
+        paired = pivot.dropna(subset=["open", "flow"])
+        if not paired.empty:
+            open_arr = np.asarray(paired["open"].tolist(), dtype=float)
+            flow_arr = np.asarray(paired["flow"].tolist(), dtype=float)
+            open_wins = int((open_arr > flow_arr).sum())
+            flow_wins = int((flow_arr > open_arr).sum())
+            ties = int((open_arr == flow_arr).sum())
+            n_paired = len(paired)
+            mean_diff = float(np.mean(open_arr - flow_arr))
+            median_diff = float(np.median(open_arr - flow_arr))
+            body.append(f"* Paired cells (both signals finite): **{n_paired}**\n")
+            body.append(
+                f"* Cells where open > flow (mean_signed): **{open_wins}** "
+                f"({open_wins / n_paired:.1%})\n"
+            )
+            body.append(
+                f"* Cells where flow > open: **{flow_wins}** "
+                f"({flow_wins / n_paired:.1%})\n"
+            )
+            body.append(f"* Ties: **{ties}**\n")
+            body.append(
+                f"* Mean (open − flow) difference: " f"**{mean_diff:+.4f} bp**\n"
+            )
+            body.append(
+                f"* Median (open − flow) difference: " f"**{median_diff:+.4f} bp**\n"
+            )
+            # Headline-cell only
+            head_paired = paired[
+                (paired["horizon"] == headline_horizon)
+                & (paired["percentile_cutoff"] == headline_pct)
+            ]
+            if not head_paired.empty:
+                ho = np.asarray(head_paired["open"].tolist(), dtype=float)
+                hf = np.asarray(head_paired["flow"].tolist(), dtype=float)
+                head_open_wins = int((ho > hf).sum())
+                body.append(
+                    f"\n**Headline-cell novelty** (P{int(headline_pct*100)}, "
+                    f"H{headline_horizon}):\n"
+                    f"* open > flow on {head_open_wins} of {len(head_paired)} "
+                    f"symbols ({head_open_wins/len(head_paired):.1%})\n"
+                    f"* mean (open − flow): "
+                    f"{float(np.mean(ho - hf)):+.4f} bp\n"
+                )
+        else:
+            body.append("_No paired cells with both signals finite._\n")
+    else:
+        body.append("_pivot did not produce both signal_kind columns._\n")
+
+    # ---- Per-symbol breakdown ----
+    body.append("\n## 5. Per-symbol breakdown — which symbols have a tradeable cell?\n")
+    for pct in (0.95, 0.99):
+        body.append(f"\n### At P{int(pct*100)} ({pct})\n")
+        sub_filt = cast(
+            pd.DataFrame,
+            cells_df[
+                (cells_df["percentile_cutoff"] == pct)
+                & (cells_df["signal_kind"] == "open")
+                & (cells_df["headroom_extreme_bps"] > 0)
+                & (cells_df["frac_positive_signed_return_extreme"] > frac_pos_threshold)
+                & (cells_df["extreme_frequency"] >= extreme_freq_floor)
+            ],
+        )
+        sub = sub_filt.sort_values("headroom_extreme_bps", ascending=False)
+        if sub.empty:
+            body.append("_No symbols have a tradeable cell at this percentile._\n")
+            continue
+        body.append(
+            "| symbol | horizon | extreme_freq | frac_positive | gross (bp) | "
+            "headroom (bp) |"
+        )
+        body.append("|---|---:|---:|---:|---:|---:|")
+        s_syms = sub["symbol"].tolist()
+        s_hors = sub["horizon"].tolist()
+        s_freqs = sub["extreme_frequency"].tolist()
+        s_fracs = sub["frac_positive_signed_return_extreme"].tolist()
+        s_gross = sub["gross_extreme_bps"].tolist()
+        s_head = sub["headroom_extreme_bps"].tolist()
+        for sym, hor, freq, frac, gross, hroom in zip(
+            s_syms, s_hors, s_freqs, s_fracs, s_gross, s_head, strict=True
+        ):
+            body.append(
+                f"| {sym} | H{int(float(hor))} | "
+                f"{float(freq):.3%} | "
+                f"{float(frac):.4f} | "
+                f"{float(gross):+.2f} | "
+                f"{float(hroom):+.2f} |"
+            )
+
+    # ---- Verdict ----
+    body.append("\n## 6. Verdict\n")
+    if not np.isfinite(headline_med):
+        verdict = "**Inconclusive — no headline data.**"
+    elif headline_med < frac_pos_threshold:
+        verdict = (
+            f"**The extreme-regime open-flow strategy fails the headline "
+            f"directional bar.** Universe-wide median "
+            f"`frac_positive_signed_return_extreme` at "
+            f"(open, P{int(headline_pct*100)}, H{headline_horizon}) is "
+            f"**{headline_med:.4f}**, below the {frac_pos_threshold:.2f} "
+            f"threshold. The hypothesis fails — opening flow in the extreme "
+            f"regime does NOT predict direction strongly enough to overcome "
+            f"the cost band. The rest of the table is moot."
+        )
+    elif headline_med < 0.60:
+        verdict = (
+            f"**The extreme-regime open-flow strategy is on the bubble.** "
+            f"Universe-wide median `frac_positive_signed_return_extreme` at "
+            f"(open, P{int(headline_pct*100)}, H{headline_horizon}) is "
+            f"**{headline_med:.4f}** — above the {frac_pos_threshold:.2f} "
+            f"floor but below 0.60. Tradeable on a subset of cells (see "
+            f"per-symbol breakdown); not a universal edge."
+        )
+    else:
+        verdict = (
+            f"**The extreme-regime open-flow strategy clears the headline "
+            f"bar.** Universe-wide median "
+            f"`frac_positive_signed_return_extreme` at "
+            f"(open, P{int(headline_pct*100)}, H{headline_horizon}) is "
+            f"**{headline_med:.4f}** (> 0.60). Move to the novelty test: "
+            f"is open beating flow by a margin?"
+        )
+    body.append(verdict + "\n")
+
+    # ---- Methodological flags ----
+    body.append("\n## 7. Methodological flags\n")
+    body.append(
+        "* **Rolling-percentile warm-up.** The first "
+        f"`{OPEN_IMBALANCE_MIN_PERIODS}` windows of each symbol's history "
+        "have no rolling cutoff (P95 etc. is NaN until min_periods is met) "
+        "and are excluded from extreme-regime aggregation. This is correct "
+        "(no peeking) but biases the universe toward later-day data.\n"
+    )
+    body.append(
+        "* **Autocorrelation of extremes.** A strong open-flow regime "
+        "PERSISTS within a session — the rolling P95 fires in clusters, not "
+        "iid. The `extreme_frequency × headroom` per-day expected gross is "
+        "an UPPER BOUND (it counts each window as an independent "
+        "opportunity). A real backtest would entry-exit-cooldown, not "
+        "trade every extreme window. Treat per-day gross as an order-of-"
+        "magnitude estimate, not a deployable PnL number.\n"
+    )
+    body.append(
+        "* **Cutoff space: signal magnitude vs z-score.** We use raw |signal| "
+        "for the rolling percentile because the distribution of imbalances "
+        "is not strongly time-varying within a symbol (open/short flow "
+        "ratios are bounded in [-1, +1] by construction). A z-score "
+        "alternative (rolling mean ± k·rolling σ) would gate on relative "
+        "rather than absolute extremity. We chose magnitude because the "
+        "tail of the distribution at e.g. open_imbalance > 0.95 has a "
+        "natural interpretation (95% of new-position notional was on one "
+        "side) that z-score loses. Flag for downstream: if rolling P95 "
+        "is itself low (e.g. 0.3 on illiquid alts), the 'extreme' regime "
+        "is not actually extreme in absolute terms — just relatively rare.\n"
+    )
+    body.append(
+        "* **Pre-April dedup ambiguity.** Pre-April raw data has both "
+        "buyer and seller perspectives; `dedup_trades_pre_april` keeps the "
+        "first row per `(ts_ms, qty, price)` tuple. This means the "
+        "preserved `side` value is whichever counterparty was logged "
+        "first — possibly arbitrary. April+ uses `event_type=fulfill_taker` "
+        "which deterministically keeps the taker (the aggressor / "
+        "directional decision-maker). The novelty test mixes both schemas "
+        "across its date range; check the April-only subset separately if "
+        "the result is borderline.\n"
+    )
+    body.append(
+        "* **Slippage = flat 1 bp/side.** This is a coarse cross-symbol "
+        "estimate and biases liquid symbols pessimistic / illiquid alts "
+        "optimistic. The size at which we trade is not specified — at $1k "
+        "notional the flat assumption is roughly right; at $100k on "
+        "illiquid alts slippage explodes (median 19+ bp/side per the "
+        "headroom_table.csv).\n"
+    )
+
+    out_path.write_text("\n".join(body))
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1726,9 +2630,107 @@ def main() -> None:
             "maker_adverse_selection.md."
         ),
     )
+    parser.add_argument(
+        "--open-imbalance",
+        action="store_true",
+        help=(
+            "Run the open-flow-imbalance novelty test. For each window, "
+            "compute open_imbalance and flow_imbalance from raw deduped "
+            "trades, attach per-symbol causal rolling P90/P95/P99 cutoffs, "
+            "and aggregate per-cell signed-return metrics in the extreme "
+            "regime. Writes open_imbalance_per_window.parquet (gitignored), "
+            "open_imbalance_table.csv, and open_imbalance.md."
+        ),
+    )
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
+
+    if args.open_imbalance:
+        cache_dir = args.cache_dir
+        all_shards = sorted(cache_dir.glob("*.npz"))
+        all_shards = [
+            p for p in all_shards if p.stem.split("__")[1] < APRIL_HELDOUT_START
+        ]
+        if args.symbols:
+            wanted = set(args.symbols)
+            all_shards = [p for p in all_shards if p.stem.split("__")[0] in wanted]
+        else:
+            wanted = set(SYMBOLS)
+            all_shards = [p for p in all_shards if p.stem.split("__")[0] in wanted]
+
+        if args.max_shards_per_symbol is not None:
+            from collections import defaultdict
+
+            by_sym: dict[str, list[Path]] = defaultdict(list)
+            for p in all_shards:
+                by_sym[p.stem.split("__")[0]].append(p)
+            capped: list[Path] = []
+            for paths in by_sym.values():
+                if len(paths) <= args.max_shards_per_symbol:
+                    capped.extend(paths)
+                else:
+                    idx = rng.choice(
+                        len(paths), size=args.max_shards_per_symbol, replace=False
+                    )
+                    idx.sort()
+                    capped.extend([paths[i] for i in idx])
+            all_shards = sorted(capped)
+
+        print(
+            f"[open-imbalance] Processing {len(all_shards)} shards...",
+            flush=True,
+        )
+        all_rows: list[dict] = []
+        for i, p in enumerate(all_shards):
+            if i % 50 == 0:
+                print(f"  [{i}/{len(all_shards)}] {p.name}", flush=True)
+            rows = build_open_imbalance_per_window(p, rng=rng)
+            all_rows.extend(rows)
+
+        if not all_rows:
+            raise RuntimeError(
+                "No open-imbalance rows produced — check cache_dir and "
+                "symbols filter."
+            )
+
+        per_window_df = pd.DataFrame(all_rows)
+        # Attach per-symbol causal rolling percentiles (sorted by anchor_ts).
+        per_window_df = attach_rolling_percentiles_per_symbol(per_window_df)
+
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        per_window_path = args.out_dir / "open_imbalance_per_window.parquet"
+        per_window_df.to_parquet(per_window_path, index=False)
+        print(
+            f"Wrote {len(per_window_df)} per-window rows → {per_window_path}",
+            flush=True,
+        )
+
+        # Melt into long form (one row per (window, horizon)) for cell aggregation.
+        long_df = melt_per_window_to_long(per_window_df)
+
+        # Build the per-cell table: signal_kind × percentile_cutoff
+        cell_rows: list[pd.DataFrame] = []
+        for sk in ("open", "flow"):
+            for pct in OPEN_IMBALANCE_PERCENTILES:
+                cell_df = aggregate_open_imbalance_cells(
+                    long_df,
+                    signal_kind=sk,
+                    percentile_cutoff=pct,
+                )
+                cell_rows.append(cell_df)
+        cells_df = pd.concat(cell_rows, ignore_index=True)
+        csv_path = args.out_dir / "open_imbalance_table.csv"
+        cells_df.to_csv(csv_path, index=False, float_format="%.6g")
+        print(
+            f"Wrote {len(cells_df)} (sym,horizon,signal,pct) cells → {csv_path}",
+            flush=True,
+        )
+
+        md_path = args.out_dir / "open_imbalance.md"
+        write_open_imbalance_md(cells_df, md_path)
+        print(f"Wrote {md_path}", flush=True)
+        return
 
     if args.adverse_selection:
         cache_dir = args.cache_dir

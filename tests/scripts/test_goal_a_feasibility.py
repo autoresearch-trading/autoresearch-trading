@@ -16,17 +16,22 @@ from scripts.goal_a_feasibility import (
     add_maker_headroom_columns,
     aggregate_adverse_selection,
     aggregate_cells,
+    aggregate_open_imbalance_cells,
     best_bid_ask_from_levels,
+    compute_event_open_flow_qty,
     compute_maker_sensitivity_table,
+    compute_open_imbalance_per_event,
     detect_fill_in_range,
     forward_log_return,
     headroom_at_accuracy_bps,
     headroom_bps,
     maker_headroom_at_accuracy_bps,
     model_accuracy_breakeven,
+    rolling_quantile_causal,
     simulate_taker_fill,
     survivors_for_accuracy,
 )
+from tape.dedup import dedup_trades_pre_april
 
 # ---------------------------------------------------------------------------
 # simulate_taker_fill — deterministic book walk
@@ -737,3 +742,355 @@ def test_aggregate_adverse_selection_dilemma_negative_e() -> None:
     assert float(row["mean_pnl_bid_filled"]) == -10.0
     # Breakeven = 0.5 + 1.5 / -10 = 0.35 → contrarian zone
     assert abs(float(row["model_accuracy_breakeven"]) - 0.35) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Open-imbalance feasibility — dedup correctness
+# ---------------------------------------------------------------------------
+
+
+def test_dedup_pre_april_collapses_buyer_seller_pairs() -> None:
+    """Pre-April raw data has buyer + seller rows for every fill sharing
+    (ts_ms, qty, price) but differing in `side`. Dedup must collapse these
+    to one row per fill — gotcha #19. WITHOUT this collapse, every imbalance
+    is spurious because both perspectives are counted."""
+    raw = pd.DataFrame(
+        {
+            "ts_ms": [1000, 1000, 2000, 2000, 3000, 3000],
+            "qty": [10.0, 10.0, 5.0, 5.0, 3.0, 3.0],
+            "price": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            "side": [
+                "open_long",
+                "close_short",
+                "open_short",
+                "close_long",
+                "open_long",
+                "close_short",
+            ],
+        }
+    )
+    deduped = dedup_trades_pre_april(raw)
+    # 6 raw rows → 3 fills (each (ts, qty, price) tuple appears twice)
+    assert len(deduped) == 3
+    # The first row of each pair is preserved, so we keep the open_* sides
+    assert sorted(deduped["side"].tolist()) == ["open_long", "open_long", "open_short"]
+
+
+# ---------------------------------------------------------------------------
+# compute_event_open_flow_qty — per-event aggregation by side
+# ---------------------------------------------------------------------------
+
+
+def test_compute_event_open_flow_qty_groups_by_ts_ms() -> None:
+    """Same-ts_ms trades are fragments of one event. Aggregate qty by side.
+
+    Two events at different ts_ms; the second has fragments on both sides.
+    """
+    deduped = pd.DataFrame(
+        {
+            "ts_ms": [1000, 2000, 2000, 2000],
+            "qty": [10.0, 3.0, 4.0, 2.0],
+            "price": [100.0, 100.0, 100.0, 100.0],
+            "side": ["open_long", "open_long", "close_long", "open_short"],
+        }
+    )
+    out = compute_event_open_flow_qty(deduped)
+    # Sorted by ts_ms; columns: open_long_qty, open_short_qty, close_long_qty,
+    # close_short_qty (and ts_ms)
+    assert out.shape[0] == 2
+    row0 = out.iloc[0]
+    assert int(row0["ts_ms"]) == 1000
+    assert float(row0["open_long_qty"]) == 10.0
+    assert float(row0["open_short_qty"]) == 0.0
+    assert float(row0["close_long_qty"]) == 0.0
+    assert float(row0["close_short_qty"]) == 0.0
+    row1 = out.iloc[1]
+    assert int(row1["ts_ms"]) == 2000
+    assert float(row1["open_long_qty"]) == 3.0
+    assert float(row1["open_short_qty"]) == 2.0
+    assert float(row1["close_long_qty"]) == 4.0
+    assert float(row1["close_short_qty"]) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# compute_open_imbalance_per_event — open vs flow signal math
+# ---------------------------------------------------------------------------
+
+
+def test_open_imbalance_pure_long_returns_plus_one() -> None:
+    """Only open_long fills → open_imbalance = +1."""
+    aggr = pd.DataFrame(
+        {
+            "ts_ms": [1000],
+            "open_long_qty": [10.0],
+            "open_short_qty": [0.0],
+            "close_long_qty": [0.0],
+            "close_short_qty": [0.0],
+        }
+    )
+    out = compute_open_imbalance_per_event(aggr)
+    assert abs(float(out["open_imbalance"].iloc[0]) - 1.0) < 1e-9
+    # No close flow → flow_imbalance also +1 (open_long is buy-side)
+    assert abs(float(out["flow_imbalance"].iloc[0]) - 1.0) < 1e-9
+
+
+def test_open_imbalance_pure_short_returns_minus_one() -> None:
+    """Only open_short fills → open_imbalance = -1."""
+    aggr = pd.DataFrame(
+        {
+            "ts_ms": [1000],
+            "open_long_qty": [0.0],
+            "open_short_qty": [5.0],
+            "close_long_qty": [0.0],
+            "close_short_qty": [0.0],
+        }
+    )
+    out = compute_open_imbalance_per_event(aggr)
+    assert abs(float(out["open_imbalance"].iloc[0]) - (-1.0)) < 1e-9
+    assert abs(float(out["flow_imbalance"].iloc[0]) - (-1.0)) < 1e-9
+
+
+def test_open_imbalance_decouples_from_flow() -> None:
+    """Construct a case where open and flow imbalances point in OPPOSITE
+    directions: lots of open_long but even more close_long (sells).
+
+    open_imbalance: only opens count → +1 (only open_long present).
+    flow_imbalance: buy = open_long, sell = open_short + close_long → strongly
+                    negative because close_long sells dominate.
+    """
+    aggr = pd.DataFrame(
+        {
+            "ts_ms": [1000],
+            "open_long_qty": [3.0],
+            "open_short_qty": [0.0],
+            "close_long_qty": [10.0],  # this is a sell (closing a long position)
+            "close_short_qty": [0.0],
+        }
+    )
+    out = compute_open_imbalance_per_event(aggr)
+    # open: (3 - 0) / 3 = +1
+    assert abs(float(out["open_imbalance"].iloc[0]) - 1.0) < 1e-9
+    # flow: buy = 3 (open_long), sell = 10 (close_long); (3 - 10) / 13 = -0.538
+    assert abs(float(out["flow_imbalance"].iloc[0]) - ((3.0 - 10.0) / 13.0)) < 1e-9
+
+
+def test_open_imbalance_zero_denominator_returns_zero() -> None:
+    """No open fills at all (all closes) → denominator zero → imbalance = 0,
+    not NaN, not inf. Epsilon-guarded."""
+    aggr = pd.DataFrame(
+        {
+            "ts_ms": [1000],
+            "open_long_qty": [0.0],
+            "open_short_qty": [0.0],
+            "close_long_qty": [5.0],
+            "close_short_qty": [3.0],
+        }
+    )
+    out = compute_open_imbalance_per_event(aggr)
+    assert float(out["open_imbalance"].iloc[0]) == 0.0
+    # flow imbalance: buy = 3 (close_short closes a short = buying back),
+    # sell = 5 (close_long); (3 - 5) / 8 = -0.25
+    assert abs(float(out["flow_imbalance"].iloc[0]) - ((3.0 - 5.0) / 8.0)) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Rolling causal quantile
+# ---------------------------------------------------------------------------
+
+
+def test_rolling_quantile_causal_uses_only_prior_values() -> None:
+    """Rolling P95 of |x| at index i uses x[max(0,i-window+1):i+1] only.
+    NO peeking at future values."""
+    arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+    out = rolling_quantile_causal(arr, window=5, q=0.95, min_periods=1)
+    # At i=0: only 1.0 → P95 = 1.0
+    assert abs(out[0] - 1.0) < 1e-9
+    # At i=4 (window full = 5 elements: 1..5): P95 of [1,2,3,4,5] = ~4.8
+    assert abs(out[4] - np.quantile(np.array([1, 2, 3, 4, 5]), 0.95)) < 1e-9
+    # At i=9: window = [6,7,8,9,10] → P95 = 9.8
+    assert abs(out[9] - np.quantile(np.array([6, 7, 8, 9, 10]), 0.95)) < 1e-9
+
+
+def test_rolling_quantile_causal_min_periods_returns_nan() -> None:
+    """When fewer than min_periods elements available, return NaN."""
+    arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    out = rolling_quantile_causal(arr, window=3, q=0.95, min_periods=3)
+    # First two indices have <3 elements → NaN
+    assert np.isnan(out[0])
+    assert np.isnan(out[1])
+    # Index 2 onward: 3 elements available → finite
+    assert np.isfinite(out[2])
+
+
+# ---------------------------------------------------------------------------
+# Sign convention: aggregate_open_imbalance_cells
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_open_imbalance_positive_signal_positive_return() -> None:
+    """Positive imbalance + positive return → positive signed return.
+    Strategy goes long when imbalance > +rolling_p95; pays off when fwd_ret>0.
+    """
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * 4,
+            "horizon": [100] * 4,
+            "open_imbalance": [0.8, 0.8, 0.8, 0.8],
+            "rolling_p95_open_abs": [0.5, 0.5, 0.5, 0.5],
+            "fwd_log_return": [0.001, 0.002, 0.0015, 0.0005],  # all positive
+        }
+    )
+    out = aggregate_open_imbalance_cells(
+        df,
+        signal_kind="open",
+        percentile_cutoff=0.95,
+        taker_fee_bps_per_side=4.0,
+        slip_bps=0.0,
+    )
+    assert len(out) == 1
+    row = out.iloc[0]
+    # All windows extreme (|0.8| > 0.5)
+    assert int(row["n_extreme_windows"]) == 4
+    # All signed returns positive
+    assert float(row["frac_positive_signed_return_extreme"]) == 1.0
+    # Mean signed return = mean fwd_return * 1e4 (positive direction)
+    expected_mean_bps = float(np.mean([0.001, 0.002, 0.0015, 0.0005])) * 1e4
+    assert abs(float(row["mean_signed_return_extreme"]) - expected_mean_bps) < 1e-6
+
+
+def test_aggregate_open_imbalance_negative_signal_negative_return_positive_pnl() -> (
+    None
+):
+    """When imbalance is in the NEGATIVE tail (signal < -p95), strategy goes
+    SHORT. Negative fwd_return × short position = positive signed PnL."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * 3,
+            "horizon": [100] * 3,
+            "open_imbalance": [-0.8, -0.9, -0.7],
+            "rolling_p95_open_abs": [0.5, 0.5, 0.5],
+            "fwd_log_return": [-0.001, -0.002, -0.0015],  # all negative
+        }
+    )
+    out = aggregate_open_imbalance_cells(
+        df,
+        signal_kind="open",
+        percentile_cutoff=0.95,
+        taker_fee_bps_per_side=4.0,
+        slip_bps=0.0,
+    )
+    row = out.iloc[0]
+    assert int(row["n_extreme_windows"]) == 3
+    # Signed return = sign(imbalance) × fwd_return = (-1) × (-) = +
+    assert float(row["frac_positive_signed_return_extreme"]) == 1.0
+    # Mean signed return: mean(|fwd_return|) * 1e4
+    expected = float(np.mean([0.001, 0.002, 0.0015])) * 1e4
+    assert abs(float(row["mean_signed_return_extreme"]) - expected) < 1e-6
+
+
+def test_aggregate_open_imbalance_below_cutoff_excluded() -> None:
+    """Windows where |signal| <= rolling_p95 are NOT in the extreme regime —
+    they should be excluded from the aggregation (n_extreme_windows counts
+    only the tail)."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * 5,
+            "horizon": [100] * 5,
+            "open_imbalance": [0.1, 0.2, 0.3, 0.8, 0.9],
+            "rolling_p95_open_abs": [0.5] * 5,
+            "fwd_log_return": [0.001] * 5,
+        }
+    )
+    out = aggregate_open_imbalance_cells(
+        df,
+        signal_kind="open",
+        percentile_cutoff=0.95,
+        taker_fee_bps_per_side=4.0,
+        slip_bps=0.0,
+    )
+    row = out.iloc[0]
+    # Only windows 3,4 are extreme (|0.8|, |0.9| > 0.5)
+    assert int(row["n_extreme_windows"]) == 2
+    assert int(row["n_total_windows"]) == 5
+    assert abs(float(row["extreme_frequency"]) - 0.4) < 1e-9
+
+
+def test_aggregate_open_imbalance_extreme_freq_math() -> None:
+    """Sanity: 1 of 100 windows extreme → extreme_frequency = 0.01."""
+    n = 100
+    imb = np.zeros(n)
+    imb[0] = 0.99  # one strong-long extreme
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * n,
+            "horizon": [100] * n,
+            "open_imbalance": imb,
+            "rolling_p95_open_abs": np.full(n, 0.5),
+            "fwd_log_return": np.full(n, 0.001),
+        }
+    )
+    out = aggregate_open_imbalance_cells(
+        df,
+        signal_kind="open",
+        percentile_cutoff=0.95,
+        taker_fee_bps_per_side=4.0,
+        slip_bps=0.0,
+    )
+    row = out.iloc[0]
+    assert int(row["n_extreme_windows"]) == 1
+    assert int(row["n_total_windows"]) == 100
+    assert abs(float(row["extreme_frequency"]) - 0.01) < 1e-9
+
+
+def test_aggregate_open_imbalance_headroom_subtracts_round_trip_cost() -> None:
+    """headroom_extreme = |mean_signed_return_extreme| - (2 × fee + 2 × slip).
+
+    With fee=4bp, slip=0bp, mean_signed_return=10bp → headroom = 10 - 8 = 2 bp.
+    """
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * 2,
+            "horizon": [100] * 2,
+            "open_imbalance": [0.8, 0.8],
+            "rolling_p95_open_abs": [0.5, 0.5],
+            "fwd_log_return": [0.001, 0.001],  # 10 bp each
+        }
+    )
+    out = aggregate_open_imbalance_cells(
+        df,
+        signal_kind="open",
+        percentile_cutoff=0.95,
+        taker_fee_bps_per_side=4.0,
+        slip_bps=0.0,
+    )
+    row = out.iloc[0]
+    # mean_signed_return_extreme = 10 bp; headroom = 10 - 8 = 2 bp
+    assert abs(float(row["mean_signed_return_extreme"]) - 10.0) < 1e-6
+    assert abs(float(row["headroom_extreme_bps"]) - 2.0) < 1e-6
+
+
+def test_aggregate_open_imbalance_returns_zero_extreme_when_none_in_tail() -> None:
+    """If no window crosses the cutoff, returned cell has n_extreme=0 and
+    NaN aggregations rather than crashing."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["BTC"] * 3,
+            "horizon": [100] * 3,
+            "open_imbalance": [0.1, 0.2, 0.3],  # all below 0.5
+            "rolling_p95_open_abs": [0.5] * 3,
+            "fwd_log_return": [0.001, 0.001, 0.001],
+        }
+    )
+    out = aggregate_open_imbalance_cells(
+        df,
+        signal_kind="open",
+        percentile_cutoff=0.95,
+        taker_fee_bps_per_side=4.0,
+        slip_bps=0.0,
+    )
+    row = out.iloc[0]
+    assert int(row["n_extreme_windows"]) == 0
+    assert int(row["n_total_windows"]) == 3
+    assert float(row["extreme_frequency"]) == 0.0
+    assert np.isnan(float(row["mean_signed_return_extreme"]))
+    assert np.isnan(float(row["frac_positive_signed_return_extreme"]))
