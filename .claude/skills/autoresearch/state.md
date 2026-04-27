@@ -8,7 +8,25 @@
 - Primary metric: representation quality (probing tasks, cluster analysis, balanced accuracy at ALL horizons)
 - Compute cap: 1 H100-day before evaluation gates
 
-## Current State (2026-04-26, PM — post Step 4 Gate 2 FAIL)
+## Current State (2026-04-27 — PROGRAM AT END-STATE; user goal = useful tape repr → A; cross-symbol re-pretrain is the load-bearing experiment)
+
+**Goal (user-stated 2026-04-27):** "figure out a model that learns useful tape representations and leads to A" where A = profitable paper-trading.
+
+**Where we are:** Program reaches publishable end-state. Current encoder cannot ladder to A (council unanimous: +1pp at H500 against 6bp Pacifica fees + N=5 DSR is fee-blocked at every horizon). **Two clean options:**
+
+- **Option α (close program):** Publish Gate 1/2/4 + calibration discovery + per-horizon table + RankMe + Path D writeup as the research finding. Headline: *"+1pp linearly-extractable direction signal at H500, temporally stable, sub-fee under DEX perp realism."* Goal-A abandoned for this stack. `docs/experiments/step4-program-end-state.md` (commit `23517fc`) is the publishable artifact.
+
+- **Option β (cross-symbol re-pretrain):** Fresh spec from scratch (NOT a continuation of post-Gate-2 pre-reg per c-5's STOP A clause). Council-4's path C levers: widen `LIQUID_CONTRASTIVE_SYMBOLS` 6→12-15 (still excluding AVAX held-out + memecoins KBONK/KPEPE/PENGU), anneal soft-positive weight 0.5→1.0, add cluster-cohesion ≥+0.10 as a TRAINING-TIME early-stop diagnostic. C-2's add-on: replace direction-MEM with execution-cost-aware objective (predict signed_and_thresholded_mid_move conditional on size > tradeable_min). Pre-register cohesion delta ≥+0.10 as binding training-time gate AND ≥+5pp accuracy at H100 over RP control as binding evaluation gate (c-2-derived from fee-floor arithmetic: gross edge ~0.7bps × 100 trades = 70bps absorbing 60bps fees + 10bps slippage). Cost: ~6h MPS + ~2 weeks evaluation + amendment-budget cost.
+
+**Joint probability of Option β laddering to A** (council estimate): ~10-25% under generous assumptions. Three conditions must all hit: (i) cohesion delta improves to ≥+0.10 (~50-60%), (ii) new edge size ≥+5pp at H100 over RP (~30-50%, NOT automatic — Cont-de Larrard says universalizing could reduce per-symbol signal), (iii) fine-tuning works on the new geometry (~70% conditional).
+
+**Cross-symbol problem is the SINGLE MOST ACTIONABLE LEVER the program identified.** It's the upstream cause of: (1) Gate 2 fine-tuning failure (no shared trunk for fine-tuning to specialize), (2) +1pp ceiling (LR can only extract per-symbol locally-readable signal), (3) the unresolved interpretation between "encoder reads tape" vs "encoder reads per-symbol direction priors" (multi-probe battery couldn't decide because labels never fired). If user pursues Option β, this is the load-bearing experiment, not the trading evaluation.
+
+**Awaiting user decision on next session: Option α (close + publish) vs Option β (fresh cross-symbol re-pretrain spec).**
+
+---
+
+## Previous state — 2026-04-26 PM (preserved for audit)
 
 **Steps 0, 1, 2, 3 complete. Gate 1 PASSES on Feb + Mar H500. Gate 3 triage: EXONERATED. Cluster cohesion: UNEARNED UNIVERSALITY. Spec amendment v2 RATIFIED. Step 4 fine-tuning FAILED Gate 2 on all three binding criteria, both held-out months.**
 
