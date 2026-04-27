@@ -36,6 +36,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # When invoked as `python scripts/cascade_adapter_probe.py`, the project root
 # is not on sys.path — so the `from scripts.random_init_probe import ...` line
@@ -249,6 +250,7 @@ def _train_adapter_one_fold(
     rng = np.random.default_rng(seed + 1000)
     tracker = EarlyStopTracker(patience=patience)
     loss_history: list[float] = []
+    epoch = -1  # initialized so n_epochs is well-defined when max_epochs == 0
 
     for epoch in range(max_epochs):
         head.train()
@@ -295,7 +297,7 @@ def _train_adapter_one_fold(
         final_logits = head(Xte_t).cpu().numpy().reshape(-1)
     final_proba = 1.0 / (1.0 + np.exp(-final_logits))
 
-    info = dict(
+    info: dict[str, Any] = dict(
         best_epoch=tracker.best_epoch,
         best_val_auc=tracker.best_val_auc,
         n_epochs=epoch + 1,
@@ -323,7 +325,12 @@ def decision_tier_phase1(
       'GREENLIGHT_FINETUNE_OR_PRETRAIN'  — adapter ≥ flat + 0.02 AND delta_lo > 0
       'KILL_ARCH_BOTTLENECK_CONFIRMED'   — adapter < flat by > 0.02 (point estimate)
       'MATCHED_FLAT'                     — otherwise (CI overlaps zero / small delta)
+
+    `delta_hi` is part of the API contract (CI upper bound) for symmetry with
+    `delta_lo`; the current decision rule does not consume it but is retained
+    so callers can pass the full CI tuple unmodified.
     """
+    _ = delta_hi  # intentionally unused in the current decision rule
     delta = auc_adapter_median - auc_flat
     if delta >= 0.02 and delta_lo > 0:
         return "GREENLIGHT_FINETUNE_OR_PRETRAIN"

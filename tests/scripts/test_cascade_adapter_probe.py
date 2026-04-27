@@ -14,7 +14,6 @@ Council-6 audit checklist:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 import torch
 
 # ---------------------------------------------------------------------------
