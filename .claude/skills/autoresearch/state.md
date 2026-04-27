@@ -1,5 +1,31 @@
 # Research State
 
+## Status (2026-04-27 PM-late III — v2 PROGRAM CLOSED)
+
+**Goal-A v2 closed 2026-04-27 PM-late.** Tag (recommended): `v2-program-closed`.
+End-state document: `docs/experiments/goal-a-v2-program-end-state.md`.
+
+**Closure verdict (council-5 PR3, sanity check on v3 pivot):** taker-side
+economics ALREADY audited (`headroom_table.csv`: 0/300 survivors at v1's
+0.55 accuracy under taker fees); the strongest Pacifica-unique conditional
+test (`open_imbalance.md`, conditioning on `is_open`) failed at chance;
+`cascade_direction.md` returned -12.86bp/trigger from the highest-conviction
+pre-filter. Three independent conditional-subpopulation tests, three
+negatives. Combined with the consumed April holdout and a 400-cell search
+space (25 sym × 2 cause × 2 event_type × 4 horizons), no v3 feasibility
+audit can produce a falsifiable GO signal on already-touched data.
+
+**Re-entry conditions** (any one suffices to reopen):
+1. Fresh data accrual ≥ 30 days post-Apr-26 (rebuilds untouched holdout).
+2. A Pacifica-unique conditional bucket clears frac_positive ≥ 0.595 at
+   n ≥ 400 on ≥ 5 symbols, Bonferroni-corrected, on FRESH data.
+3. Venue fee/execution schedule changes (e.g. taker-protected modes).
+4. A new label class with BOTH (a) plausible mechanism for being learnable
+   from raw tape (not flat features) AND (b) execution path that doesn't
+   trigger Maker's Dilemma.
+
+Until at least one is true, **no further Goal-A compute warranted**.
+
 ## Status (2026-04-27 PM-late II — Phase 1 complete, KILL verdict — encoder retrain dead)
 
 **Phase 1 result (commit `7705319`).** Council-6's 5b non-linear adapter test on
@@ -249,3 +275,4 @@ Council needs to weigh in (council-5, council-6, possibly council-4).
 - Holdout consumption commit: pending (cache rebuild + `--consume-holdout` flag in this session).
 - Goal-A v2 Phase 0 commits: `64e3587` (impl), `694d14c` (cleanups), `3110abc` (run + result).
 - Goal-A v2 Phase 1 commits: `ae821f7` (impl), `bc4ef3b` (cleanups), `7705319` (run + result).
+- Goal-A v2 closure: `docs/experiments/goal-a-v2-program-end-state.md`. Recommended tag `v2-program-closed`.
