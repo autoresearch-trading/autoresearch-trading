@@ -2569,6 +2569,34 @@ def write_open_imbalance_md(
         "illiquid alts slippage explodes (median 19+ bp/side per the "
         "headroom_table.csv).\n"
     )
+    body.append(
+        "* **Saturation on illiquid alts.** On CRV, KBONK, KPEPE, LDO and "
+        "similar low-volume symbols, `open_imbalance` saturates at ±1 most "
+        "of the time (most 200-event windows have open flow on ONLY one "
+        "side because the open-flow event count per window is small). This "
+        "drives rolling P95(|signal|) to 1.0 — and the strict "
+        "`|signal| > rolling_p95` mask then excludes EVERY window (since "
+        "|signal| is bounded by 1, equality at saturation never satisfies "
+        "strict >). These symbols therefore have `n_extreme_windows = 0` "
+        "and no tail-regime statistics. The extreme regime *is not "
+        "separable* from the bulk on these symbols at the bounded-imbalance "
+        "resolution we have. A higher-resolution proxy (e.g. rolling z-score "
+        "of signed log-notional) would distinguish degree of saturation; the "
+        "ratio form chosen here cannot. For the verdict this does not "
+        "matter — the headline cell already shows chance-level performance "
+        "— but downstream uses should be aware.\n"
+    )
+    body.append(
+        "* **Statistical power of headline frac_positive.** At the headline "
+        "cell the per-symbol `n_extreme_windows` ranges from 42 (2Z) to "
+        "781 (BTC). The 2σ binomial standard error on `frac_positive` at "
+        "n=60 is ±13pp; at n=200 is ±7pp; at n=781 is ±3.5pp. Symbols "
+        "claiming `frac_positive` between 0.55 and 0.60 with n<200 are "
+        "NOT distinguishable from chance at 95% confidence. Of the 14 "
+        "headline survivors, only WLFI@H100 (n=123, frac=0.569) and ENA@H500 "
+        "(n=78 at P99, frac=0.558) are even nominally above 0.55, and "
+        "neither is statistically distinguishable from chance.\n"
+    )
 
     out_path.write_text("\n".join(body))
 
