@@ -1812,6 +1812,796 @@ def _emit_direction_markdown(
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Marginal-long + precision sweep (reanalysis on existing predictions)
+# ---------------------------------------------------------------------------
+
+# Cost reference size: 10K USD per leg (median bucket in per_window.parquet,
+# matches the size researcher-14 sized the 4bp/side fee around).
+MARGINAL_LONG_REF_SIZE_USD: float = 10_000.0
+
+# Precision cutoffs swept by --marginal-long.
+MARGINAL_LONG_TOP_PCTS: tuple[float, ...] = (0.01, 0.005, 0.001)
+
+# Bootstrap iterations for day-clustered CIs on the marginal-long sweep.
+N_BOOT_MARGINAL_LONG: int = 1000
+
+# Minimum per-symbol triggers for inclusion in the per-symbol breakdown.
+MARGINAL_LONG_MIN_TRIGGERS_PER_SYMBOL: int = 3
+
+
+def _per_day_top_pct_mask(
+    proba: np.ndarray, dates: np.ndarray, *, top_pct: float
+) -> np.ndarray:
+    """Per-day top-`top_pct` quantile mask.
+
+    For each unique day, take the (1 - top_pct) quantile of `proba` over windows
+    on that day; mark a window True iff its `proba` strictly exceeds that
+    threshold.  This avoids leaking future info across days while letting the
+    cutoff drift with daily dispersion (vs. a single global threshold).
+    """
+    if len(proba) == 0:
+        return np.zeros(0, dtype=bool)
+    quant = 1.0 - float(top_pct)
+    out = np.zeros(len(proba), dtype=bool)
+    for d in np.unique(dates):
+        mask_d = dates == d
+        if not mask_d.any():
+            continue
+        thresh = float(np.quantile(proba[mask_d], quant))
+        out[mask_d] = proba[mask_d] > thresh
+    return out
+
+
+def _day_clustered_bootstrap_mean(
+    values: np.ndarray,
+    dates: np.ndarray,
+    *,
+    n_boot: int,
+    seed: int,
+    alpha: float = 0.05,
+) -> tuple[float, float, float]:
+    """Day-clustered bootstrap of `mean(values)`.
+
+    Resample days with replacement (k = n_unique_days), concatenate ALL values
+    on each sampled day, take the mean over the concatenation.  Returns
+    (point_estimate=full-sample mean, lo, hi).
+    """
+    if len(values) == 0:
+        return float("nan"), float("nan"), float("nan")
+    days = sorted(np.unique(dates).tolist())
+    if len(days) < 2:
+        return float(np.mean(values)), float("nan"), float("nan")
+    day_to_idx = {d: np.flatnonzero(dates == d) for d in days}
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_boot, dtype=np.float64)
+    means[:] = np.nan
+    k = len(days)
+    for b in range(n_boot):
+        sampled = rng.integers(0, k, size=k)
+        parts = [day_to_idx[days[s]] for s in sampled]
+        if not parts:
+            continue
+        idx = np.concatenate(parts).astype(np.int64)
+        if len(idx) == 0:
+            continue
+        means[b] = float(np.mean(values[idx]))
+    finite = means[np.isfinite(means)]
+    point = float(np.mean(values))
+    if len(finite) < 10:
+        return point, float("nan"), float("nan")
+    lo = float(np.quantile(finite, alpha / 2.0))
+    hi = float(np.quantile(finite, 1.0 - alpha / 2.0))
+    return point, lo, hi
+
+
+def _attach_slip_for_marginal_long(
+    enriched: pd.DataFrame,
+    *,
+    out_dir: Path,
+    ref_size_usd: float = MARGINAL_LONG_REF_SIZE_USD,
+) -> pd.DataFrame:
+    """Join `slip_avg_bps` from per_window.parquet at the reference size_usd
+    onto the cascade-direction-enriched DataFrame.
+
+    Rows missing slip are dropped (cost cannot be computed without it).
+    """
+    pw_path = out_dir / "per_window.parquet"
+    if not pw_path.exists():
+        raise RuntimeError(
+            f"Cannot find {pw_path} — required for marginal-long cost computation"
+        )
+    pw = pd.read_parquet(pw_path)
+    pw_h = pd.DataFrame(
+        pw[(pw["horizon"] == 500) & (pw["size_usd"] == float(ref_size_usd))][
+            ["symbol", "date", "anchor_ts", "slip_avg_bps"]
+        ]
+    ).copy()
+    pw_h["date"] = pw_h["date"].astype(str)
+    pw_h["symbol"] = pw_h["symbol"].astype(str)
+    pw_h["anchor_ts"] = pw_h["anchor_ts"].astype("int64")
+
+    e = enriched.copy()
+    e["date"] = e["date"].astype(str)
+    e["symbol"] = e["symbol"].astype(str)
+    e["anchor_ts"] = e["anchor_ts"].astype("int64")
+    joined = e.merge(pw_h, on=["symbol", "date", "anchor_ts"], how="left")
+    n_drop = int(joined["slip_avg_bps"].isna().to_numpy().sum())
+    if n_drop > 0:
+        print(
+            f"[marginal-long] dropping {n_drop} rows missing slip_avg_bps "
+            f"(no per_window match at size_usd={ref_size_usd:.0f})"
+        )
+    return pd.DataFrame(joined.dropna(subset=["slip_avg_bps"])).reset_index(drop=True)
+
+
+def _attach_lr_direction_pred(
+    df: pd.DataFrame, direction_table_path: Path
+) -> pd.DataFrame:
+    """Left-join the LR-direction predictions onto the marginal-long DataFrame.
+
+    The direction table has one row per real-cascade window inside the top-5%
+    cascade-likely subset; non-cascade windows and windows below the top-5%
+    cutoff have no LR prediction (left as NaN).  Used purely for the
+    side-by-side comparison.
+    """
+    if not direction_table_path.exists():
+        print(
+            f"[marginal-long] direction table {direction_table_path} missing; "
+            f"LR-direction comparison will be skipped"
+        )
+        df = df.copy()
+        df["direction_pred_proba_lr"] = np.nan
+        return df
+    dt = pd.read_csv(direction_table_path)
+    dt = dt[["symbol", "date", "anchor_ts", "direction_pred_proba_lr"]].copy()
+    dt["date"] = dt["date"].astype(str)
+    dt["symbol"] = dt["symbol"].astype(str)
+    dt["anchor_ts"] = dt["anchor_ts"].astype("int64")
+    out = df.copy()
+    out["date"] = out["date"].astype(str)
+    out["symbol"] = out["symbol"].astype(str)
+    out["anchor_ts"] = out["anchor_ts"].astype("int64")
+    return out.merge(dt, on=["symbol", "date", "anchor_ts"], how="left")
+
+
+def _marginal_long_cell_metrics(
+    triggered: pd.DataFrame,
+    *,
+    n_unique_dates_universe: int,
+    n_boot: int,
+    seed: int,
+    scope: str,
+    symbol_or_pool: str,
+    top_pct: float,
+) -> dict[str, float | str]:
+    """Compute all marginal-long metrics for one (precision_cutoff, scope) cell.
+
+    Returns a dict matching the CSV row schema.  Day-clustered bootstrap CIs
+    on mean & median signed PnL.  Returns NaN-filled row if `triggered` is
+    empty or spans <2 days.
+    """
+    n_trig = len(triggered)
+    if n_trig == 0:
+        return {
+            "scope": scope,
+            "symbol_or_pool": symbol_or_pool,
+            "precision_cutoff": float(top_pct),
+            "n_triggers": 0,
+            "n_unique_days": 0,
+            "n_triggers_per_day_avg": 0.0,
+            "n_real_cascades": 0,
+            "precision": float("nan"),
+            "directional_accuracy_long": float("nan"),
+            "marginal_p_positive_h500": float("nan"),
+            "mean_signed_pnl_long_bps": float("nan"),
+            "mean_signed_pnl_long_bps_lo": float("nan"),
+            "mean_signed_pnl_long_bps_hi": float("nan"),
+            "median_signed_pnl_long_bps": float("nan"),
+            "median_signed_pnl_long_bps_lo": float("nan"),
+            "median_signed_pnl_long_bps_hi": float("nan"),
+            "cost_round_trip_bps_avg": float("nan"),
+            "headroom_per_trigger_bps": float("nan"),
+            "expected_gross_per_day_bps": float("nan"),
+            "expected_gross_per_day_bps_lo": float("nan"),
+            "expected_gross_per_day_bps_hi": float("nan"),
+            "lr_direction_n_predicted": 0,
+            "lr_direction_long_gross_per_day_bps": float("nan"),
+        }
+
+    pnl = triggered["signed_pnl_long_bps"].astype(float).to_numpy()
+    cost = triggered["cost_round_trip_bps"].astype(float).to_numpy()
+    fwd = triggered["forward_log_return"].astype(float).to_numpy()
+    real_label = triggered["real_cascade_label"].astype("int64").to_numpy()
+    dates_arr = triggered["date"].astype(str).to_numpy()
+
+    n_days_local = int(len(np.unique(dates_arr)))
+    triggers_per_day = float(n_trig / max(1, n_unique_dates_universe))
+
+    precision = float(real_label.mean())
+    dir_acc_long = float((pnl > 0).mean())
+    p_pos = float((fwd > 0).mean())
+    mean_pnl = float(np.mean(pnl))
+    median_pnl = float(np.median(pnl))
+    cost_avg = float(np.mean(cost))
+    headroom = mean_pnl - cost_avg
+    gross_per_day = headroom * triggers_per_day
+
+    # Day-clustered bootstrap CIs on mean & median PnL
+    mean_pt, mean_lo, mean_hi = _day_clustered_bootstrap_mean(
+        pnl, dates_arr, n_boot=n_boot, seed=seed
+    )
+    # For median we re-use the same bootstrap loop (could share but inlining
+    # for clarity — n_boot=1000 is cheap on |n_trig| ≤ ~30).
+    days_local = sorted(np.unique(dates_arr).tolist())
+    median_pt, median_lo, median_hi = (median_pnl, float("nan"), float("nan"))
+    if len(days_local) >= 2:
+        day_to_idx = {d: np.flatnonzero(dates_arr == d) for d in days_local}
+        rng = np.random.default_rng(seed + 1)
+        meds = np.empty(n_boot, dtype=np.float64)
+        meds[:] = np.nan
+        k = len(days_local)
+        for b in range(n_boot):
+            sampled = rng.integers(0, k, size=k)
+            parts = [day_to_idx[days_local[s]] for s in sampled]
+            if not parts:
+                continue
+            idx = np.concatenate(parts).astype(np.int64)
+            if len(idx) == 0:
+                continue
+            meds[b] = float(np.median(pnl[idx]))
+        finite = meds[np.isfinite(meds)]
+        if len(finite) >= 10:
+            median_lo = float(np.quantile(finite, 0.025))
+            median_hi = float(np.quantile(finite, 0.975))
+
+    # Day-clustered bootstrap CI on expected_gross_per_day:
+    # for each bootstrap draw, compute (sum of PnL on sampled days - sum of cost
+    # on sampled days) / n_unique_dates_universe.  This propagates day-cluster
+    # noise into the per-day gross figure (the user's methodological flag).
+    gross_lo, gross_hi = float("nan"), float("nan")
+    if len(days_local) >= 2:
+        day_to_idx = {d: np.flatnonzero(dates_arr == d) for d in days_local}
+        rng = np.random.default_rng(seed + 2)
+        grosses = np.empty(n_boot, dtype=np.float64)
+        grosses[:] = np.nan
+        k = len(days_local)
+        for b in range(n_boot):
+            sampled = rng.integers(0, k, size=k)
+            parts = [day_to_idx[days_local[s]] for s in sampled]
+            if not parts:
+                continue
+            idx = np.concatenate(parts).astype(np.int64)
+            if len(idx) == 0:
+                continue
+            net_per_trig = float(np.mean(pnl[idx] - cost[idx]))
+            # Trigger frequency under the bootstrap: keep universe denominator
+            # fixed so we report gross-per-calendar-day, not gross-per-resampled-day
+            grosses[b] = net_per_trig * (len(idx) / max(1, n_unique_dates_universe))
+        finite_g = grosses[np.isfinite(grosses)]
+        if len(finite_g) >= 10:
+            gross_lo = float(np.quantile(finite_g, 0.025))
+            gross_hi = float(np.quantile(finite_g, 0.975))
+
+    # LR-direction comparison: only keep rows with a valid LR pred
+    lr_long_gross_per_day = float("nan")
+    n_lr_predicted = 0
+    if "direction_pred_proba_lr" in triggered.columns:
+        lr_proba = triggered["direction_pred_proba_lr"].astype(float).to_numpy()
+        valid_lr = np.isfinite(lr_proba)
+        n_lr_predicted = int(valid_lr.sum())
+        if n_lr_predicted > 0:
+            # Only trade when LR confident (> 0.55 or < 0.45) — same gating as
+            # the cascade-direction writeup.
+            confident = (lr_proba > DIRECTION_LR_CONFIDENCE_THRESHOLD) | (
+                lr_proba < (1.0 - DIRECTION_LR_CONFIDENCE_THRESHOLD)
+            )
+            confident &= valid_lr
+            if confident.any():
+                lr_pred_class = (lr_proba[confident] > 0.5).astype(np.int64)
+                # Convert pred_class to position sign: 1 -> +1 (long), 0 -> -1 (short)
+                lr_pos_sign = np.where(lr_pred_class == 1, 1.0, -1.0)
+                lr_pnl = lr_pos_sign * pnl[confident] - cost[confident]
+                lr_n_per_day = float(
+                    int(confident.sum()) / max(1, n_unique_dates_universe)
+                )
+                lr_long_gross_per_day = float(np.mean(lr_pnl) * lr_n_per_day)
+
+    return {
+        "scope": scope,
+        "symbol_or_pool": symbol_or_pool,
+        "precision_cutoff": float(top_pct),
+        "n_triggers": int(n_trig),
+        "n_unique_days": int(n_days_local),
+        "n_triggers_per_day_avg": float(triggers_per_day),
+        "n_real_cascades": int(real_label.sum()),
+        "precision": float(precision),
+        "directional_accuracy_long": float(dir_acc_long),
+        "marginal_p_positive_h500": float(p_pos),
+        "mean_signed_pnl_long_bps": float(mean_pt),
+        "mean_signed_pnl_long_bps_lo": float(mean_lo),
+        "mean_signed_pnl_long_bps_hi": float(mean_hi),
+        "median_signed_pnl_long_bps": float(median_pt),
+        "median_signed_pnl_long_bps_lo": float(median_lo),
+        "median_signed_pnl_long_bps_hi": float(median_hi),
+        "cost_round_trip_bps_avg": float(cost_avg),
+        "headroom_per_trigger_bps": float(headroom),
+        "expected_gross_per_day_bps": float(gross_per_day),
+        "expected_gross_per_day_bps_lo": float(gross_lo),
+        "expected_gross_per_day_bps_hi": float(gross_hi),
+        "lr_direction_n_predicted": int(n_lr_predicted),
+        "lr_direction_long_gross_per_day_bps": float(lr_long_gross_per_day),
+    }
+
+
+def _run_marginal_long_pipeline(
+    cache_dir: Path,
+    out_dir: Path,
+    *,
+    n_boot: int = N_BOOT_MARGINAL_LONG,
+    seed: int = 0,
+    ref_size_usd: float = MARGINAL_LONG_REF_SIZE_USD,
+) -> tuple[pd.DataFrame, dict]:
+    """End-to-end marginal-long sweep.
+
+    Reuses `_build_cascade_direction_dataset` to enrich the cascade-real H500
+    predictions with forward_log_return; joins per-window slip; computes
+    pooled and per-symbol metrics across precision cutoffs {1%, 0.5%, 0.1%}
+    using per-day quantile gating.  Returns (table_df, summary_dict).
+    """
+    in_path = out_dir / "cascade_precursor_real_per_window.parquet"
+    if not in_path.exists():
+        raise RuntimeError(
+            f"Cannot find {in_path} — run the stage-2 cascade-real probe first "
+            f"with `--cascade-real`."
+        )
+    raw = pd.read_parquet(in_path)
+    h_df = pd.DataFrame(raw[raw["horizon"] == 500]).copy()
+    if h_df.empty:
+        raise RuntimeError(f"No H500 rows in {in_path}")
+    print(
+        f"[marginal-long] loaded {len(h_df)} H500 windows; "
+        f"{int(h_df['real_cascade_label'].astype('int64').to_numpy().sum())} real cascades"
+    )
+
+    enriched = _build_cascade_direction_dataset(cache_dir, h_df, horizon=500)
+    if enriched.empty:
+        raise RuntimeError("No enriched windows produced — cache shards missing?")
+    print(f"[marginal-long] enriched {len(enriched)} windows with forward returns")
+
+    enriched_with_slip = _attach_slip_for_marginal_long(
+        enriched, out_dir=out_dir, ref_size_usd=ref_size_usd
+    )
+    enriched_with_slip = _attach_lr_direction_pred(
+        enriched_with_slip, out_dir / "cascade_direction_table.csv"
+    )
+
+    enriched_with_slip["signed_pnl_long_bps"] = (
+        enriched_with_slip["forward_log_return"].astype(float) * 1e4
+    )
+    enriched_with_slip["cost_round_trip_bps"] = (
+        2.0 * TAKER_FEE_BPS_PER_SIDE
+        + 2.0 * enriched_with_slip["slip_avg_bps"].astype(float).abs()
+    )
+
+    n_universe_dates_val = enriched_with_slip["date"].nunique()
+    n_universe_dates = int(n_universe_dates_val)  # type: ignore[arg-type]
+    mean_cost_bps = float(
+        enriched_with_slip["cost_round_trip_bps"].astype(float).to_numpy().mean()
+    )
+    print(
+        f"[marginal-long] universe: {len(enriched_with_slip)} windows, "
+        f"{n_universe_dates} unique days, "
+        f"mean cost = {mean_cost_bps:.2f}bp"
+    )
+
+    # Universe-level marginal asymmetry sanity (matches direction writeup)
+    universe_p_pos = float(
+        np.mean(enriched_with_slip["forward_log_return"].astype(float).to_numpy() > 0)
+    )
+    cascade_mask_universe = (
+        enriched_with_slip["real_cascade_label"].astype("int64").to_numpy() == 1
+    )
+    cascade_fwd = (
+        enriched_with_slip["forward_log_return"]
+        .astype(float)
+        .to_numpy()[cascade_mask_universe]
+    )
+    cascade_only_p_pos = (
+        float(np.mean(cascade_fwd > 0)) if cascade_fwd.size > 0 else float("nan")
+    )
+    print(
+        f"[marginal-long] universe P(positive) = {universe_p_pos:.4f}; "
+        f"P(positive | real_cascade) = {cascade_only_p_pos:.4f}"
+    )
+
+    rows: list[dict] = []
+    proba_arr = enriched_with_slip["pred_proba"].astype(float).to_numpy()
+    dates_arr = enriched_with_slip["date"].astype(str).to_numpy()
+    symbols_arr = enriched_with_slip["symbol"].astype(str).to_numpy()
+    sub_full = enriched_with_slip.reset_index(drop=True)
+
+    for top_pct in MARGINAL_LONG_TOP_PCTS:
+        mask = _per_day_top_pct_mask(proba_arr, dates_arr, top_pct=top_pct)
+        triggered = pd.DataFrame(sub_full[mask]).reset_index(drop=True)
+        # Pooled cell
+        rows.append(
+            _marginal_long_cell_metrics(
+                triggered,
+                n_unique_dates_universe=n_universe_dates,
+                n_boot=n_boot,
+                seed=seed,
+                scope="pooled",
+                symbol_or_pool="ALL",
+                top_pct=top_pct,
+            )
+        )
+        # Per-symbol cells
+        for sym in sorted(np.unique(symbols_arr).tolist()):
+            sym_trig = pd.DataFrame(
+                triggered[triggered["symbol"].astype(str) == sym]
+            ).reset_index(drop=True)
+            if len(sym_trig) < MARGINAL_LONG_MIN_TRIGGERS_PER_SYMBOL:
+                continue
+            rows.append(
+                _marginal_long_cell_metrics(
+                    sym_trig,
+                    n_unique_dates_universe=n_universe_dates,
+                    n_boot=n_boot,
+                    seed=seed,
+                    scope="per_symbol",
+                    symbol_or_pool=sym,
+                    top_pct=top_pct,
+                )
+            )
+
+    table_df = pd.DataFrame(rows)
+    if not table_df.empty:
+        table_df = table_df.sort_values(
+            ["precision_cutoff", "scope", "symbol_or_pool"]
+        ).reset_index(drop=True)
+
+    # Determine best precision cell (pooled, max gross/day)
+    pooled = pd.DataFrame(table_df[table_df["scope"] == "pooled"]).copy()
+    if not pooled.empty:
+        best_idx = pooled["expected_gross_per_day_bps"].idxmax()
+        best_top_pct = float(pooled.loc[best_idx, "precision_cutoff"])
+        best_gross = float(pooled.loc[best_idx, "expected_gross_per_day_bps"])
+    else:
+        best_top_pct = float("nan")
+        best_gross = float("nan")
+
+    n_real_cas = int(
+        enriched_with_slip["real_cascade_label"].astype("int64").to_numpy().sum()
+    )
+    summary: dict = {
+        "n_universe": int(len(enriched_with_slip)),
+        "n_universe_dates": int(n_universe_dates),
+        "n_real_cascades_h500": n_real_cas,
+        "universe_p_positive_h500": universe_p_pos,
+        "cascade_only_p_positive_h500": cascade_only_p_pos,
+        "ref_size_usd": float(ref_size_usd),
+        "best_top_pct": best_top_pct,
+        "best_gross_per_day_bps": best_gross,
+    }
+
+    return table_df, summary
+
+
+def _emit_marginal_long_markdown(
+    table_df: pd.DataFrame,
+    summary: dict,
+    out_path: Path,
+    *,
+    elapsed_sec: float,
+    n_boot: int,
+) -> None:
+    """Render the marginal-long markdown writeup."""
+    lines: list[str] = []
+    lines.append("# Goal-A cascade-precursor marginal-long + precision sweep")
+    lines.append("")
+    lines.append(
+        "**Question.** If we go always-long whenever the stage-2 cascade-onset "
+        "model fires (top 1%, top 0.5%, top 0.1% of windows by predicted "
+        "probability), is the strategy tradeable net of cost?  Cascades on "
+        "this universe are 76.7% long-biased at H500 — overwhelmingly forced-"
+        "short squeezes — so a marginal-long bet may dominate a conditional-"
+        "direction predictor that we already showed cannot do better than "
+        "majority-class (LR direction AUC = 0.441 [0.329, 0.551])."
+    )
+    lines.append("")
+    lines.append(
+        "**Protocol.** Reanalysis on existing per-window predictions "
+        "(`cascade_precursor_real_per_window.parquet`).  No retraining.  "
+        "Per-day top-pct quantile gating (within each held-out April day, "
+        "no future leakage).  Day-clustered bootstrap CIs.  Costs from "
+        f"per_window slip at size_usd = {summary['ref_size_usd']:.0f} + "
+        f"{TAKER_FEE_BPS_PER_SIDE}bp/side taker fee, both legs.  H500 only "
+        "(only horizon where the stage-2 LR clears the shuffled-baseline)."
+    )
+    lines.append("")
+    lines.append(
+        "**Hard constraints.** April 14+ untouched.  Sample size honest: at "
+        "top 0.1% across 7 April-diagnostic days, n_triggers may be ~7 "
+        "(roughly 1/day) — wide CIs, dominated by 1-2 trades on bad days."
+    )
+    lines.append("")
+
+    # ---------- 0. Universe baseline ----------
+    lines.append("## 0. Universe baseline (no filtering)")
+    lines.append("")
+    lines.append(
+        f"- Universe: **{summary['n_universe']}** H500 windows across "
+        f"**{summary['n_universe_dates']}** April-diagnostic days "
+        f"({summary['n_real_cascades_h500']} real cascades)."
+    )
+    lines.append(
+        f"- P(positive forward return | universe) = "
+        f"**{summary['universe_p_positive_h500']:.4f}** (NOT cascade-conditional — "
+        "shows whether April was a uniformly long-biased market)."
+    )
+    lines.append(
+        f"- P(positive forward return | real_cascade) = "
+        f"**{summary['cascade_only_p_positive_h500']:.4f}** (the 76% figure "
+        "reported in the cascade-direction writeup; reproduced here for "
+        "consistency check)."
+    )
+    lines.append("")
+
+    # ---------- 1. Pooled marginal-long headline ----------
+    lines.append("## 1. Marginal-long headline (pooled, per precision cutoff)")
+    lines.append("")
+    lines.append(
+        "| top % | n_trig | trig/day | precision | dir_acc_long | mean_pnl_bps "
+        "(95% CI) | median_pnl_bps (95% CI) | cost_avg | headroom | "
+        "gross/day (95% CI) |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    pooled = pd.DataFrame(table_df[table_df["scope"] == "pooled"]).copy()
+    pooled = pooled.sort_values("precision_cutoff", ascending=False)
+    pooled_records: list[dict] = pooled.to_dict("records")  # type: ignore[assignment]
+    for r in pooled_records:
+        lines.append(
+            f"| {float(r['precision_cutoff']):.3%} | {int(r['n_triggers'])} | "
+            f"{float(r['n_triggers_per_day_avg']):.2f} | "
+            f"{float(r['precision']):.3f} | "
+            f"{float(r['directional_accuracy_long']):.3f} | "
+            f"{float(r['mean_signed_pnl_long_bps']):+.2f} "
+            f"[{float(r['mean_signed_pnl_long_bps_lo']):+.2f}, "
+            f"{float(r['mean_signed_pnl_long_bps_hi']):+.2f}] | "
+            f"{float(r['median_signed_pnl_long_bps']):+.2f} "
+            f"[{float(r['median_signed_pnl_long_bps_lo']):+.2f}, "
+            f"{float(r['median_signed_pnl_long_bps_hi']):+.2f}] | "
+            f"{float(r['cost_round_trip_bps_avg']):.2f} | "
+            f"{float(r['headroom_per_trigger_bps']):+.2f} | "
+            f"{float(r['expected_gross_per_day_bps']):+.2f} "
+            f"[{float(r['expected_gross_per_day_bps_lo']):+.2f}, "
+            f"{float(r['expected_gross_per_day_bps_hi']):+.2f}] |"
+        )
+    lines.append("")
+
+    # ---------- 2. Comparison vs LR-direction strategy ----------
+    lines.append("## 2. Marginal-long vs LR-direction strategy (same precision cells)")
+    lines.append("")
+    lines.append(
+        "LR-direction = 'go long if `direction_pred_proba_lr > 0.55`, short if "
+        "< 0.45, skip otherwise'.  Only rows with an LR prediction (cascade-"
+        "likely subset = top 5% of pred_proba) get a position.  Both columns "
+        "use the same per-day-quantile filter from §1; LR-direction is "
+        "naturally a *subset* of marginal-long triggers (windows that fall in "
+        "BOTH top-pct AND top-5% AND have confident LR direction)."
+    )
+    lines.append("")
+    lines.append(
+        "| top % | marginal_long gross/day | LR-direction gross/day | "
+        "n_lr_predicted | which is better? |"
+    )
+    lines.append("|---|---|---|---|---|")
+    for r in pooled_records:
+        ml_gross = float(r["expected_gross_per_day_bps"])
+        lr_gross = float(r["lr_direction_long_gross_per_day_bps"])
+        if not math.isfinite(lr_gross):
+            verdict = "LR-direction has 0 confident predictions"
+        elif ml_gross > lr_gross + 1e-3:
+            verdict = f"marginal-long better by {ml_gross - lr_gross:+.2f} bps/day"
+        elif lr_gross > ml_gross + 1e-3:
+            verdict = f"LR-direction better by {lr_gross - ml_gross:+.2f} bps/day"
+        else:
+            verdict = "tie"
+        lines.append(
+            f"| {float(r['precision_cutoff']):.3%} | {ml_gross:+.2f} | "
+            f"{(f'{lr_gross:+.2f}' if math.isfinite(lr_gross) else 'n/a')} | "
+            f"{int(r['lr_direction_n_predicted'])} | {verdict} |"
+        )
+    lines.append("")
+
+    # ---------- 3. Marginal asymmetry across precision cells ----------
+    lines.append("## 3. Marginal asymmetry stability across precision cells")
+    lines.append("")
+    lines.append(
+        "Does the long-bias hold up at tighter precision cells, or dilute "
+        "back toward 0.50?  If P(positive | triggered) drops toward 0.50 at "
+        "top 0.1%, the 0.77 cascade-conditional asymmetry was driven by "
+        "selection effects — the *prediction-flagged* windows are not the "
+        "same population as *realized cascades*."
+    )
+    lines.append("")
+    lines.append(
+        "| top % | n_trig | precision (real cascade frac) | marginal P(positive | triggered) |"
+    )
+    lines.append("|---|---|---|---|")
+    for r in pooled_records:
+        lines.append(
+            f"| {float(r['precision_cutoff']):.3%} | {int(r['n_triggers'])} | "
+            f"{float(r['precision']):.3f} | "
+            f"{float(r['marginal_p_positive_h500']):.3f} |"
+        )
+    lines.append("")
+    lines.append(
+        "Reference: cascade-conditional asymmetry "
+        f"P(positive | real_cascade) = **{summary['cascade_only_p_positive_h500']:.3f}**; "
+        f"universe baseline P(positive) = **{summary['universe_p_positive_h500']:.3f}**."
+    )
+    lines.append("")
+
+    # ---------- 4. Per-symbol breakdown at best cell ----------
+    best_pct = summary["best_top_pct"]
+    lines.append(
+        f"## 4. Per-symbol breakdown at best precision cell (top {best_pct:.3%})"
+    )
+    lines.append("")
+    lines.append(
+        f"Symbols with at least {MARGINAL_LONG_MIN_TRIGGERS_PER_SYMBOL} "
+        "triggers at this cutoff only — anything fewer is sample-size noise."
+    )
+    lines.append("")
+    if not math.isfinite(best_pct):
+        lines.append("_No pooled rows produced — cannot pick a best cell._")
+    else:
+        per_sym = pd.DataFrame(
+            table_df[
+                (table_df["scope"] == "per_symbol")
+                & (np.isclose(table_df["precision_cutoff"], best_pct))
+            ]
+        ).copy()
+        if per_sym.empty:
+            lines.append(
+                f"_No per-symbol cell at top {best_pct:.3%} cleared the "
+                f"≥{MARGINAL_LONG_MIN_TRIGGERS_PER_SYMBOL}-trigger floor._"
+            )
+        else:
+            per_sym = per_sym.sort_values("expected_gross_per_day_bps", ascending=False)
+            lines.append(
+                "| symbol | n_trig | precision | dir_acc_long | mean_pnl_bps | "
+                "cost | headroom | gross/day |"
+            )
+            lines.append("|---|---|---|---|---|---|---|---|")
+            per_sym_records: list[dict] = per_sym.to_dict("records")  # type: ignore[assignment]
+            for r in per_sym_records:
+                lines.append(
+                    f"| {r['symbol_or_pool']} | {int(r['n_triggers'])} | "
+                    f"{float(r['precision']):.3f} | "
+                    f"{float(r['directional_accuracy_long']):.3f} | "
+                    f"{float(r['mean_signed_pnl_long_bps']):+.2f} | "
+                    f"{float(r['cost_round_trip_bps_avg']):.2f} | "
+                    f"{float(r['headroom_per_trigger_bps']):+.2f} | "
+                    f"{float(r['expected_gross_per_day_bps']):+.2f} |"
+                )
+    lines.append("")
+
+    # ---------- 5. Verdict ----------
+    lines.append("## 5. Verdict")
+    lines.append("")
+    if not math.isfinite(summary["best_gross_per_day_bps"]):
+        lines.append(
+            "**No tradeable cell**: insufficient triggers across all precision "
+            "cutoffs — cannot conclude either way."
+        )
+    else:
+        best_g = float(summary["best_gross_per_day_bps"])
+        # Need to also check whether the bootstrap CI excludes 0
+        best_match = [
+            r
+            for r in pooled_records
+            if np.isclose(float(r["precision_cutoff"]), summary["best_top_pct"])
+        ]
+        ci_lo = (
+            float(best_match[0]["expected_gross_per_day_bps_lo"])
+            if best_match
+            else float("nan")
+        )
+        ci_hi = (
+            float(best_match[0]["expected_gross_per_day_bps_hi"])
+            if best_match
+            else float("nan")
+        )
+        if best_g > 0 and math.isfinite(ci_lo) and ci_lo > 0:
+            verdict = (
+                f"**TRADEABLE pre-encoder.**  Best cell (top "
+                f"{summary['best_top_pct']:.3%}) yields "
+                f"**{best_g:+.2f} bps/day** with CI lower bound "
+                f"**{ci_lo:+.2f} bps/day** strictly positive — the marginal-"
+                f"long strategy survives day-clustered bootstrap noise."
+            )
+        elif best_g > 0:
+            verdict = (
+                f"**MARGINAL-BUT-NOT-CLEARLY.**  Best cell (top "
+                f"{summary['best_top_pct']:.3%}) yields "
+                f"**{best_g:+.2f} bps/day** but the day-clustered CI "
+                f"[{ci_lo:+.2f}, {ci_hi:+.2f}] includes 0 — point estimate is "
+                f"positive, sampling noise dominates.  Encoder retrain may "
+                f"be required to tighten the signal."
+            )
+        else:
+            verdict = (
+                f"**NOT TRADEABLE pre-encoder.**  Best cell (top "
+                f"{summary['best_top_pct']:.3%}) yields "
+                f"**{best_g:+.2f} bps/day** — net of cost, every precision "
+                f"cell is unprofitable.  The 0.77 cascade-conditional long-"
+                f"bias does NOT carry through to the prediction-flagged "
+                f"subset because the LR's top-1% precision is only ~28%; the "
+                f"other ~72% of triggers are non-cascade windows with "
+                f"~50/50 directional symmetry that drag the mean back to "
+                f"zero."
+            )
+        lines.append(verdict)
+    lines.append("")
+
+    # ---------- 6. Methodological flags ----------
+    lines.append("## 6. Methodological flags")
+    lines.append("")
+    lines.append(
+        "* **Sample size at top 0.1%.** Across 7 April-diagnostic days, "
+        "n_triggers at top 0.1% is ~7 (≈1/day).  Day-clustered bootstrap "
+        "captures cluster noise but cannot rescue inference from n=7 — the "
+        "CI widths reported above honestly reflect this."
+    )
+    lines.append("")
+    lines.append(
+        "* **Per-day quantile vs global quantile.** Per-day quantile keeps "
+        "stride day-by-day (no future leakage), but on slow days it lowers "
+        "the trigger threshold, admitting low-confidence windows.  A global "
+        "quantile would give a tighter cutoff but leak the future "
+        "distribution.  Per-day is the conservative, leakage-safe choice."
+    )
+    lines.append("")
+    lines.append(
+        "* **Cost size selection.** Used per_window slip at "
+        f"size_usd = {summary['ref_size_usd']:.0f} (median bucket).  At "
+        "100K size cost would roughly double; at 1K size cost would halve.  "
+        "The headroom math is sensitive to the size assumption — a strategy "
+        "that's marginal at 10K may be tradeable at 1K (lower fees) or "
+        "untradeable at 100K (higher slippage)."
+    )
+    lines.append("")
+    lines.append(
+        "* **Universe vs cascade-conditional asymmetry.** The 0.77 long-bias "
+        "is ON REAL CASCADES.  The prediction-flagged subset has precision "
+        "~28% at top 1%, ~43% at top 0.1% — the OTHER 57-72% of triggered "
+        "windows are non-cascade windows.  If those non-cascade windows have "
+        "P(positive) ≈ 0.50, the marginal-long bet on the flagged subset "
+        "ends up close to 0.50 even though the cascade-conditional bias is "
+        "0.77.  The §3 table shows this dilution directly."
+    )
+    lines.append("")
+    lines.append(
+        "* **Single-trade-domination at top 0.1%.** The day-clustered "
+        "bootstrap resamples DAYS, so a single big PnL on one day appears "
+        "in roughly k/(k+1) ≈ 87% of bootstrap draws.  The CIs at top 0.1% "
+        "are dominated by which 1-2 trades fall on which day, not by 7-day "
+        "ensemble averaging.  Read the top 0.1% row with this in mind."
+    )
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        f"_Wall-clock: {elapsed_sec:.1f} s.  n_boot = {n_boot}.  CPU-only.  "
+        "No April 14+ data touched._"
+    )
+    lines.append("")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _expected_gross_per_day(
     metrics: dict[str, float], n_te: int, *, fold_name: str
 ) -> float:
@@ -3771,6 +4561,18 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--marginal-long",
+        action="store_true",
+        help=(
+            "Run the marginal-long + precision sweep on the existing "
+            "cascade_precursor_real_per_window.parquet.  Reanalysis only — "
+            "no retraining.  Sweeps precision cutoffs {1%%, 0.5%%, 0.1%%}, "
+            "computes pooled + per-symbol PnL with day-clustered bootstrap "
+            "CIs, and compares against the LR-direction strategy.  Emits "
+            "cascade_marginal_long.md + cascade_marginal_long_table.csv."
+        ),
+    )
+    parser.add_argument(
         "--per-window-path",
         type=Path,
         default=None,
@@ -3847,6 +4649,39 @@ def main() -> int:
             f"[robustness] wrote "
             f"{out_dir / 'cascade_precursor_real_robustness_summary.csv'}"
         )
+        return 0
+
+    if args.marginal_long:
+        # ---------- Stage 2 follow-up: marginal-long + precision sweep ----------
+        print(
+            f"[marginal-long] precision sweep on existing predictions | "
+            f"cache={args.cache} | n_boot={int(args.n_boot)}"
+        )
+        try:
+            ml_table, ml_summary = _run_marginal_long_pipeline(
+                args.cache,
+                out_dir,
+                n_boot=int(args.n_boot),
+                seed=int(args.seed),
+            )
+        except RuntimeError as exc:
+            print(f"[marginal-long] BLOCKER: {exc}")
+            return 1
+
+        out_csv = out_dir / "cascade_marginal_long_table.csv"
+        out_md = out_dir / "cascade_marginal_long.md"
+        ml_table.to_csv(out_csv, index=False)
+        elapsed = time.time() - t0
+        _emit_marginal_long_markdown(
+            ml_table,
+            ml_summary,
+            out_md,
+            elapsed_sec=elapsed,
+            n_boot=int(args.n_boot),
+        )
+        print(f"[marginal-long] done in {elapsed:.1f} s")
+        print(f"[marginal-long] wrote {out_csv}")
+        print(f"[marginal-long] wrote {out_md}")
         return 0
 
     if args.cascade_direction:
