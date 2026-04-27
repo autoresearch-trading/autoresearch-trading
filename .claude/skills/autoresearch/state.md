@@ -1,5 +1,26 @@
 # Research State
 
+## Status (2026-04-27 PM-late — Phase 0 complete, ARCH_BOTTLENECK verdict)
+
+**Phase 0 result (commit `3110abc`).** Random-init `TapeEncoder` linear probe vs
+unified-CV flat-LR on merged Apr 1-26 cascade-H500. Flat-LR pooled AUC =
+**0.8373 [0.8087, 0.8652]** (retires the prior 0.778 OOS reference; council-1
+was right — that number was biased low). Random-init encoder pooled AUC =
+**0.6463 [0.5802, 0.7246]** (median seed=1; per-seed range [0.6330, 0.6952]).
+Paired delta = **−0.1812 [−0.2594, −0.1063]** — random CNN embeddings LOSE
+to 83-dim hand features by ~18pp, CI firmly below zero. n_cascades=169 confirms
+holdout-consume integrity. 27s CPU wall-clock.
+
+**Decision tree fires: ARCH_BOTTLENECK.** Hand-engineered features dominate
+random CNN embeddings; the architecture cannot linearly extract cascade signal
+without training. Per the ratified plan, this routes to one of:
+- (3a) MEM-only pretrain → re-probe (~$10 H100-half-day, ~2.5h)
+- (3b) End-to-end with strong reg (council-6 recipe: pos_weight, wd=5e-4,
+  dropout 0.1 throughout stack, max_lr=3e-4, 3 seeds)
+
+These are mutually exclusive. Council decision pending — see the open question
+below.
+
 ## Status (2026-04-27 PM — Goal A v2 active)
 
 **Active program: cascade-precursor encoder.** First definitive empirical positive of the program. Flat-LR baseline on 83-dim flat features predicts liquidation-cascade onset (Pacifica `cause` flag) at OOS AUC = 0.778 on Apr 14-26 (n=96 cascades, day-clustered CI [0.732, 0.833]; in-sample AUC 0.815 on Apr 1-13). Distinguishable from shuffled-OOS baseline at H500. Per-symbol concentration: SUI/AVAX/PENGU/XRP carry the signal (mid-cap alts); BTC/HYPE/ETH at chance. Strategy not yet directly tradeable at flat-LR precision (top-1% precision = 25.4% OOS, marginal-long net-negative); encoder retrain is the load-bearing test for whether a learned tape representation lifts AUC into tradeable territory.
@@ -82,6 +103,36 @@ budget unlocked only if Phase 0 result is actionable per decision tree.
 - Goal-A v2 feasibility chain at `docs/experiments/goal-a-feasibility/` — 8 artifacts above plus per-window parquets (gitignored).
 - Pacifica fee schedule research: `docs/research/pacifica-fee-schedule-2026-04-27.md` (4bp taker, +1.5bp maker, post-only TIF=ALO/TOB available).
 
+## Open question (2026-04-27 PM-late) — Pretrain vs End-to-End given 18pp gap
+
+ARCH_BOTTLENECK fired with delta = −0.1812. The plan's decision tree leaves
+"pretrain vs end-to-end" as a council decision parameterized on gap size. 18pp
+is LARGE (the plan's example was "say <0.70" → "the pretraining bet only makes
+sense if the linear-extractability gap is large"). Empirically the gap meets
+that threshold.
+
+The case for pretrain-first (MEM+SimCLR, then re-probe):
+- Pretraining is a representation question, not a fine-tuning question. If
+  random embeddings can't extract cascade signal, MEM+SimCLR's pretext task
+  may build a basis where they can — the next probe re-arbitrates.
+- Risk: pretraining objectives weren't designed for cascade detection.
+  cum_ofi_5 / delta_imbalance_L1 are EXCLUDED from MEM targets (they're
+  trivially copyable from neighbors), but those are the most cascade-relevant
+  features (council-6 noted this).
+- Cost: ~$10 H100-half-day, ~2.5h.
+
+The case for end-to-end-with-reg first:
+- 169 positives is a small-data regime, but BCE end-to-end at council-6's
+  recipe (pos_weight, wd=5e-4, dropout, max_lr=3e-4, 3 seeds) is also CPU-feasible.
+- Direct optimization on the cascade label may extract signal that MEM/SimCLR
+  pretexts wouldn't.
+- Risk: 376K params on 169 positives is overfit-prone. If end-to-end fails
+  Tier-A, we still don't know whether pretraining would have helped — sequential
+  ablation cost.
+- Cost: < $5 if MPS-feasible.
+
+Council needs to weigh in (council-5, council-6, possibly council-4).
+
 ## Audit trail
 
 - v1 program end-state: `docs/experiments/step4-program-end-state.md` (commit `30bbc3b`). Closure tag: `v1-program-closed`.
@@ -89,3 +140,4 @@ budget unlocked only if Phase 0 result is actionable per decision tree.
 - v1 spec (do not edit): `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`.
 - Goal-A v2 feasibility commits: `4ae3102`, `b4132cd`, `9509d1a`, `2c7dee7`, `1fa7063`, `e5ae29c`, `b80fa2e`, `f3a7b49`, `60f06d9`, `e2715ec`, `7231019`, `6113de9`, `b0de994`.
 - Holdout consumption commit: pending (cache rebuild + `--consume-holdout` flag in this session).
+- Goal-A v2 Phase 0 commits: `64e3587` (impl), `694d14c` (cleanups), `3110abc` (run + result).
