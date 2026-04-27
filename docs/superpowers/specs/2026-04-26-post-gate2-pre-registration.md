@@ -1,6 +1,6 @@
 # Post-Gate-2 Pre-Registration — Multi-Probe Battery + Stop Conditions
 
-**Status: DRAFT — AWAITING USER RATIFICATION.** Once user signs (commit message containing `ratify-post-gate2-prereg`), this document becomes binding.
+**Status: RATIFIED 2026-04-26 PM.** This document is binding. Amendments: Condition 3 swapped from cluster-purity ≥40% to ARI ≥ 0.05 (noise-robustness against heuristic label noise); execution sequence added (Gate 4 → C1+C3+C4 → C2 only if needed) to minimize wasted compute on likely negative outcomes.
 
 **Date:** 2026-04-26 (PM)
 **Trigger:** Step 4 Gate 2 FAILED (`docs/experiments/step4-gate2-finetune.md`, commit `f795e48`).
@@ -48,10 +48,14 @@ Per spec section "Evaluation Gates":
 - Compute CKA between Run-2 epoch-6 (`runs/step3-r2/encoder-best.pt`) and the new seed-1 epoch-6 checkpoint on a fixed 1024-window held-out batch.
 - **PASS:** CKA ≥ 0.75.
 
-**Condition 3 — Cluster purity for Wyckoff states.**
+**Condition 3 — Cluster–Wyckoff alignment (amended 2026-04-26 PM).**
 - k-means with k=16 on frozen encoder embeddings of held-out Feb+Mar windows.
-- For each of {is_absorption, is_buying_climax, is_selling_climax, is_stressed} compute the **maximum** cluster-conditional label rate.
-- **PASS:** at least 2 of 4 labels have max cluster-conditional rate ≥ 40% (vs ≤10% null expectation given roughly-balanced labels and 16 clusters).
+- For each of {is_absorption, is_buying_climax, is_selling_climax, is_stressed}:
+  - Compute **adjusted Rand index (ARI)** between the binary Wyckoff labels and the 16 cluster assignments (treating clusters as a 16-class partition, Wyckoff labels as a 2-class partition).
+  - ARI is noise-robust against the heuristic nature of the spec's self-labels and against marginal label rate variation across symbols.
+  - Pure-random clusters yield ARI ≈ 0; perfect alignment yields ARI = 1.
+- **PASS:** at least 2 of 4 Wyckoff labels have **ARI ≥ 0.05** (small but non-zero alignment — accounts for label noise while requiring measurable cluster–state correspondence).
+- *Amendment rationale:* the original threshold (max cluster-conditional rate ≥ 40%) was too tight for k=16 on labels with 10–30% marginal rates and meaningful heuristic noise — even a healthy encoder could fail it from label noise alone. ARI ≥ 0.05 is the noise-robust analogue: at chance the value is ~0; at any modest concentration it exceeds 0.05; at perfect alignment it reaches 1.0.
 
 **Condition 4 — Embedding trajectory test.**
 - Manually identify ≥10 climax events on held-out Feb+Mar data using `climax_score > 3.0` as the seed criterion (then human-validate as actual phase transitions).
@@ -105,10 +109,33 @@ Probes computed under this pre-registration:
 1. Gate 4 (frozen encoder, Oct-Nov-trained vs Dec-Jan-trained, evaluated on Feb+Mar)
 2. Wyckoff absorption probe (Condition 1)
 3. CKA seed-stability (Condition 2; requires fresh seed-1 pretraining run)
-4. k-means cluster purity (Condition 3)
+4. Cluster–Wyckoff ARI (Condition 3; amended)
 5. Embedding trajectory test (Condition 4)
 
 Each probe is run ONCE on each of {Feb 2026, Mar 2026} where applicable. No re-runs. Trial count = 5 probes.
+
+## Execution sequence (binding)
+
+To minimize wasted compute on a likely negative result, probes are run in this order with stop checks:
+
+**Step 1 — Gate 4 first** (~2h CPU, $0). Decisive in both directions.
+- If Gate 4 fails → Stop A → write the "encoder non-stationary" negative result. Do NOT run Conditions 1–4.
+- If Gate 4 passes → proceed to Step 2.
+
+**Step 2 — Conditions 1, 3, 4** (~4–6h on existing encoder, $0). All on `runs/step3-r2/encoder-best.pt`.
+- If 0 of {C1, C3, C4} pass → Stop B → write the "+1pp ceiling, not phenomenologically rich" negative result. Do NOT run Condition 2.
+- If 1 of {C1, C3, C4} pass → defer Stop B; proceed to Step 3 (Condition 2 may yet provide the second passing condition).
+- If ≥2 of {C1, C3, C4} pass → battery passes; Condition 2 (CKA seed-stability) becomes optional information rather than gating. Skip Step 3 unless reproducibility is needed for the writeup.
+
+**Step 3 — Condition 2 only if Step 2 returns exactly 1 pass** (~3h MPS or ~$3 H100). Fresh seed-1 pretraining on 50% subsample.
+- If C2 passes → battery passes (1 + 1 = 2 of 4).
+- If C2 fails → Stop B → write negative result.
+
+**Total expected compute, by outcome:**
+- Gate 4 fails: ~2h, $0.
+- Gate 4 passes, all of C1/C3/C4 fail: ~6–8h, $0.
+- Gate 4 passes, one of C1/C3/C4 passes (C2 needed): ~9–11h, ~$3.
+- Gate 4 passes, ≥2 of C1/C3/C4 pass: ~6–8h, $0.
 
 ## What this pre-registration does NOT authorize
 
