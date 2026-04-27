@@ -1148,6 +1148,670 @@ def _direction_per_day_expected_gross(
     }
 
 
+# ---------------------------------------------------------------------------
+# Cascade-direction probe — orchestration pipeline (--cascade-direction flag)
+# ---------------------------------------------------------------------------
+
+DIRECTION_HORIZON: int = 500
+DIRECTION_TOP_PCT_SUBSET: float = 0.05  # top 5% of pred_proba_h500
+DIRECTION_TRIGGER_TOP_PCT: float = 0.01  # top 1% — strategy trigger threshold
+DIRECTION_LR_CONFIDENCE_THRESHOLD: float = 0.55  # max class prob > 0.55
+
+
+def _load_anchor_mid_and_end_ts_for_window(
+    *,
+    symbol: str,
+    date_str: str,
+    anchor_ts: int,
+    h: int,
+    cache_dir: Path,
+) -> tuple[float, int] | None:
+    """Look up anchor_mid (vwap of fills at the anchor event) and end_ts
+    (timestamp of event anchor_idx + h) for a single window.
+
+    Returns None if the cache shard or anchor is unavailable, or the horizon
+    overruns the day.
+    """
+    shard_path = cache_dir / f"{symbol}__{date_str}.npz"
+    if not shard_path.exists():
+        return None
+    payload = _load_shard(shard_path)
+    event_ts = payload["event_ts"].astype(np.int64)
+    n_events = len(event_ts)
+    # Find anchor index (event_ts is unique per anchor by construction)
+    idx = int(np.searchsorted(event_ts, anchor_ts, side="left"))
+    if idx >= n_events or int(event_ts[idx]) != int(anchor_ts):
+        return None
+    end_idx = idx + h
+    if end_idx >= n_events:
+        return None
+    end_ts = int(event_ts[end_idx])
+    # Anchor mid: query raw trade parquet for trades at anchor_ts;
+    # fall back to last trade <= anchor_ts if none exact.
+    base = Path(f"data/trades/symbol={symbol}/date={date_str}")
+    if not base.exists():
+        return None
+    q_anchor = (
+        f"SELECT price, qty FROM read_parquet('{base}/*.parquet') "
+        f"WHERE ts_ms = {int(anchor_ts)}"
+    )
+    try:
+        df = duckdb.query(q_anchor).to_df()
+    except Exception:
+        return None
+    if not df.empty:
+        # Volume-weighted average price across same-ts fills (matches event grouping)
+        prices = df["price"].to_numpy(dtype=np.float64)
+        qtys = df["qty"].to_numpy(dtype=np.float64)
+        if qtys.sum() <= 0:
+            anchor_mid = float(prices.mean())
+        else:
+            anchor_mid = float((prices * qtys).sum() / qtys.sum())
+    else:
+        # Fall back: last trade prior to or at anchor_ts
+        q_fb = (
+            f"SELECT price FROM read_parquet('{base}/*.parquet') "
+            f"WHERE ts_ms <= {int(anchor_ts)} ORDER BY ts_ms DESC LIMIT 1"
+        )
+        try:
+            df_fb = duckdb.query(q_fb).to_df()
+        except Exception:
+            return None
+        if df_fb.empty:
+            return None
+        anchor_mid = float(df_fb["price"].iloc[0])
+    return anchor_mid, end_ts
+
+
+def _load_liq_ts_price_for_symbol_date(
+    symbol: str, date_str: str
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Sorted (ts_ms, price) arrays for liquidation trades on (symbol, date_str).
+
+    Returns None if data is not available (pre-April or April-heldout).
+    """
+    if date_str >= APRIL_HELDOUT_START or date_str < APRIL_START:
+        return None
+    base = Path(f"data/trades/symbol={symbol}/date={date_str}")
+    if not base.exists():
+        return None
+    q = (
+        f"SELECT ts_ms, price FROM read_parquet('{base}/*.parquet') "
+        f"WHERE cause IN ('market_liquidation', 'backstop_liquidation') "
+        f"ORDER BY ts_ms"
+    )
+    try:
+        df = duckdb.query(q).to_df()
+    except Exception:
+        return None
+    return (
+        df["ts_ms"].to_numpy(dtype=np.int64),
+        df["price"].to_numpy(dtype=np.float64),
+    )
+
+
+def _build_cascade_direction_dataset(
+    cache_dir: Path,
+    per_window_df: pd.DataFrame,
+    *,
+    horizon: int = DIRECTION_HORIZON,
+) -> pd.DataFrame:
+    """Build the per-window dataset for the direction LR.
+
+    Joins the existing cascade-real per_window parquet with: 83-dim flat
+    features (recomputed from cache), forward_log_return at H, realized
+    direction sign, overshoot direction sign (cascades only), and anchor
+    metadata.
+
+    Returns a DataFrame with one row per H{horizon} window in `per_window_df`,
+    with the additional columns:
+        flat_features      : list of 83 floats
+        forward_log_return : float
+        realized_direction : int (0/1, -1 if invalid)
+        overshoot_direction: int (-1/0/+1; 0 if no liq in window or non-cascade)
+        anchor_mid         : float (NaN if not lookable up)
+    Rows where forward_log_return is NaN (horizon overruns the day) are
+    dropped — direction is undefined.
+    """
+    sub_in = per_window_df[per_window_df["horizon"] == horizon].copy()
+    if sub_in.empty:
+        return pd.DataFrame()
+
+    # Pull arrays (avoid itertuples for pyright friendliness)
+    in_symbols = sub_in["symbol"].astype(str).to_numpy()  # type: ignore[union-attr]
+    in_dates = sub_in["date"].astype(str).to_numpy()  # type: ignore[union-attr]
+    in_anchor_ts = sub_in["anchor_ts"].astype("int64").to_numpy()  # type: ignore[union-attr]
+    in_real_label = sub_in["real_cascade_label"].astype("int64").to_numpy()  # type: ignore[union-attr]
+    in_pred_proba = sub_in["pred_proba"].astype("float64").to_numpy()  # type: ignore[union-attr]
+
+    # Unique (symbol, date) pairs
+    pair_set: set[tuple[str, str]] = set()
+    for s, d in zip(in_symbols.tolist(), in_dates.tolist()):
+        pair_set.add((str(s), str(d)))
+
+    # Per-(symbol, date) caches
+    flat_cache: dict[tuple[str, str], np.ndarray] = {}  # (n, FLAT_DIM)
+    anchor_idx_cache: dict[tuple[str, str], dict[int, int]] = {}
+    fwd_cache: dict[tuple[str, str], np.ndarray] = {}  # (n,) float64
+    end_ts_cache: dict[tuple[str, str], np.ndarray] = {}  # (n,) int64
+    liq_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+
+    for symbol, date_str in pair_set:
+        shard_path = cache_dir / f"{symbol}__{date_str}.npz"
+        if not shard_path.exists():
+            continue
+        if date_str >= APRIL_HELDOUT_START:
+            continue
+        payload = _load_shard(shard_path)
+        features_arr = payload["features"]
+        event_ts = payload["event_ts"].astype(np.int64)
+        n_events = features_arr.shape[0]
+        if n_events < WINDOW_LEN:
+            continue
+        last_valid_start = n_events - WINDOW_LEN
+        if last_valid_start < 0:
+            continue
+        starts = np.arange(0, last_valid_start + 1, STRIDE_EVAL, dtype=np.int64)
+        anchors = starts + WINDOW_LEN - 1
+
+        flat_X = np.empty((len(starts), FLAT_DIM), dtype=np.float32)
+        for i, s in enumerate(starts):
+            flat_X[i] = extract_flat_features(features_arr[s : s + WINDOW_LEN])
+
+        log_returns = features_arr[:, _LOG_RETURN_IDX].astype(np.float64)
+        cum = np.concatenate([[0.0], np.cumsum(log_returns)])
+        end_idx = anchors + horizon
+        valid = end_idx < n_events
+        fwd = np.full(len(anchors), np.nan, dtype=np.float64)
+        fwd[valid] = cum[end_idx[valid] + 1] - cum[anchors[valid] + 1]
+        end_ts_arr = np.full(len(anchors), -1, dtype=np.int64)
+        end_ts_arr[valid] = event_ts[end_idx[valid]]
+
+        flat_cache[(symbol, date_str)] = flat_X
+        fwd_cache[(symbol, date_str)] = fwd
+        end_ts_cache[(symbol, date_str)] = end_ts_arr
+        anchor_lookup: dict[int, int] = {}
+        for i, a_idx in enumerate(anchors):
+            anchor_lookup[int(event_ts[a_idx])] = i
+        anchor_idx_cache[(symbol, date_str)] = anchor_lookup
+
+        liq = _load_liq_ts_price_for_symbol_date(symbol, date_str)
+        if liq is not None:
+            liq_cache[(symbol, date_str)] = liq
+
+    out_rows: list[dict] = []
+    for r in range(len(sub_in)):
+        symbol = str(in_symbols[r])
+        date_str = str(in_dates[r])
+        anchor_ts_i = int(in_anchor_ts[r])
+        real_label_i = int(in_real_label[r])
+        pred_proba_i = float(in_pred_proba[r])
+        key = (symbol, date_str)
+        lookup = anchor_idx_cache.get(key)
+        if lookup is None:
+            continue
+        flat_idx = lookup.get(anchor_ts_i)
+        if flat_idx is None:
+            continue
+        fwd_lr = float(fwd_cache[key][flat_idx])
+        if not math.isfinite(fwd_lr):
+            continue
+        end_ts_i = int(end_ts_cache[key][flat_idx])
+        if end_ts_i < 0:
+            continue
+
+        realized = 1 if fwd_lr > 0 else 0
+        overshoot = 0
+        anchor_mid_val = float("nan")
+        if real_label_i == 1:
+            liq_pair = liq_cache.get(key)
+            if liq_pair is not None:
+                base = Path(f"data/trades/symbol={symbol}/date={date_str}")
+                if base.exists():
+                    q = (
+                        f"SELECT price, qty FROM read_parquet('{base}/*.parquet') "
+                        f"WHERE ts_ms = {anchor_ts_i}"
+                    )
+                    try:
+                        adf = duckdb.query(q).to_df()
+                    except Exception:
+                        adf = pd.DataFrame()
+                    if len(adf) > 0:
+                        prices = adf["price"].astype("float64").to_numpy()
+                        qtys = adf["qty"].astype("float64").to_numpy()
+                        if float(qtys.sum()) > 0:
+                            anchor_mid_val = float((prices * qtys).sum() / qtys.sum())
+                        else:
+                            anchor_mid_val = float(prices.mean())
+                if math.isfinite(anchor_mid_val):
+                    liq_ts_arr, liq_pr_arr = liq_pair
+                    overshoot = _overshoot_direction_for_window(
+                        anchor_ts=anchor_ts_i,
+                        end_ts=end_ts_i,
+                        anchor_mid=anchor_mid_val,
+                        liq_ts=liq_ts_arr,
+                        liq_price=liq_pr_arr,
+                    )
+
+        out_rows.append(
+            {
+                "symbol": symbol,
+                "date": date_str,
+                "anchor_ts": anchor_ts_i,
+                "horizon": int(horizon),
+                "real_cascade_label": real_label_i,
+                "pred_proba": pred_proba_i,
+                "flat_features": flat_cache[key][flat_idx].astype(float).tolist(),
+                "forward_log_return": fwd_lr,
+                "realized_direction": int(realized),
+                "overshoot_direction": int(overshoot),
+                "anchor_mid": anchor_mid_val,
+            }
+        )
+    return pd.DataFrame(out_rows)
+
+
+def _run_cascade_direction_pipeline(
+    cache_dir: Path,
+    out_dir: Path,
+    *,
+    horizon: int = DIRECTION_HORIZON,
+    seed: int = 0,
+    n_boot: int = 1000,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """End-to-end direction-prediction pipeline.
+
+    Loads the existing cascade-real per_window parquet, builds a 84-dim
+    feature vector per window (83 flat + pred_proba_h500), trains direction
+    LR with leave-one-day-out CV across April 1-13, and reports metrics.
+
+    Returns (per_cascade_df, summary_dict).  per_cascade_df has one row per
+    real cascade window with realized + overshoot direction + LR pred.
+    """
+    in_path = out_dir / "cascade_precursor_real_per_window.parquet"
+    if not in_path.exists():
+        raise RuntimeError(
+            f"Cannot find {in_path} — run the stage-2 cascade-real probe first "
+            f"with `--cascade-real`."
+        )
+    raw = pd.read_parquet(in_path)
+    h_df = raw[raw["horizon"] == horizon].copy()
+    if h_df.empty:
+        raise RuntimeError(f"No H{horizon} rows in {in_path}")
+
+    print(
+        f"[cascade-direction] loaded {len(h_df)} H{horizon} windows; "
+        f"{int(h_df['real_cascade_label'].sum())} real cascades"  # type: ignore[arg-type]
+    )
+
+    # Step 1: enrich with flat features + forward returns + overshoot direction
+    enriched = _build_cascade_direction_dataset(
+        cache_dir, pd.DataFrame(h_df), horizon=horizon
+    )
+    if enriched.empty:
+        raise RuntimeError("No enriched windows produced — cache shards missing?")
+    n_enriched = len(enriched)
+    n_cas_enriched = int(enriched["real_cascade_label"].sum())  # type: ignore[arg-type]
+    print(
+        f"[cascade-direction] enriched {n_enriched} windows "
+        f"({n_cas_enriched} cascades) with flat features + fwd returns"
+    )
+
+    # Step 2: marginal direction asymmetry on cascades
+    marg_p_pos = _marginal_direction_asymmetry(
+        enriched["forward_log_return"].to_numpy(),
+        enriched["real_cascade_label"].to_numpy(),
+    )
+    print(
+        f"[cascade-direction] marginal P(positive return | cascade) = "
+        f"{marg_p_pos:.4f} (n={n_cas_enriched})"
+    )
+
+    # Step 3: select cascade-likely subset (top-5% by pred_proba)
+    proba_col = enriched["pred_proba"].astype("float64").to_numpy()
+    top5_mask = _top_pct_mask(proba_col, top_pct=DIRECTION_TOP_PCT_SUBSET)
+    subset: pd.DataFrame = pd.DataFrame(enriched[top5_mask]).reset_index(drop=True)
+    n_subset = len(subset)
+    n_cas_subset = int(subset["real_cascade_label"].sum())  # type: ignore[arg-type]
+    print(
+        f"[cascade-direction] cascade-likely subset (top-5%): "
+        f"{n_subset} windows, {n_cas_subset} real cascades"
+    )
+
+    # Step 4: build feature matrix (83 flat + pred_proba) → 84-dim
+    flat_arr = np.array(subset["flat_features"].tolist(), dtype=np.float32)
+    proba_feat = subset["pred_proba"].astype("float32").to_numpy().reshape(-1, 1)
+    X = np.concatenate([flat_arr, proba_feat], axis=1)
+    y_realized = subset["realized_direction"].astype("int64").to_numpy()
+    dates_arr = subset["date"].astype(str).to_numpy()
+    if len(np.unique(y_realized)) < 2:
+        raise RuntimeError("Realized direction is single-class on the subset")
+    if len(np.unique(dates_arr)) < 2:
+        raise RuntimeError("Subset spans < 2 days; LOO-CV impossible")
+
+    # Step 5: leave-one-day-out CV for realized direction LR
+    pred_realized = _leave_one_day_out_predictions(
+        X=X,
+        y=y_realized,
+        dates=dates_arr,
+        feature_mode="real",
+        label_mode="real",
+        rng_seed=seed,
+    )
+    valid_pred = np.isfinite(pred_realized)
+    auc_realized, auc_lo, auc_hi = _bootstrap_auc_ci(
+        pred_realized[valid_pred],
+        y_realized[valid_pred],
+        n_boot=n_boot,
+        seed=seed,
+    )
+    auc_majority = _majority_class_baseline_auc(y_realized[valid_pred])
+
+    # Direction accuracy at threshold (max class prob > 0.55)
+    confident_mask = (pred_realized > DIRECTION_LR_CONFIDENCE_THRESHOLD) | (
+        pred_realized < (1.0 - DIRECTION_LR_CONFIDENCE_THRESHOLD)
+    )
+    confident_mask &= valid_pred
+    if confident_mask.any():
+        pred_class = (pred_realized[confident_mask] > 0.5).astype(np.int64)
+        confident_accuracy = float((pred_class == y_realized[confident_mask]).mean())
+    else:
+        confident_accuracy = float("nan")
+    p_confident_given_subset = float(confident_mask.mean())
+
+    # Step 6: realized vs overshoot direction agreement (cascades only)
+    cas_mask = subset["real_cascade_label"].astype("int64").to_numpy() == 1
+    cas_real = subset["realized_direction"].astype("int64").to_numpy()[cas_mask]
+    cas_over = subset["overshoot_direction"].astype("int64").to_numpy()[cas_mask]
+    # Map overshoot {+1, -1, 0} -> {1, 0, NaN}: +1=up, -1=down, 0=undefined
+    cas_over_binary = np.full(len(cas_over), -1, dtype=np.int64)
+    cas_over_binary[cas_over == 1] = 1
+    cas_over_binary[cas_over == -1] = 0
+    over_valid = cas_over_binary >= 0
+    if over_valid.any():
+        agreement = float((cas_real[over_valid] == cas_over_binary[over_valid]).mean())
+        p_overshoot_pos = float(cas_over_binary[over_valid].mean())
+    else:
+        agreement = float("nan")
+        p_overshoot_pos = float("nan")
+
+    # Step 7: conditional headroom math
+    # Trigger frequency: top-1% of pred_proba_h500 AND direction-LR confidence > 0.55
+    top1_mask_full = _top_pct_mask(proba_col, top_pct=DIRECTION_TRIGGER_TOP_PCT)
+    p_top_1pct = float(top1_mask_full.mean())
+    # On the cascade-likely subset, fraction with confident direction prediction
+    n_unique_dates_universe = max(
+        1, len(np.unique(enriched["date"].astype(str).to_numpy()))
+    )
+    triggers_per_day_universe = (
+        p_top_1pct
+        * p_confident_given_subset
+        * float(len(enriched))
+        / n_unique_dates_universe
+    )
+    # Mean |fwd return| on the cascade-likely subset, in bps
+    abs_fwd_subset_bps = float(
+        np.mean(np.abs(subset["forward_log_return"].astype("float64").to_numpy()) * 1e4)
+    )
+    headroom = _direction_per_day_expected_gross(
+        triggers_per_day=triggers_per_day_universe,
+        direction_accuracy=(
+            confident_accuracy if math.isfinite(confident_accuracy) else 0.5
+        ),
+        mean_abs_fwd_bps=float(abs_fwd_subset_bps),
+        fee_bps_per_side=TAKER_FEE_BPS_PER_SIDE,
+        slip_bps_per_side=DEFAULT_SLIP_BPS_PER_SIDE,
+    )
+
+    summary: dict[str, float] = {
+        "n_total_h500": float(len(enriched)),
+        "n_cascades_h500": float(n_cas_enriched),
+        "marginal_p_positive_given_cascade": marg_p_pos,
+        "n_subset_top_5pct": float(n_subset),
+        "n_cascades_in_subset": float(n_cas_subset),
+        "auc_direction_lr": auc_realized,
+        "auc_direction_lr_lo": auc_lo,
+        "auc_direction_lr_hi": auc_hi,
+        "auc_majority_baseline": auc_majority,
+        "direction_accuracy_at_thresh": confident_accuracy,
+        "p_confident_given_subset": p_confident_given_subset,
+        "realized_vs_overshoot_agreement": agreement,
+        "p_overshoot_positive": p_overshoot_pos,
+        "p_top_1pct": p_top_1pct,
+        "triggers_per_day_universe": triggers_per_day_universe,
+        "mean_abs_fwd_subset_bps": float(abs_fwd_subset_bps),
+        **headroom,
+    }
+
+    # Step 8: per-cascade table — one row per real cascade window
+    cas_mask_arr = subset["real_cascade_label"].astype("int64").to_numpy() == 1
+    cas_rows_df: pd.DataFrame = pd.DataFrame(subset[cas_mask_arr]).reset_index(
+        drop=True
+    )
+    cas_rows_df["direction_pred_proba_lr"] = pred_realized[cas_mask_arr]
+    cas_rows_df = cas_rows_df.rename(columns={"pred_proba": "pred_proba_h500"})
+    cas_table: pd.DataFrame = pd.DataFrame(
+        cas_rows_df[
+            [
+                "symbol",
+                "date",
+                "anchor_ts",
+                "pred_proba_h500",
+                "realized_direction",
+                "overshoot_direction",
+                "direction_pred_proba_lr",
+            ]
+        ]
+    ).copy()
+
+    return cas_table, summary
+
+
+def _emit_direction_markdown(
+    summary: dict[str, float],
+    cas_table: pd.DataFrame,
+    out_path: Path,
+    *,
+    elapsed_sec: float,
+) -> None:
+    """Render the cascade-direction markdown verdict per the prompt's outline."""
+    lines: list[str] = []
+    lines.append("# Goal-A cascade-precursor direction LR — fade vs continuation")
+    lines.append("")
+    lines.append(
+        "**Question.** Conditional on the stage-2 cascade-onset model "
+        "predicting a cascade is likely, can we predict its direction "
+        "(long vs short) from the same 83-dim flat baseline + the "
+        "cascade-onset confidence?  Without direction the cascade-onset "
+        "AUC=0.817 / top-1% precision=27.8% signal is not tradeable — "
+        "you cannot take a position."
+    )
+    lines.append("")
+    lines.append(
+        "**Hard constraints.** April 14+ untouched.  H500 only "
+        f"(n=~{int(summary['n_cascades_h500'])} cascades; H100 has n=20, too "
+        f"underpowered).  Sample size honest: with leave-one-day-out CV "
+        f"across 7 April-diagnostic dates the CIs are wide.  If "
+        f"|marginal_p_positive - 0.5| > 0.10, LR may be exploiting the "
+        f"marginal not the conditional — we report a majority-baseline "
+        f"AUC for comparison."
+    )
+    lines.append("")
+
+    # ---------- 1. Marginal direction asymmetry ----------
+    lines.append("## 1. Marginal direction asymmetry")
+    lines.append("")
+    p_pos = summary["marginal_p_positive_given_cascade"]
+    n_cas = int(summary["n_cascades_h500"])
+    asym = abs(p_pos - 0.5) if math.isfinite(p_pos) else float("nan")
+    asym_flag = (
+        "asymmetric (LR may exploit marginal — must beat majority baseline)"
+        if math.isfinite(asym) and asym > 0.10
+        else "symmetric (or near-symmetric)"
+    )
+    lines.append(
+        f"P(forward_log_return > 0 | real_cascade_h500) = "
+        f"**{p_pos:.4f}** (n_cascades = {n_cas})"
+    )
+    lines.append("")
+    lines.append(f"|marginal - 0.5| = **{asym:.4f}** → {asym_flag}")
+    lines.append("")
+
+    # ---------- 2. Direction LR AUC at H500 ----------
+    lines.append("## 2. Direction LR AUC at H500 on cascade-likely subset")
+    lines.append("")
+    auc = summary["auc_direction_lr"]
+    auc_lo = summary["auc_direction_lr_lo"]
+    auc_hi = summary["auc_direction_lr_hi"]
+    auc_maj = summary["auc_majority_baseline"]
+    n_subset = int(summary["n_subset_top_5pct"])
+    n_cas_subset = int(summary["n_cascades_in_subset"])
+    lines.append(
+        f"Subset = top-5% by `pred_proba_h500` from stage-2 → "
+        f"{n_subset} windows ({n_cas_subset} real cascades)."
+    )
+    lines.append("")
+    lines.append("| metric | value |")
+    lines.append("|---|---|")
+    lines.append(f"| Direction LR AUC (realized direction) | {auc:.4f} |")
+    lines.append(f"| 95% bootstrap CI (lo) | {auc_lo:.4f} |")
+    lines.append(f"| 95% bootstrap CI (hi) | {auc_hi:.4f} |")
+    lines.append(f"| Majority-class baseline AUC | {auc_maj:.4f} |")
+    lines.append("")
+    distinguishable = math.isfinite(auc_lo) and auc_lo > 0.5
+    beat_maj = math.isfinite(auc_lo) and math.isfinite(auc_maj) and auc_lo > auc_maj
+    if distinguishable and beat_maj:
+        verdict_dir = "Distinguishable from 0.5 AND beats majority-class baseline."
+    elif distinguishable:
+        verdict_dir = (
+            "CI lower bound clears 0.5, but does NOT cleanly beat the "
+            "majority-class baseline (LR may be exploiting the marginal)."
+        )
+    else:
+        verdict_dir = (
+            "Direction LR AUC CI does not cleanly exclude 0.5 → "
+            "direction is NOT predictable from this representation."
+        )
+    lines.append(f"**Verdict:** {verdict_dir}")
+    lines.append("")
+
+    # ---------- 3. Realized vs overshoot direction agreement ----------
+    lines.append("## 3. Realized vs overshoot direction agreement")
+    lines.append("")
+    agree = summary["realized_vs_overshoot_agreement"]
+    p_over_pos = summary["p_overshoot_positive"]
+    if math.isfinite(agree):
+        if agree >= 0.65:
+            interp = "continuation-dominated (overshoot persists to horizon end)"
+        elif agree <= 0.35:
+            interp = "fade-dominated (overshoot reverts before horizon end)"
+        else:
+            interp = "mixed (continuation/fade roughly balanced)"
+        lines.append(
+            f"Agreement(realized ⇔ overshoot, both binary) = "
+            f"**{agree:.4f}**, P(overshoot up) = **{p_over_pos:.4f}** → "
+            f"{interp}."
+        )
+    else:
+        lines.append(
+            "Insufficient cascades with locatable first-liquidation fills "
+            "to compute overshoot direction."
+        )
+    lines.append("")
+
+    # ---------- 4. Conditional headroom ----------
+    lines.append("## 4. Conditional headroom")
+    lines.append("")
+    p_top1 = summary["p_top_1pct"]
+    p_conf = summary["p_confident_given_subset"]
+    triggers_per_day = summary["triggers_per_day_universe"]
+    mean_abs_bps = summary["mean_abs_fwd_subset_bps"]
+    gross = summary["gross_per_trigger_bps"]
+    cost = summary["cost_per_trigger_bps"]
+    net = summary["net_per_trigger_bps"]
+    per_day = summary["per_day_gross_bps"]
+    lines.append("| component | value |")
+    lines.append("|---|---|")
+    lines.append(f"| P(top-1% pred_proba_h500) | {p_top1:.4f} |")
+    lines.append(f"| P(LR confidence > 0.55 \\| cascade-likely) | {p_conf:.4f} |")
+    lines.append(f"| Triggers per day (universe-pooled) | {triggers_per_day:.4f} |")
+    lines.append(
+        f"| E[\\|forward_log_return\\| at H500 \\| cascade-likely] (bps) | "
+        f"{mean_abs_bps:.2f} |"
+    )
+    lines.append(
+        f"| Direction accuracy at confidence threshold | "
+        f"{summary['direction_accuracy_at_thresh']:.4f} |"
+    )
+    lines.append(f"| Gross per trigger (bps) | {gross:.2f} |")
+    lines.append(
+        f"| Cost per trigger (bps; 4bp fee + 1bp slip per side, both legs) | "
+        f"{cost:.2f} |"
+    )
+    lines.append(f"| Net per trigger (bps) | {net:.2f} |")
+    lines.append(f"| **Per-day expected gross (bps)** | **{per_day:.4f}** |")
+    lines.append("")
+    if math.isfinite(per_day) and per_day > 0:
+        verdict_h = "tradeable (positive per-day gross)"
+    elif math.isfinite(per_day):
+        verdict_h = "NOT tradeable (per-day gross is non-positive)"
+    else:
+        verdict_h = "NOT computable (insufficient signal)"
+    lines.append(f"**Headroom verdict:** {verdict_h}")
+    lines.append("")
+
+    # ---------- 5. Verdict ----------
+    lines.append("## 5. One-paragraph verdict")
+    lines.append("")
+    if distinguishable and beat_maj and math.isfinite(per_day) and per_day > 0:
+        verdict_para = (
+            "The direction of cascade overshoots IS predictable from the "
+            "83-dim flat representation enriched with cascade-onset "
+            "confidence — the LR AUC's CI lower bound clears both 0.5 and "
+            "the majority-class baseline, and the conditional headroom is "
+            "positive after taker-fee + slip costs.  This is the first "
+            "tradeable cell the program has produced.  Caveats: n_cascades "
+            f"= {n_cas} on April 1-13, CI bracket is {auc_lo:.2f}-{auc_hi:.2f}; "
+            "out-of-sample replication on April 14+ remains the binding test."
+        )
+    elif math.isfinite(per_day) and per_day > 0:
+        verdict_para = (
+            "Per-day expected gross is positive on April 1-13, but the "
+            "direction LR's AUC CI does not cleanly clear both 0.5 AND the "
+            "majority-class baseline.  The apparent edge may be the LR "
+            "learning the marginal direction asymmetry rather than "
+            "cascade-conditional signal.  Not yet tradeable — needs a "
+            "tighter sample (April 14+ post-pretraining) before deployment."
+        )
+    elif distinguishable:
+        verdict_para = (
+            "Direction is statistically distinguishable from 0.5 in-sample "
+            "but the headroom math is not yet positive: trigger frequency "
+            "× direction accuracy × cascade move size does not cover the "
+            "round-trip cost.  Strategy is NOT tradeable on this "
+            "representation; would need either tighter onset gating, "
+            "longer holds, or maker-only execution to flip net positive."
+        )
+    else:
+        verdict_para = (
+            "The cascade-onset signal (AUC=0.817 at top-1% precision=27.8%) "
+            "appears to be DIRECTIONLESS at H500 in this representation — "
+            "the LR cannot predict whether a flagged cascade overshoot "
+            "goes long or short.  Without direction the strategy reduces "
+            "to a coin flip with round-trip costs, which is unprofitable.  "
+            "Until a representation provides direction skill, the cascade-"
+            "precursor signal is statistically interesting but untradeable."
+        )
+    lines.append(verdict_para)
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(f"_Wall-clock: {elapsed_sec:.1f} s._")
+    lines.append("")
+
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _expected_gross_per_day(
     metrics: dict[str, float], n_te: int, *, fold_name: str
 ) -> float:
@@ -3095,6 +3759,18 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--cascade-direction",
+        action="store_true",
+        help=(
+            "Run the direction LR on the cascade-likely subset (top-5% by "
+            "stage-2 cascade-onset pred_proba).  Loads the existing "
+            "cascade_precursor_real_per_window.parquet, builds an 84-dim "
+            "feature vector per window (83 flat + pred_proba_h500), trains "
+            "direction LR with leave-one-day-out CV across April 1-13, and "
+            "emits cascade_direction.md + cascade_direction_table.csv."
+        ),
+    )
+    parser.add_argument(
         "--per-window-path",
         type=Path,
         default=None,
@@ -3171,6 +3847,34 @@ def main() -> int:
             f"[robustness] wrote "
             f"{out_dir / 'cascade_precursor_real_robustness_summary.csv'}"
         )
+        return 0
+
+    if args.cascade_direction:
+        # ---------- Stage 2 follow-up: direction LR on cascade-likely subset ----------
+        print(
+            f"[cascade-direction] direction LR on top-5% subset, H500 only | "
+            f"cache={args.cache}"
+        )
+        try:
+            cas_table, summary = _run_cascade_direction_pipeline(
+                args.cache,
+                out_dir,
+                horizon=DIRECTION_HORIZON,
+                seed=int(args.seed),
+                n_boot=int(args.n_boot),
+            )
+        except RuntimeError as exc:
+            print(f"[cascade-direction] BLOCKER: {exc}")
+            return 1
+
+        out_csv = out_dir / "cascade_direction_table.csv"
+        out_md = out_dir / "cascade_direction.md"
+        cas_table.to_csv(out_csv, index=False)
+        elapsed = time.time() - t0
+        _emit_direction_markdown(summary, cas_table, out_md, elapsed_sec=elapsed)
+        print(f"[cascade-direction] done in {elapsed:.1f} s")
+        print(f"[cascade-direction] wrote {out_csv}")
+        print(f"[cascade-direction] wrote {out_md}")
         return 0
 
     if args.cascade_real:
