@@ -173,6 +173,7 @@ def build_symbol_day(
     *,
     raw_root: Path | str | None = None,
     out_root: Path | str | None = None,
+    consume_holdout: bool = False,
 ) -> dict | None:
     """Build feature tensor + labels for a single symbol-day.
 
@@ -196,13 +197,14 @@ def build_symbol_day(
     - fewer than 2 OB snapshots
 
     Raises ValueError if:
-    - date is in the April hold-out (>= 2026-04-14) — hard gate, gotcha #17
+    - date is in the April hold-out (>= 2026-04-14) AND consume_holdout=False — hard gate, gotcha #17.
+      Pass consume_holdout=True to deliberately consume holdout dates (one-shot operation;
+      once consumed, the dates are no longer untouched and cannot be used for OOS evaluation).
     """
-    # Hard gate: April 14+ is untouched (gotcha #17) — must raise, not silently skip
-    if date_str >= APRIL_HELDOUT_START:
+    if date_str >= APRIL_HELDOUT_START and not consume_holdout:
         raise ValueError(
             f"Refusing to process hold-out date {date_str} >= {APRIL_HELDOUT_START} "
-            f"for symbol {symbol} (gotcha #17)"
+            f"for symbol {symbol} (gotcha #17). Pass consume_holdout=True to override."
         )
 
     # --- Prior-day delta_imbalance_L1 pre-warming (gotcha #11) ---

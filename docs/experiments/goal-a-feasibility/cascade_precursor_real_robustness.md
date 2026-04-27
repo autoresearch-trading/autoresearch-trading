@@ -56,4 +56,4 @@ Day-clustered H500 real AUC = 0.815 [0.772, 0.848].  Day-clustered H500 shuffled
 
 * **April 14+ untouched.** No raw or cached April 14+ data was loaded.
 
-_Robustness analysis ran in 2.4 s on existing per-window predictions (1000 bootstrap iterations).  No LR re-training, no April 14+ data touched._
+_Robustness analysis ran in 2.5 s on existing per-window predictions (1000 bootstrap iterations).  No LR re-training, no April 14+ data touched._

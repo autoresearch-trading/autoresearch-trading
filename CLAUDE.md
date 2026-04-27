@@ -2,9 +2,11 @@
 
 ## Project Overview
 
-**DEX perpetual futures tape representation learning.** Self-supervised model trained on 40GB of raw trade data (160 days, 25 crypto symbols from Pacifica API) to learn meaningful tape representations — the way a human tape reader develops intuition from watching millions of order events. Direction prediction is a downstream probing task, not the primary objective.
+**DEX perpetual futures tape representation learning.** Self-supervised model trained on raw trade data + 10-level OB context from Pacifica perp DEX (~178 days, 25 crypto symbols) to learn tradeable tape representations.
 
-**Spec:** `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`
+**Active program (Goal A v2, 2026-04-27):** cascade-precursor encoder. After v1 (direction-prediction representation learning) closed `v1-program-closed` having found a +1pp directional signal that was fee-blocked at every framing tested, the program pivoted to predicting *liquidation-cascade onset* using the Pacifica-unique `cause` flag. Flat-LR baseline at AUC=0.815 in-sample (Apr 1-13) generalized OOS to AUC=0.778 on Apr 14-26 (n=96 cascades, day-clustered CI [0.732, 0.833], distinguishable from shuffled). Encoder retrain pending — goal is to lift OOS AUC into the 0.85+ range to flip the strategy economics under maker fee execution.
+
+**v1 spec (frozen, do not edit):** `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`. v1 close-out: `docs/experiments/step4-program-end-state.md`. Goal-A v2 feasibility chain: `docs/experiments/goal-a-feasibility/` (8 artifacts).
 
 **Stack**: Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 
@@ -13,9 +15,9 @@
 ## Data
 
 - **25 symbols**: 2Z, AAVE, ASTER, AVAX, BNB, BTC, CRV, DOGE, ENA, ETH, FARTCOIN, HYPE, KBONK, KPEPE, LDO, LINK, LTC, PENGU, PUMP, SOL, SUI, UNI, WLFI, XPL, XRP
-- **Date range**: 2025-10-16 to 2026-03-25 (~160 days)
-- **Held-out symbol**: AVAX (pre-designated, excluded from pretraining)
-- **Sync**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only`
+- **Date range**: 2025-10-16 to 2026-04-26 (~178 days; April 14-26 deliberately consumed 2026-04-27 for the cascade-precursor OOS test)
+- **Held-out symbol**: AVAX (pre-designated, excluded from v1 contrastive training only — not from Goal-A v2 evaluation)
+- **Sync**: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only --exclude "cache/**"` (the `--exclude` is critical — see gotcha #1)
 
 ### Raw data schema
 
@@ -152,7 +154,7 @@ Fine-tuning heads (added after):
 
 ## Gotchas
 
-1. **R2 fake timestamps**: Use `--size-only` with rclone
+1. **R2 fake timestamps + cache safety**: Use `--size-only` with rclone, AND `--exclude "cache/**"` (or use `rclone copy` not `rclone sync`). The default `rclone sync r2:pacifica-trading-data ./data/` deletes the local-only `data/cache/` directory because it doesn't exist in R2. Footgun hit 2026-04-27 — wiped 4178 cache shards mid-session. Canonical command: `rclone sync r2:pacifica-trading-data ./data/ --transfers 32 --checkers 64 --size-only --exclude "cache/**"`.
 2. **Orderbook alignment**: use `np.searchsorted(ob_ts, trade_ts, side="right") - 1` — vectorize over all events, not Python for-loop
 3. **Order event grouping**: same-timestamp trades are fragments of one order — **dedup first**, then group. Pre-April: `drop_duplicates(subset=['ts_ms', 'qty', 'price'])` WITHOUT `side`. April+: filter to `event_type == 'fulfill_taker'`. After correct dedup, **3-16% of events are mixed-side** (median ~3%; liquid symbols higher). The earlier "59%" figure was an artifact of measuring on undeduped data where each fill appears twice (buyer + seller perspective).
 4. **Rolling medians for normalization**: never use global statistics (lookahead bias). Rolling 1000-event, causal.
@@ -168,11 +170,11 @@ Fine-tuning heads (added after):
 14. **depth_ratio, kyle_lambda, cum_ofi_5**: must use notional (qty × price) for cross-symbol comparability
 15. **cum_ofi_5 uses piecewise Cont 2014 OFI**: naive delta-notional has wrong sign when best bid/ask price changes between snapshots (60-80% of the time at 24s cadence). Must check price level changes.
 16. **Stride**: 50 for pretraining, 200 for evaluation probes. First window offset randomized per epoch.
-17. **April hold-out**: April 14+ is untouched — do not view, even for data quality checks
+17. **April hold-out CONSUMED 2026-04-27**: April 14-26 was deliberately consumed for the cascade-precursor OOS test (commit `b0de994`). The cache now spans 2025-10-16 → 2026-04-26 (4453 shards). Bypass flag added: `build_symbol_day(..., consume_holdout=True)` and `scripts/build_cache.py --consume-holdout`. **No untouched cascade-labeled holdout remains** — any future evaluation requires (a) waiting for new data accrual, or (b) splitting the merged dataset.
 18. **BatchNorm at inference**: must use `model.eval()` for entire test pass — otherwise running stats contaminated. Single-sample = NaN.
 19. **Dedup key must NOT include `side`**: buyer/seller pairs share identical `(ts_ms, qty, price)` but differ on `side` — including `side` in the dedup key PRESERVES both counterparty records (doubling event counts); excluding `side` collapses them to one record per fill (correct). Use `(ts_ms, qty, price)` only.
 20. **OB has 10 levels, not 25**: all symbols measured at 10 bid + 10 ask levels. ~24s cadence, not ~3s.
-21. **Training windows ~641K at stride=50** (2026-04-15 cache build, post-NaN-fix): 4003 shards, 32,060,988 events across 25 symbols × 161 days. BTC: 67,459 windows (17× illiquid alts); ETH: 63,093; HYPE: 43,986; SOL: 40,674. Illiquid alts: 18–22K windows each. Data-to-400K-params ratio ~1:1.6 — model size is a live question for Step 3 (council-6 review pending).
+21. **Cache: 4453 shards (2026-04-27 rebuild, post-holdout-consume)**: 25 symbols × ~178 days each (Oct 16 → Apr 26). Prior count was 4003/4178 across 161/169 days; current run added Apr 14-26 via `--consume-holdout`. Per-symbol stride=50 window counts ≈ +8% from prior baselines.
 22. **MEM reconstruction targets**: exclude delta_imbalance_L1, kyle_lambda, cum_ofi_5 (trivially copyable from neighbors)
 23. **MEM loss space**: compute in BatchNorm-normalized space, not raw feature space
 24. **Embedding collapse**: monitor per-batch embedding std — flag if < **0.05** (NOT 1e-4 — at 256 dims std 1e-3 is already functionally collapsed). Also monitor **effective rank** of the 256×B embedding matrix (count singular values above 1% of max): < 20 at epoch 5 or < 30 at epoch 10 is an early warning (knowledge/concepts/contrastive-learning.md).

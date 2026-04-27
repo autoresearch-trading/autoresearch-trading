@@ -72,15 +72,22 @@ def main() -> int:
         action="store_true",
         help="Rebuild existing shards (default: skip).",
     )
+    p.add_argument(
+        "--consume-holdout",
+        action="store_true",
+        help=(
+            "Deliberately consume the April 14+ hold-out (gotcha #17). One-shot; "
+            "once consumed, those dates are no longer untouched and cannot be used "
+            "for OOS evaluation. Default: refuse end-date >= 2026-04-14."
+        ),
+    )
     args = p.parse_args()
 
-    # Safety: never touch the April hold-out (gotcha #17).
-    # Check at the CLI layer so we fail fast with a clear message before touching disk.
-    # The library layer (build_symbol_day) also raises ValueError — this is belt-and-suspenders.
-    if args.end_date >= APRIL_HELDOUT_START:
+    if args.end_date >= APRIL_HELDOUT_START and not args.consume_holdout:
         print(
             f"ERROR: end-date {args.end_date!r} is in or past the held-out range "
-            f"(>= {APRIL_HELDOUT_START}). Aborting.",
+            f"(>= {APRIL_HELDOUT_START}). Aborting. "
+            f"Pass --consume-holdout to deliberately consume the hold-out.",
             file=sys.stderr,
         )
         return 2
@@ -100,7 +107,9 @@ def main() -> int:
                 skipped += 1
                 continue
             try:
-                shard = build_symbol_day(sym, d, out_root=out_dir)
+                shard = build_symbol_day(
+                    sym, d, out_root=out_dir, consume_holdout=args.consume_holdout
+                )
             except ValueError as exc:
                 # Library-level hold-out guard — should not reach here if CLI check passed,
                 # but handle gracefully just in case (e.g. programmatic misuse).
