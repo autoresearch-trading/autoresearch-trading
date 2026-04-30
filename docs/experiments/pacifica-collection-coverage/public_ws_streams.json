@@ -1,0 +1,91 @@
+{
+  "prices": {
+    "captured": false,
+    "fields": [
+      "funding",
+      "mark",
+      "mid",
+      "next_funding",
+      "open_interest",
+      "oracle",
+      "symbol",
+      "timestamp",
+      "volume_24h",
+      "yesterday_price"
+    ],
+    "note": "No local data/prices partitions found."
+  },
+  "book": {
+    "captured": true,
+    "fields": [
+      "l",
+      "a",
+      "n",
+      "p",
+      "s",
+      "t",
+      "li"
+    ],
+    "note": "Local data/orderbook stores ts_ms, symbol, bids/asks price+qty, recv_ms, agg_level; it does not preserve documented order-count n or exchange nonce li."
+  },
+  "bbo": {
+    "captured": false,
+    "fields": [
+      "s",
+      "i",
+      "li",
+      "t",
+      "b",
+      "B",
+      "a",
+      "A"
+    ],
+    "note": "Best bid/ask can be derived from local orderbook snapshots, but the raw BBO stream fields order id i and last order id li are not stored."
+  },
+  "trades": {
+    "captured": true,
+    "fields": [
+      "h",
+      "s",
+      "a",
+      "p",
+      "d",
+      "tc",
+      "t",
+      "li"
+    ],
+    "note": "Local data/trades stores ts_ms, symbol, trade_id, side, qty, price, recv_ms, cause, event_type, date; April+ cause/event_type are present, but documented history id h and exchange nonce li are not preserved."
+  },
+  "candle": {
+    "captured": false,
+    "fields": [
+      "t",
+      "T",
+      "s",
+      "i",
+      "o",
+      "c",
+      "h",
+      "l",
+      "v",
+      "n"
+    ],
+    "note": "Trade candles are derivable from trades but raw candle stream is not stored."
+  },
+  "mark_price_candle": {
+    "captured": false,
+    "fields": [
+      "t",
+      "T",
+      "s",
+      "i",
+      "o",
+      "c",
+      "h",
+      "l",
+      "v",
+      "n"
+    ],
+    "note": "Not derivable from local trades/orderbook without mark-price data; no local mark-price candle partitions found."
+  }
+}
