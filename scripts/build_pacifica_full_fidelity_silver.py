@@ -12,13 +12,14 @@ import argparse
 import gzip
 import json
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 DEFAULT_RAW_DIR = Path("data/pacifica_full_fidelity")
-DEFAULT_OUT_DIR = Path("data/pacifica_silver")
+DEFAULT_OUT_DIR = Path("data/pacifica_silver_partitioned")
 DEFAULT_CHANNELS = ("prices", "trades", "bbo", "book", "candle", "mark_price_candle")
 
 JsonObject = dict[str, Any]
@@ -286,6 +287,132 @@ def _quality_rows(tables: dict[str, list[JsonObject]]) -> list[JsonObject]:
     return rows
 
 
+def _event_date(row: JsonObject) -> str:
+    ts_ms = _to_int(row.get("event_ts_ms") or row.get("recv_ms"))
+    if ts_ms is None:
+        return "unknown"
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).date().isoformat()
+
+
+def _empty_quality(channels: Sequence[str]) -> dict[str, JsonObject]:
+    return {
+        channel: {
+            "channel": channel,
+            "rows": 0,
+            "symbols_set": set(),
+            "min_event_ts_ms": None,
+            "max_event_ts_ms": None,
+        }
+        for channel in channels
+    }
+
+
+def _update_quality(quality: dict[str, JsonObject], row: JsonObject) -> None:
+    channel = str(row.get("channel") or "unknown")
+    stats = quality.setdefault(
+        channel,
+        {
+            "channel": channel,
+            "rows": 0,
+            "symbols_set": set(),
+            "min_event_ts_ms": None,
+            "max_event_ts_ms": None,
+        },
+    )
+    stats["rows"] += 1
+    if row.get("symbol"):
+        stats["symbols_set"].add(row["symbol"])
+    ts_ms = row.get("event_ts_ms")
+    if ts_ms is None:
+        return
+    stats["min_event_ts_ms"] = (
+        ts_ms
+        if stats["min_event_ts_ms"] is None
+        else min(stats["min_event_ts_ms"], ts_ms)
+    )
+    stats["max_event_ts_ms"] = (
+        ts_ms
+        if stats["max_event_ts_ms"] is None
+        else max(stats["max_event_ts_ms"], ts_ms)
+    )
+
+
+def _quality_frame(quality: dict[str, JsonObject]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "channel": channel,
+                "rows": stats["rows"],
+                "symbols": len(stats["symbols_set"]),
+                "min_event_ts_ms": stats["min_event_ts_ms"],
+                "max_event_ts_ms": stats["max_event_ts_ms"],
+            }
+            for channel, stats in sorted(quality.items())
+        ]
+    )
+
+
+def _flush_partition_buffers(
+    out_dir: Path,
+    buffers: dict[tuple[str, str, str], list[JsonObject]],
+    part_counters: dict[tuple[str, str, str], int],
+) -> None:
+    for key, rows in list(buffers.items()):
+        if not rows:
+            continue
+        channel, symbol, date = key
+        part_idx = part_counters.get(key, 0)
+        path = (
+            out_dir
+            / f"channel={channel}"
+            / f"symbol={symbol}"
+            / f"date={date}"
+            / f"part-{part_idx:06d}.parquet"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).sort_values(
+            ["symbol", "event_ts_ms", "recv_ms"], na_position="last"
+        ).to_parquet(path, index=False)
+        part_counters[key] = part_idx + 1
+        buffers[key] = []
+
+
+def write_partitioned_silver_tables(
+    raw_dir: Path,
+    out_dir: Path,
+    *,
+    channels: Sequence[str] | None = None,
+    chunk_size: int = 250_000,
+) -> dict[str, int]:
+    """Stream raw archive into channel/symbol/date parquet partitions."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selected = tuple(channels or DEFAULT_CHANNELS)
+    wanted = set(selected)
+    buffers: dict[tuple[str, str, str], list[JsonObject]] = {}
+    part_counters: dict[tuple[str, str, str], int] = {}
+    quality = _empty_quality(selected)
+    written = {channel: 0 for channel in selected}
+    buffered_rows = 0
+
+    for record in iter_raw_records(raw_dir, channels=selected):
+        channel = str(record.get("channel") or "unknown")
+        if channel not in wanted or channel not in NORMALIZERS:
+            continue
+        row = NORMALIZERS[channel](record)
+        key = (channel, str(row.get("symbol") or "UNKNOWN"), _event_date(row))
+        buffers.setdefault(key, []).append(row)
+        written[channel] = written.get(channel, 0) + 1
+        _update_quality(quality, row)
+        buffered_rows += 1
+        if buffered_rows >= chunk_size:
+            _flush_partition_buffers(out_dir, buffers, part_counters)
+            buffered_rows = 0
+
+    _flush_partition_buffers(out_dir, buffers, part_counters)
+    _quality_frame(quality).to_csv(out_dir / "quality_summary.csv", index=False)
+    return written
+
+
 def write_silver_tables(
     raw_dir: Path, out_dir: Path, *, channels: Sequence[str] | None = None
 ) -> dict[str, int]:
@@ -316,13 +443,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-dir", type=Path, default=DEFAULT_RAW_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--channels", default=",".join(DEFAULT_CHANNELS))
+    parser.add_argument(
+        "--layout",
+        choices=("partitioned", "flat"),
+        default="partitioned",
+        help="Output layout. partitioned is scalable; flat preserves v1 behavior.",
+    )
+    parser.add_argument("--chunk-size", type=int, default=250_000)
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
     channels = tuple(part.strip() for part in args.channels.split(",") if part.strip())
-    written = write_silver_tables(args.raw_dir, args.out_dir, channels=channels)
+    if args.layout == "flat":
+        written = write_silver_tables(args.raw_dir, args.out_dir, channels=channels)
+    else:
+        written = write_partitioned_silver_tables(
+            args.raw_dir, args.out_dir, channels=channels, chunk_size=args.chunk_size
+        )
     for channel, rows in sorted(written.items()):
         print(f"{channel}: {rows} rows")
     print(f"wrote silver tables to {args.out_dir}")

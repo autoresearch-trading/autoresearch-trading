@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-DEFAULT_SILVER_DIR = Path("data/pacifica_silver")
+DEFAULT_SILVER_DIR = Path("data/pacifica_silver_partitioned")
 DEFAULT_OUT_DIR = Path("docs/experiments/non-hft-regime-state")
 
 
@@ -27,6 +27,19 @@ def bucket_ms(bucket: str) -> int:
     if bucket.endswith("m"):
         return int(float(bucket[:-1]) * 60_000)
     raise ValueError(f"Unsupported bucket: {bucket}")
+
+
+def read_silver_table(silver_dir: Path, channel: str) -> pd.DataFrame:
+    """Read either v1 flat silver parquet or scalable partitioned channel layout."""
+    flat_path = silver_dir / f"{channel}.parquet"
+    if flat_path.exists():
+        return pd.read_parquet(flat_path)
+    parts = sorted(
+        (silver_dir / f"channel={channel}").glob("symbol=*/date=*/*.parquet")
+    )
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat((pd.read_parquet(part) for part in parts), ignore_index=True)
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -46,7 +59,7 @@ def _add_bucket(df: pd.DataFrame, bucket: str) -> pd.DataFrame:
 
 
 def _bbo_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    bbo = _add_bucket(_read(silver_dir / "bbo.parquet"), bucket)
+    bbo = _add_bucket(read_silver_table(silver_dir, "bbo"), bucket)
     if bbo.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     grouped = bbo.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
@@ -73,7 +86,7 @@ def _bbo_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
 
 
 def _trade_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    trades = _add_bucket(_read(silver_dir / "trades.parquet"), bucket)
+    trades = _add_bucket(read_silver_table(silver_dir, "trades"), bucket)
     if trades.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     trades["is_liquidation"] = (
@@ -98,7 +111,7 @@ def _trade_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
 
 
 def _price_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    prices = _add_bucket(_read(silver_dir / "prices.parquet"), bucket)
+    prices = _add_bucket(read_silver_table(silver_dir, "prices"), bucket)
     if prices.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     grouped = prices.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
@@ -114,7 +127,7 @@ def _price_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
 
 
 def _book_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    book = _add_bucket(_read(silver_dir / "book.parquet"), bucket)
+    book = _add_bucket(read_silver_table(silver_dir, "book"), bucket)
     if book.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     return book.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
@@ -211,6 +224,7 @@ def _markdown_summary(
         "",
         "This report is a slow regime-state layer built from full-fidelity Pacifica data.",
         "It is intentionally non-HFT: features are aggregated to decision buckets and should be used for risk/no-trade overlays before alpha tests.",
+        "The upstream silver layer is now partitioned by channel/symbol/date so raw JSONL.GZ can be normalized in bounded chunks instead of one in-memory table.",
         "",
         f"Bucket: `{bucket}`",
         f"Rows: {len(state)}",

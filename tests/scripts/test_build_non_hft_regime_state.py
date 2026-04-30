@@ -6,6 +6,7 @@ import pytest
 from scripts.build_non_hft_regime_state import (
     build_regime_state,
     compute_toxicity_score,
+    read_silver_table,
     write_regime_state,
 )
 
@@ -110,6 +111,36 @@ def test_build_regime_state_aggregates_slow_one_minute_features(tmp_path: Path) 
     assert first["mark_oracle_basis_bps"] == 5.0
     assert first["open_interest"] == 10.0
     assert first["mid_return_bps"] == pytest.approx(100.0)
+
+
+def test_read_silver_table_reads_partitioned_channel_layout(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    part = (
+        silver
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=1970-01-01"
+        / "part-000000.parquet"
+    )
+    part.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 0,
+                "symbol": "BTC",
+                "mid": 100.0,
+                "spread_bps": 10.0,
+                "top_bid_notional": 1.0,
+                "top_ask_notional": 1.0,
+                "last_order_id": 1,
+            }
+        ]
+    ).to_parquet(part, index=False)
+
+    table = read_silver_table(silver, "bbo")
+
+    assert len(table) == 1
+    assert table.loc[0, "symbol"] == "BTC"
 
 
 def test_compute_toxicity_score_is_slow_regime_ranking_not_trade_trigger() -> None:

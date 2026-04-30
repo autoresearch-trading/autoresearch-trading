@@ -11,6 +11,7 @@ from scripts.build_pacifica_full_fidelity_silver import (
     normalize_book_record,
     normalize_price_record,
     normalize_trade_record,
+    write_partitioned_silver_tables,
     write_silver_tables,
 )
 
@@ -217,3 +218,84 @@ def test_write_silver_tables_outputs_channel_parquet_and_quality_csv(
     assert trades.loc[0, "notional"] == 100.0
     quality = pd.read_csv(tmp_path / "silver" / "quality_summary.csv")
     assert set(quality["channel"]) == {"trades", "bbo"}
+
+
+def test_write_partitioned_silver_tables_flushes_by_channel_symbol_date_without_flat_table(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw"
+    rows = [
+        _record(
+            "trades",
+            "BTC",
+            {
+                "s": "BTC",
+                "a": "1",
+                "p": "100",
+                "d": "open_long",
+                "tc": "normal",
+                "t": 1_700_000_000_000,
+                "h": 1,
+                "li": 10,
+            },
+        ),
+        _record(
+            "trades",
+            "ETH",
+            {
+                "s": "ETH",
+                "a": "2",
+                "p": "50",
+                "d": "open_short",
+                "tc": "normal",
+                "t": 1_700_000_060_000,
+                "h": 2,
+                "li": 11,
+            },
+        ),
+        _record(
+            "bbo",
+            "BTC",
+            {
+                "s": "BTC",
+                "b": "99",
+                "B": "1",
+                "a": "101",
+                "A": "1",
+                "i": 20,
+                "li": 21,
+                "t": 1_700_000_000_000,
+            },
+        ),
+    ]
+    _write_raw(
+        raw / "channel=trades" / "symbol=BTC" / "date=2023-11-14" / "run.jsonl.gz",
+        [rows[0]],
+    )
+    _write_raw(
+        raw / "channel=trades" / "symbol=ETH" / "date=2023-11-14" / "run.jsonl.gz",
+        [rows[1]],
+    )
+    _write_raw(
+        raw / "channel=bbo" / "symbol=BTC" / "date=2023-11-14" / "run.jsonl.gz",
+        [rows[2]],
+    )
+
+    written = write_partitioned_silver_tables(
+        raw, tmp_path / "silver", channels=["trades", "bbo"], chunk_size=1
+    )
+
+    assert written["trades"] == 2
+    assert written["bbo"] == 1
+    assert not (tmp_path / "silver" / "trades.parquet").exists()
+    btc_trade_parts = list(
+        (tmp_path / "silver" / "channel=trades" / "symbol=BTC").glob("date=*/*.parquet")
+    )
+    eth_trade_parts = list(
+        (tmp_path / "silver" / "channel=trades" / "symbol=ETH").glob("date=*/*.parquet")
+    )
+    assert len(btc_trade_parts) == 1
+    assert len(eth_trade_parts) == 1
+    assert pd.read_parquet(btc_trade_parts[0]).loc[0, "notional"] == 100.0
+    quality = pd.read_csv(tmp_path / "silver" / "quality_summary.csv")
+    assert quality.set_index("channel").loc["trades", "rows"] == 2
