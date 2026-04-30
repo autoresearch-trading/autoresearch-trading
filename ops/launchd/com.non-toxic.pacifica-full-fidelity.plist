@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.non-toxic.pacifica-full-fidelity</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/diego/Dev/non-toxic/autoresearch-trading</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/diego/.local/bin/uv</string>
+    <string>run</string>
+    <string>python</string>
+    <string>scripts/collect_pacifica_full_fidelity.py</string>
+    <string>--out-dir</string>
+    <string>data/pacifica_full_fidelity</string>
+    <string>--rest-snapshot-interval-s</string>
+    <string>60</string>
+    <string>--subscription-batch-size</string>
+    <string>25</string>
+    <string>--subscription-delay-s</string>
+    <string>0.5</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/diego/Dev/non-toxic/autoresearch-trading/logs/pacifica-full-fidelity.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/diego/Dev/non-toxic/autoresearch-trading/logs/pacifica-full-fidelity.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+</dict>
+</plist>
