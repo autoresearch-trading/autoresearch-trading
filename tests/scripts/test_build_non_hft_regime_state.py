@@ -271,5 +271,8 @@ def test_write_regime_state_creates_parquet_csv_and_report(tmp_path: Path) -> No
     assert (out / "regime_state.parquet").exists()
     assert (out / "regime_state_preview.csv").exists()
     assert (out / "README.md").exists()
-    assert "non-HFT" in (out / "README.md").read_text()
+    report = (out / "README.md").read_text()
+    assert "non-HFT" in report
+    assert "Current handoff" in report
+    assert "Do not assume all collected symbols should be traded" in report
     assert len(state) == 1

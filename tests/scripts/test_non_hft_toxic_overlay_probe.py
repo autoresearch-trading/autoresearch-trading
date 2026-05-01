@@ -176,4 +176,7 @@ def test_write_toxic_overlay_report_creates_expected_outputs(tmp_path: Path) -> 
     assert result["state_with_forward_metrics"].endswith(
         "state_with_forward_metrics.parquet"
     )
-    assert "Toxic Regime Overlay" in (out_dir / "README.md").read_text()
+    report = (out_dir / "README.md").read_text()
+    assert "Toxic Regime Overlay" in report
+    assert "Current handoff" in report
+    assert "Do not claim an edge from this diagnostic run" in report

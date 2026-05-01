@@ -244,6 +244,14 @@ def _markdown_summary(
         lines.extend(["## Silver input quality", "", quality.to_csv(index=False), ""])
     lines.extend(
         [
+            "## Current handoff",
+            "",
+            "Active goal: build a highly profitable non-HFT Pacifica paper-trading system. Sortino > 2 is a quality bar, but success also requires positive net PnL after fees/slippage/funding, bounded drawdown, enough trades/days, and no single symbol/day dominating results.",
+            "",
+            "This regime-state layer is a research/risk substrate across the full live public Pacifica universe. Do not assume all collected symbols should be traded; paper trading must use explicit liquidity, spread/cost, sample-size, stability, concentration, and post-cost eligibility gates.",
+            "",
+            "Current local runs are diagnostic until enough distinct full-fidelity days accrue. Keep downstream toxicity thresholds fixed while new data arrives; do not tune cutoffs on the initial diagnostic sample.",
+            "",
             "## Intended next probe",
             "",
             "Use this table to test whether high-toxicity buckets predict worse adverse excursion/slippage and whether avoiding them improves a non-HFT Sortino proxy.",
