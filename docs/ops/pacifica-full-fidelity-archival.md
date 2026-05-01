@@ -8,7 +8,7 @@ The collector stores gzip-compressed JSONL before lossy normalization under:
 
 `data/pacifica_full_fidelity/`
 
-It covers public market-data streams only:
+It covers public market-data streams only and is intended to collect the full live Pacifica symbol universe from `/info`, not just the legacy 25-symbol research set:
 
 - `prices`, global stream
 - `trades`, per symbol
@@ -36,7 +36,15 @@ uv run python scripts/collect_pacifica_full_fidelity.py \
   --out-dir data/pacifica_full_fidelity
 ```
 
-By default this fetches live symbols from `https://api.pacifica.fi/api/v1/info` and subscribes to all documented public market streams/intervals.
+By default this fetches live symbols from `https://api.pacifica.fi/api/v1/info` and subscribes to all documented public market streams/intervals. Use the count snippet below when you need the current dynamic symbol/subscription count without printing the full subscription plan.
+
+```bash
+uv run python - <<'PY'
+from scripts.collect_pacifica_full_fidelity import build_subscriptions, fetch_live_symbols
+symbols = fetch_live_symbols()
+print('live_symbols=', len(symbols), 'subscriptions=', len(build_subscriptions(symbols)))
+PY
+```
 
 For a small smoke test:
 
@@ -108,5 +116,5 @@ Each websocket row includes:
 - The collector sends heartbeat pings every 30 seconds because Pacifica closes idle websocket connections after 60 seconds.
 - It reconnects automatically after websocket errors.
 - Pacifica documents websocket lifetime as 24 hours; launchd `KeepAlive` restarts the process if it exits.
-- Full-fidelity mode is high-cardinality: at 65 symbols and all 11 candle intervals, it creates more than 1,600 subscriptions. If Pacifica rate-limits this, run multiple symbol shards with separate plists or reduce intervals temporarily.
+- Full-fidelity mode is high-cardinality. Subscription count is dynamic: `1 + N_symbols * (trades + bbo + book agg levels + 2 * candle intervals)`. With the default 1 book aggregation level and 11 candle intervals, that is `1 + N_symbols * 25`. Use the count snippet above to see the current count. If Pacifica rate-limits this, run multiple symbol shards with separate plists or reduce intervals temporarily.
 - `data/pacifica_full_fidelity/` should be treated as raw data, not source code. Do not commit captured archives.

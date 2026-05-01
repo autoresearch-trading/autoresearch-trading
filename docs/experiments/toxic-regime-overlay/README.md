@@ -99,6 +99,15 @@ Minimum serious-validation gates used here: `30` distinct days and `100` removed
 | 22 | 3900 | 0.4241 | 0.7407 |
 | 23 | 975 | 0.4217 | 0.7433 |
 
+## Current handoff and strategic interpretation
+
+- This is a 1-day diagnostic, not an edge claim.
+- The active goal is highly profitable non-HFT paper trading; Sortino > 2 is a quality bar, not the only gate.
+- The archive/research universe should include all live Pacifica symbols captured by the full-fidelity collector.
+- The paper-traded universe should be a filtered subset, not automatically all symbols.
+- Keep the current toxicity thresholds fixed while fresh days accrue.
+- Re-run this probe at 30+ full days for provisional validation and 60+ days for stronger validation.
+
 ## Next step
 
 Keep this probe fixed while the collector accrues fresh days. Do not tune cutoffs based on the diagnostic run. Once 30+ full days exist, rerun for provisional validation; once 60+ days exist, use chronological/purged validation.

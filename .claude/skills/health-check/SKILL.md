@@ -1,82 +1,35 @@
 ---
 name: health-check
-description: Cross-reference spec, CLAUDE.md, code, memory, and knowledge base for inconsistencies. Use periodically or before major implementation steps. Triggers on "health check", "lint knowledge", "check consistency".
+description: Consistency audit for active full-fidelity Pacifica paper-trading docs, code, tests, and agent instructions.
 ---
 
-# Health Check
+# Health Check — active full-fidelity branch
 
-You are running a consistency audit across the project's documentation, code,
-and knowledge base. The goal is to find drift, contradictions, and gaps.
+Use this to find drift, contradictions, and stale references across the current project.
 
-## Process
+## Sources of truth
 
-### 1. Load the three sources of truth
+Read:
 
-Read these files:
-- `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md` (spec)
-- `CLAUDE.md` (conventions and gotchas)
-- `knowledge/INDEX.md` → then read each linked article
+1. `CLAUDE.md`
+2. `docs/NEXT_SESSION_HANDOFF.md`
+3. `docs/AGENT_OPERATING_MAP.md`
+4. `README.md`
+5. `docs/ops/pacifica-full-fidelity-archival.md`
+6. `docs/experiments/non-hft-regime-state/README.md`
+7. `docs/experiments/toxic-regime-overlay/README.md`
 
-### 2. Cross-reference checks
+## Checks
 
-For each check, record PASS or FAIL with details.
+- Active direction is full-fidelity Pacifica non-HFT paper trading, not old 25-symbol representation learning.
+- Symbol universe is dynamic from `/info`; no hard-coded 63/65/66 as configuration.
+- Current data-sample caveats are explicit; 1-2 day probes are diagnostic only.
+- Toxic thresholds are not tuned on diagnostic sample.
+- Trading eligibility gates require liquidity, costs, sample size, stability, concentration, and post-cost economics.
+- Agent files in `.claude/` do not silently point agents back to the old program.
+- No credentials, local allowlists, tokens, SSH keys, or raw secrets are tracked.
+- Tests exist and are run for changed scripts.
 
-**Spec vs CLAUDE.md:**
-- Does CLAUDE.md's feature list match the spec's 17 features?
-- Do CLAUDE.md's gotchas reflect all spec constraints?
-- Does the architecture description match?
+## Output
 
-**Spec vs Knowledge Base:**
-- Does every feature in the spec have a concept article? List missing ones.
-- Does every major decision in the spec have a decision record?
-- Are there knowledge articles that contradict the spec?
-
-**Knowledge Base vs Code:**
-- For each concept article mentioning a feature: grep for the feature name in
-  `prepare.py` and `train.py`. Does the implementation match the article?
-- For each decision: is it reflected in current code?
-
-**Staleness:**
-- Are any knowledge articles' `last_updated` dates more than 7 days old while
-  their source files have been modified more recently? (Check with git log)
-- Are any CLAUDE.md gotchas no longer relevant?
-
-**Internal Consistency:**
-- Do cross-links in knowledge articles point to articles that exist?
-- Are there duplicate articles covering the same topic?
-- Do decision statuses make sense? (e.g., "accepted" decision that was later
-  superseded should be "superseded")
-
-### 3. Suggest improvements
-
-For each FAIL:
-- What is inconsistent
-- Which source is likely correct (prefer: code > spec > knowledge > CLAUDE.md)
-- Suggested fix
-
-Also suggest:
-- New concept articles for topics discussed in council reviews but not yet in
-  the knowledge base
-- New experiment articles for completed experiments not yet summarized
-- Interesting connections between existing articles
-
-### 4. Output
-
-Write the report to `knowledge/HEALTH_CHECK.md`:
-
-```markdown
-# Knowledge Base Health Check
-
-**Date:** <today>
-**Status:** X pass / Y fail / Z suggestions
-
-## Failures
-### F1: <description>
-...
-
-## Suggestions
-### S1: <description>
-...
-```
-
-Return a 1-2 sentence summary to the caller.
+Write a concise PASS/FAIL report with exact files/lines for any drift.

@@ -19,6 +19,12 @@ prices,126490,65,1777584081310,1777590885311
 trades,11114,65,1777584084680,1777590887882
 
 
+## Handoff notes
+
+- Active goal: highly profitable non-HFT paper trading; Sortino > 2 is a quality bar plus post-cost PnL/drawdown/trade-count/concentration gates.
+- Use this layer across the live full-fidelity symbol universe, but only paper trade symbols passing liquidity/cost/stability gates.
+- Current report is diagnostic because it is based on one day; do not claim edge until 30+ full days, preferably 60+.
+
 ## Intended next probe
 
 Use this table to test whether high-toxicity buckets predict worse adverse excursion/slippage and whether avoiding them improves a non-HFT Sortino proxy.

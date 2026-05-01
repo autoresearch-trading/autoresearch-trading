@@ -1,16 +1,56 @@
-# Repository Guidelines — representation-learning branch
+# Repository Guidelines — active full-fidelity paper-trading branch
 
-## Project Overview
+## Current Active Program (2026-04-30)
+
+**Goal:** build a highly profitable, non-HFT Pacifica paper-trading system. Sortino > 2 is the quality bar, but success also requires positive net PnL after fees/slippage/funding, bounded drawdown, enough trades/days, and no single symbol/day dominating results.
+
+**Critical handoff:** read `docs/NEXT_SESSION_HANDOFF.md` first in any fresh session. For tool/skill inventory and repo-local `.claude` agent status, read `docs/AGENT_OPERATING_MAP.md`. The old 25-symbol representation-learning program is historical context, not the current starting point.
+
+**Active thesis:** collect full-fidelity public Pacifica market data across the live symbol universe, aggregate it into slow decision buckets, and use it for toxicity/no-trade overlays, dislocation studies, forced-flow/post-liquidation event studies, and eventually sparse paper-trading rules. The user cannot do HFT, so do not propose latency-arb, next-tick, queue-position, or high-turnover strategies.
+
+**Universe policy:** collect all live public Pacifica symbols dynamically from `/info`; local raw/silver/regime symbol counts are snapshots and should be refreshed before operational decisions. Only paper trade symbols that pass pre-registered liquidity, spread/cost, sample-size, stability, and concentration gates. Do not assume all collected symbols should be traded.
+
+## Active Full-Fidelity Data Pipeline
+
+**Raw collector:** `scripts/collect_pacifica_full_fidelity.py`
+- Output: `data/pacifica_full_fidelity/`
+- Docs: `docs/ops/pacifica-full-fidelity-archival.md`
+- launchd plist: `ops/launchd/com.non-toxic.pacifica-full-fidelity.plist`
+- Captures public streams only: prices, trades, book, bbo, candle, mark_price_candle, REST `/info`, REST `/info/prices`.
+
+**Silver builder:** `scripts/build_pacifica_full_fidelity_silver.py`
+- Output: `data/pacifica_silver_partitioned/`
+- Partitioned by channel/symbol/date.
+
+**Regime-state builder:** `scripts/build_non_hft_regime_state.py`
+- Report: `docs/experiments/non-hft-regime-state/README.md`
+- Current diagnostic report: 1-minute buckets, 7,410 rows, 65 symbols.
+
+**Toxic-regime overlay probe:** `scripts/non_hft_toxic_overlay_probe.py`
+- Report: `docs/experiments/toxic-regime-overlay/README.md`
+- Current verdict: `INSUFFICIENT_SAMPLE_DIAGNOSTIC` because the archive has only 1 distinct report day so far.
+- Keep thresholds fixed while data accrues; do not tune cutoffs on the diagnostic day.
+
+## Current Next Steps
+
+1. Verify the full-fidelity collector is still running and accumulating raw JSONL.GZ.
+2. Refresh silver from raw archive.
+3. Rebuild the 1-minute non-HFT regime-state table across all live symbols.
+4. Rerun the fixed toxic-regime overlay probe without changing thresholds.
+5. Add explicit paper-trading eligibility gates before any strategy can trade all symbols.
+6. Build sparse strategy/backtest/paper-logger only after economics gates and baselines are specified.
+
+## Historical Context — Legacy 25-Symbol Representation Learning
 
 **DEX perpetual futures tape representation learning.** Self-supervised model trained on raw trade data + 10-level OB context from Pacifica perp DEX (~178 days, 25 crypto symbols) to learn tradeable tape representations.
 
-**Active program (Goal A v2, 2026-04-27):** cascade-precursor encoder. After v1 (direction-prediction representation learning) closed `v1-program-closed` having found a +1pp directional signal that was fee-blocked at every framing tested, the program pivoted to predicting *liquidation-cascade onset* using the Pacifica-unique `cause` flag. Flat-LR baseline at AUC=0.815 in-sample (Apr 1-13) generalized OOS to AUC=0.778 on Apr 14-26 (n=96 cascades, day-clustered CI [0.732, 0.833], distinguishable from shuffled). Encoder retrain pending — goal is to lift OOS AUC into the 0.85+ range to flip the strategy economics under maker fee execution.
+**Prior program (Goal A v2, 2026-04-27):** cascade-precursor encoder. After v1 (direction-prediction representation learning) closed `v1-program-closed` having found a +1pp directional signal that was fee-blocked at every framing tested, the program pivoted to predicting *liquidation-cascade onset* using the Pacifica-unique `cause` flag. Flat-LR baseline at AUC=0.815 in-sample (Apr 1-13) generalized OOS to AUC=0.778 on Apr 14-26 (n=96 cascades, day-clustered CI [0.732, 0.833], distinguishable from shuffled). Direct trade economics still failed; the active program moved to full-fidelity live data and non-HFT tradeability/risk overlays.
 
 **v1 spec (frozen, do not edit):** `docs/superpowers/specs/2026-04-10-tape-representation-learning-spec.md`. v1 close-out: `docs/experiments/step4-program-end-state.md`. Goal-A v2 feasibility chain: `docs/experiments/goal-a-feasibility/` (8 artifacts).
 
 **Stack**: Python 3.12+, PyTorch, NumPy, Pandas, DuckDB
 
-**Agent system:** Start with `claude --agent lead-0`. Lead-0 orchestrates council (council-1 through council-6) and workers (runpod-7 through researcher-14, excluding data-eng-13 — merged into builder-8).
+**Agent system:** If using Claude Code agents, start with the now-retargeted `claude --agent lead-0` and read `docs/AGENT_OPERATING_MAP.md`. Core agents (`lead-0`, `builder-8`, `reviewer-10`, `analyst-9`, `validator-11`, `researcher-14`) are active-branch oriented; council/runpod/prover agents are legacy/optional unless explicitly needed.
 
 ## Data
 
