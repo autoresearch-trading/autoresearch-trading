@@ -113,6 +113,82 @@ def test_build_regime_state_aggregates_slow_one_minute_features(tmp_path: Path) 
     assert first["mid_return_bps"] == pytest.approx(100.0)
 
 
+def test_build_regime_state_counts_pacifica_cause_liquidations(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    silver.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 1_000,
+                "symbol": "BTC",
+                "signed_qty": -1.0,
+                "qty": 1.0,
+                "notional": 100.0,
+                "trade_class": "normal",
+                "cause": "market_liquidation",
+            },
+            {
+                "event_ts_ms": 2_000,
+                "symbol": "BTC",
+                "signed_qty": 2.0,
+                "qty": 2.0,
+                "notional": 250.0,
+                "trade_class": "normal",
+                "cause": "backstop_liquidation",
+            },
+            {
+                "event_ts_ms": 3_000,
+                "symbol": "BTC",
+                "signed_qty": 3.0,
+                "qty": 3.0,
+                "notional": 300.0,
+                "trade_class": "normal",
+                "cause": "normal",
+            },
+        ]
+    ).to_parquet(silver / "trades.parquet", index=False)
+
+    state = build_regime_state(silver, bucket="1min")
+
+    assert len(state) == 1
+    row = state.iloc[0]
+    assert row["liquidation_count"] == 2
+    assert row["liquidation_notional"] == 350.0
+
+
+def test_build_regime_state_counts_pacifica_trade_class_liquidation_variants(
+    tmp_path: Path,
+) -> None:
+    silver = tmp_path / "silver"
+    silver.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 1_000,
+                "symbol": "BTC",
+                "signed_qty": -1.0,
+                "qty": 1.0,
+                "notional": 125.0,
+                "trade_class": "insolvency_liquidation",
+            },
+            {
+                "event_ts_ms": 2_000,
+                "symbol": "BTC",
+                "signed_qty": 1.0,
+                "qty": 1.0,
+                "notional": 75.0,
+                "trade_class": "normal",
+            },
+        ]
+    ).to_parquet(silver / "trades.parquet", index=False)
+
+    state = build_regime_state(silver, bucket="1min")
+
+    row = state.iloc[0]
+    assert row["liquidation_count"] == 1
+    assert row["liquidation_notional"] == 125.0
+
+
 def test_read_silver_table_reads_partitioned_channel_layout(tmp_path: Path) -> None:
     silver = tmp_path / "silver"
     part = (

@@ -89,11 +89,20 @@ def _trade_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
     trades = _add_bucket(read_silver_table(silver_dir, "trades"), bucket)
     if trades.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
-    trades["is_liquidation"] = (
+    trade_class = (
         trades.get("trade_class", pd.Series(index=trades.index, dtype=object))
         .fillna("")
         .str.lower()
-        .eq("liquidation")
+    )
+    cause = (
+        trades.get("cause", pd.Series(index=trades.index, dtype=object))
+        .fillna("")
+        .str.lower()
+    )
+    trades["is_liquidation"] = (
+        trade_class.eq("liquidation")
+        | trade_class.str.endswith("_liquidation")
+        | cause.isin(["market_liquidation", "backstop_liquidation"])
     )
     trades["liq_notional"] = trades["notional"].where(trades["is_liquidation"], 0.0)
     grouped = trades.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
