@@ -60,6 +60,44 @@ def test_iter_raw_records_reads_partitioned_jsonl_gz(tmp_path: Path) -> None:
     assert records == [row]
 
 
+def test_iter_raw_records_skips_incomplete_active_gzip_file(tmp_path: Path) -> None:
+    row = _record(
+        "trades",
+        "BTC",
+        {
+            "s": "BTC",
+            "a": "2",
+            "p": "100",
+            "d": "open_long",
+            "tc": "normal",
+            "t": 1,
+            "h": 7,
+            "li": 8,
+        },
+    )
+    _write_raw(
+        tmp_path
+        / "channel=trades"
+        / "symbol=BTC"
+        / "date=2026-04-30"
+        / "complete.jsonl.gz",
+        [row],
+    )
+    active_path = (
+        tmp_path
+        / "channel=trades"
+        / "symbol=ETH"
+        / "date=2026-04-30"
+        / "active.jsonl.gz"
+    )
+    active_path.parent.mkdir(parents=True, exist_ok=True)
+    active_path.write_bytes(b"not a complete gzip stream")
+
+    records = list(iter_raw_records(tmp_path, channels=["trades"]))
+
+    assert records == [row]
+
+
 def test_normalize_trade_preserves_full_fidelity_ids_and_classifies_side() -> None:
     row = _record(
         "trades",

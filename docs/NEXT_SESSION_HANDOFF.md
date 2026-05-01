@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-01 09:02 EST
+Updated: 2026-05-01 09:54 EST
 
 ## Start here
 
@@ -19,10 +19,16 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 Latest committed work:
 
 ```text
+bc20850 docs: update next session handoff
+```
+
+Relevant prior commit:
+
+```text
 8a5db43 chore: switch repo agent context to Hermes
 ```
 
-Included in that commit:
+Included in the Hermes-context switch:
 
 - `AGENTS.md` created as the canonical repo instruction file.
 - `CLAUDE.md` removed.
@@ -35,13 +41,12 @@ Included in that commit:
   - `docs/research/2026-05-01-real-time-streaming-research-pass.md`
 - non-HFT regime-state and toxic overlay diagnostic reports refreshed from the newer silver snapshot.
 
-Git status immediately after commit was clean.
-
 Latest local check in this handoff session:
 
 ```text
 branch: main
-latest commit: 8a5db43 chore: switch repo agent context to Hermes
+latest commit: bc20850 docs: update next session handoff
+working tree: modified by refreshed diagnostics and a silver-builder robustness fix; not yet committed
 ```
 
 ## Primary goal
@@ -116,17 +121,17 @@ Captured public data:
 - per-symbol `mark_price_candle`;
 - REST `/info` and `/info/prices` snapshots.
 
-Latest filesystem freshness check at 2026-05-01 09:02 EST:
+Latest filesystem freshness check at 2026-05-01 09:54 EST:
 
 ```text
 data/pacifica_full_fidelity exists=True
 files=3712
 symbols=66
 dates=2026-04-30, 2026-05-01
-latest_age_s=18.2
+latest_age_s=3.8
 ```
 
-Interpretation: raw collection appears to still be advancing. Verify launchd/process state in the fresh session before assuming it is healthy.
+Interpretation: raw collection is running under launchd and continues to advance. Latest process check showed `com.non-toxic.pacifica-full-fidelity` in `state = running` with the collector Python process active. Do not paste launchd environment output into reports because it may include inherited secrets.
 
 ### Silver builder
 
@@ -138,29 +143,29 @@ Output:
 
 - `data/pacifica_silver_partitioned/`
 
-Last committed silver-backed reports came from this refresh:
+Last local silver refresh completed successfully after adding active-gzip robustness:
 
 ```text
-bbo: 1095714 rows
-book: 4401938 rows
-candle: 827339 rows
-mark_price_candle: 11747782 rows
-prices: 548632 rows
-trades: 48054 rows
-wrote silver tables to data/pacifica_silver_partitioned
+bbo: 2340115 rows
+book: 7762239 rows
+candle: 1483561 rows
+mark_price_candle: 20686075 rows
+prices: 964508 rows
+trades: 87637 rows
+wrote silver tables to data/pacifica_silver_partitioned_refresh
 ```
 
-Latest filesystem freshness check at 2026-05-01 09:02 EST:
+Latest filesystem freshness check at 2026-05-01 09:54 EST:
 
 ```text
-data/pacifica_silver_partitioned exists=True
-files=901
+data/pacifica_silver_partitioned_refresh exists=True
+files=912
 symbols=65
 dates=2026-04-30, 2026-05-01
-latest_age_s=27712.7
+latest_age_s=90.4
 ```
 
-Interpretation: raw is much fresher than silver. In a fresh session, refresh silver from raw before relying on new diagnostics.
+Interpretation: refreshed diagnostics below were built from `data/pacifica_silver_partitioned_refresh`. The canonical `data/pacifica_silver_partitioned` directory was not replaced because a cleanup command was denied; either use the refresh directory explicitly or safely replace the canonical generated silver directory later. The silver builder now skips incomplete active gzip files from the live collector instead of failing with `gzip.BadGzipFile`/CRC errors.
 
 ### Realtime research monitor
 
@@ -186,7 +191,7 @@ Supported sources:
 - `--source silver` reads partitioned parquet from `data/pacifica_silver_partitioned`; preferred routine path after refreshing silver.
 - `--source raw` reads recent/bounded raw JSONL.GZ files from `data/pacifica_full_fidelity`; fallback/debug path.
 
-Latest full silver-backed monitor verification during cleanup wrote to `/tmp/pacifica_realtime_research_full_check` with:
+Latest silver-backed monitor verification used `data/pacifica_silver_partitioned_refresh` and wrote to `data/pacifica_realtime_research` with:
 
 ```text
 warnings.json = []
@@ -221,12 +226,12 @@ Report/output:
 - `docs/experiments/non-hft-regime-state/regime_state_preview.csv`
 - `docs/experiments/non-hft-regime-state/silver_quality_summary.csv`
 
-Latest committed result:
+Latest local refreshed result:
 
 ```text
-wrote 32047 regime-state rows to docs/experiments/non-hft-regime-state
+wrote 57372 regime-state rows to docs/experiments/non-hft-regime-state
 Bucket: 1min
-Rows: 32047
+Rows: 57372
 Symbols: 65
 ```
 
@@ -259,11 +264,11 @@ Report/output:
 - `docs/experiments/toxic-regime-overlay/hour_summary.csv`
 - `docs/experiments/toxic-regime-overlay/toxic_bucket_summary.csv`
 
-Latest committed result:
+Latest local refreshed result:
 
 ```text
 verdict: INSUFFICIENT_SAMPLE_DIAGNOSTIC
-Rows: 32047
+Rows: 57372
 Symbols: 65
 Distinct dates: 2
 Horizons minutes: [5, 15, 30, 60]
@@ -287,7 +292,7 @@ Keep toxicity thresholds fixed while data accrues. Do not tune cutoffs based on 
 
 ## Verification status
 
-Verification after commit `8a5db43`:
+Verification in this handoff update:
 
 ```bash
 uv run pytest tests/scripts/test_watch_pacifica_realtime_research.py \
@@ -300,7 +305,7 @@ uv run pytest tests/scripts/test_watch_pacifica_realtime_research.py \
 Result:
 
 ```text
-31 passed in 0.63s
+32 passed in 0.84s
 ```
 
 Compile/checks:
@@ -308,6 +313,7 @@ Compile/checks:
 ```bash
 python -m py_compile \
   scripts/watch_pacifica_realtime_research.py \
+  scripts/build_pacifica_full_fidelity_silver.py \
   scripts/build_non_hft_regime_state.py \
   scripts/non_hft_toxic_overlay_probe.py
 
@@ -316,19 +322,17 @@ git diff --check
 
 Result: passed.
 
-Note: the commit hook ran Black/isort and reformatted the new monitor script/test before committing.
+Note: one new regression test covers incomplete active gzip files in the raw archive; the silver builder now skips those files and picks them up on a later build.
 
 ## Recommended next steps in a fresh session
 
-1. Run `git status --short` and confirm the tree is clean, aside from any new raw data generated under gitignored `data/`.
-2. Verify the raw collector/launchd job is still running and raw files are still advancing.
-3. Refresh silver from raw, because raw is much fresher than the committed silver-backed reports.
-4. Rerun the silver-backed realtime monitor and confirm `warnings.json` is empty.
-5. Rebuild `docs/experiments/non-hft-regime-state` from refreshed silver.
-6. Rerun `docs/experiments/toxic-regime-overlay` without changing thresholds.
-7. If the refreshed diagnostics changed meaningfully, commit those generated report updates.
-8. Add explicit paper-trading eligibility gates before any strategy can trade all symbols.
-9. Only after eligibility gates and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
+1. Run `git status --short` and review the uncommitted refreshed diagnostics plus silver-builder fix.
+2. Decide whether to commit the refreshed report updates and robustness fix.
+3. If desired, safely replace canonical generated silver output with the refresh directory, or continue passing `--silver-dir data/pacifica_silver_partitioned_refresh` explicitly.
+4. Verify the raw collector/launchd job is still running and raw files are still advancing.
+5. Keep rerunning the fixed toxic-regime overlay as more full days accrue, without changing thresholds.
+6. Add explicit paper-trading eligibility gates before any strategy can trade all symbols.
+7. Only after eligibility gates and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
 
 ## Quick commands
 
@@ -372,7 +376,7 @@ Refresh silver from raw:
 ```bash
 python scripts/build_pacifica_full_fidelity_silver.py \
   --raw-dir data/pacifica_full_fidelity \
-  --out-dir data/pacifica_silver_partitioned
+  --out-dir data/pacifica_silver_partitioned_refresh
 ```
 
 Run silver-backed realtime monitor:
@@ -380,7 +384,7 @@ Run silver-backed realtime monitor:
 ```bash
 python scripts/watch_pacifica_realtime_research.py \
   --source silver \
-  --silver-dir data/pacifica_silver_partitioned \
+  --silver-dir data/pacifica_silver_partitioned_refresh \
   --out-dir data/pacifica_realtime_research \
   --stale-after-s 300
 ```
@@ -401,7 +405,7 @@ Rebuild regime and toxic reports:
 
 ```bash
 python scripts/build_non_hft_regime_state.py \
-  --silver-dir data/pacifica_silver_partitioned \
+  --silver-dir data/pacifica_silver_partitioned_refresh \
   --out-dir docs/experiments/non-hft-regime-state
 
 python scripts/non_hft_toxic_overlay_probe.py \

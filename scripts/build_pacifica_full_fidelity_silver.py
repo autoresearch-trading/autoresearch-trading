@@ -247,10 +247,15 @@ def iter_raw_records(
         )
         if channel not in wanted:
             continue
-        with gzip.open(path, "rt", encoding="utf-8") as fh:
-            for line in fh:
-                if line.strip():
-                    yield json.loads(line)
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.strip():
+                        yield json.loads(line)
+        except (EOFError, gzip.BadGzipFile):
+            # The live collector may still be appending the newest gzip member.
+            # Skip incomplete active files; they will be picked up on a later build.
+            continue
 
 
 def normalize_records(
