@@ -8,6 +8,7 @@ from scripts.collect_pacifica_full_fidelity import (
     DEFAULT_INTERVALS,
     build_subscriptions,
     channel_symbol_date,
+    ensure_min_free_disk,
     event_rows_from_message,
     parse_symbol_filter,
     write_jsonl_records,
@@ -53,7 +54,7 @@ def test_channel_symbol_date_for_batched_prices_uses_symbol_and_event_time():
     assert channel_symbol_date(record) == ("prices", "BTC", "2026-04-30")
 
 
-def test_event_rows_from_message_preserves_raw_payload_and_splits_batched_data():
+def test_event_rows_from_message_compacts_raw_payload_and_splits_batched_data():
     message = {
         "channel": "trades",
         "data": [
@@ -87,8 +88,37 @@ def test_event_rows_from_message_preserves_raw_payload_and_splits_batched_data()
     assert [row["symbol"] for row in rows] == ["BTC", "ETH"]
     assert rows[0]["channel"] == "trades"
     assert rows[0]["data"]["h"] == 1
+    assert rows[0]["raw_message"] == {"channel": "trades", "data": message["data"][0]}
+    assert rows[1]["raw_message"] == {"channel": "trades", "data": message["data"][1]}
+    assert "raw_text" not in rows[0]
+    assert rows[0]["raw_text_sha256"] == rows[1]["raw_text_sha256"]
+    assert rows[0]["raw_payload_mode"] == "compact"
+
+
+def test_event_rows_from_message_can_preserve_full_raw_payload_when_requested():
+    message = {
+        "channel": "trades",
+        "data": [
+            {"h": 1, "s": "BTC", "t": 1777582374310},
+            {"h": 2, "s": "ETH", "t": 1777582375310},
+        ],
+    }
+    raw_text = json.dumps(message)
+
+    rows = event_rows_from_message(
+        message,
+        recv_ms=1777582376000,
+        raw_text=raw_text,
+        raw_payload_mode="full",
+    )
+
     assert rows[0]["raw_message"] == message
-    assert rows[0]["raw_text"] == json.dumps(message)
+    assert rows[0]["raw_text"] == raw_text
+
+
+def test_ensure_min_free_disk_raises_when_floor_exceeds_available_space(tmp_path):
+    with pytest.raises(RuntimeError, match="free disk below safety floor"):
+        ensure_min_free_disk(tmp_path, min_free_gb=10**9)
 
 
 def test_write_jsonl_records_partitions_by_channel_symbol_date_and_keeps_raw_json(
@@ -115,7 +145,7 @@ def test_write_jsonl_records_partitions_by_channel_symbol_date_and_keeps_raw_jso
 
     assert len(written) == 1
     path = written[0]
-    assert path.match("**/channel=book/symbol=BTC/date=2026-04-30/*.jsonl.gz")
+    assert path.match("**/channel=book/symbol=BTC/date=2026-04-30/hour=20/*.jsonl.gz")
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         saved = json.loads(fh.readline())
     assert saved["data"]["li"] == 123

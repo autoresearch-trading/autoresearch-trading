@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import hashlib
 import json
+import shutil
 import signal
 import sys
 import time
@@ -50,6 +52,8 @@ DEFAULT_INTERVALS = (
 DEFAULT_AGG_LEVELS = (1,)
 DEFAULT_OUT_DIR = Path("data/pacifica_full_fidelity")
 PUBLIC_REST_ENDPOINTS = ("/info", "/info/prices")
+DEFAULT_MIN_FREE_DISK_GB = 50.0
+RAW_PAYLOAD_MODES = ("compact", "full")
 
 JsonObject = dict[str, Any]
 
@@ -189,26 +193,56 @@ def _event_symbol(channel: str, data: Any) -> str:
 
 
 def event_rows_from_message(
-    message: JsonObject, *, recv_ms: int, raw_text: str
+    message: JsonObject,
+    *,
+    recv_ms: int,
+    raw_text: str,
+    raw_payload_mode: str = "compact",
 ) -> list[JsonObject]:
+    if raw_payload_mode not in RAW_PAYLOAD_MODES:
+        raise ValueError(f"raw_payload_mode must be one of {RAW_PAYLOAD_MODES}")
     channel = str(message.get("channel", "unknown"))
     data = message.get("data")
     events = data if isinstance(data, list) else [data]
+    raw_text_sha256 = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
     rows: list[JsonObject] = []
     for item in events:
         event_ts_ms = _event_time_ms(channel, item, recv_ms)
-        rows.append(
-            {
-                "recv_ms": recv_ms,
-                "event_ts_ms": event_ts_ms,
-                "channel": channel,
-                "symbol": _event_symbol(channel, item),
-                "data": item,
-                "raw_message": message,
-                "raw_text": raw_text,
-            }
-        )
+        row = {
+            "recv_ms": recv_ms,
+            "event_ts_ms": event_ts_ms,
+            "channel": channel,
+            "symbol": _event_symbol(channel, item),
+            "data": item,
+        }
+        if raw_payload_mode == "full":
+            row.update({"raw_message": message, "raw_text": raw_text})
+        elif channel == "unparseable":
+            row.update({"raw_message": message, "raw_text": raw_text})
+        else:
+            row.update(
+                {
+                    "raw_message": {"channel": channel, "data": item},
+                    "raw_text_sha256": raw_text_sha256,
+                    "raw_text_bytes": len(raw_text.encode("utf-8")),
+                    "raw_payload_mode": "compact",
+                }
+            )
+        rows.append(row)
     return rows
+
+
+def ensure_min_free_disk(path: Path, min_free_gb: float) -> None:
+    if min_free_gb <= 0:
+        return
+    path.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(path)
+    free_gb = usage.free / 1024**3
+    if free_gb < min_free_gb:
+        raise RuntimeError(
+            f"free disk below safety floor: {free_gb:.1f} GiB available under "
+            f"{path}, requires at least {min_free_gb:.1f} GiB"
+        )
 
 
 def channel_symbol_date(record: JsonObject) -> tuple[str, str, str]:
@@ -229,16 +263,23 @@ def _hour_from_record(record: JsonObject) -> str:
 
 
 def write_jsonl_records(
-    root: Path, records: Iterable[JsonObject], *, run_id: str
+    root: Path,
+    records: Iterable[JsonObject],
+    *,
+    run_id: str,
+    min_free_disk_gb: float = 0.0,
 ) -> list[Path]:
+    ensure_min_free_disk(root, min_free_disk_gb)
     grouped: dict[Path, list[JsonObject]] = {}
     for record in records:
         channel, symbol, date = channel_symbol_date(record)
+        hour = _hour_from_record(record)
         path = (
             root
             / f"channel={channel}"
             / f"symbol={symbol}"
             / f"date={date}"
+            / f"hour={hour}"
             / f"{run_id}.jsonl.gz"
         )
         grouped.setdefault(path, []).append(record)
@@ -255,8 +296,15 @@ def write_jsonl_records(
 
 
 def write_rest_snapshot(
-    root: Path, endpoint: str, payload: Any, *, run_id: str, recv_ms: int
+    root: Path,
+    endpoint: str,
+    payload: Any,
+    *,
+    run_id: str,
+    recv_ms: int,
+    min_free_disk_gb: float = 0.0,
 ) -> Path:
+    ensure_min_free_disk(root, min_free_disk_gb)
     safe_endpoint = endpoint.strip("/").replace("/", "_") or "root"
     date = utc_dt_from_ms(recv_ms).date().isoformat()
     hour = utc_dt_from_ms(recv_ms).strftime("%H")
@@ -298,7 +346,12 @@ async def heartbeat_loop(
 
 
 async def rest_snapshot_loop(
-    root: Path, run_id: str, stop: asyncio.Event, *, interval_s: float
+    root: Path,
+    run_id: str,
+    stop: asyncio.Event,
+    *,
+    interval_s: float,
+    min_free_disk_gb: float,
 ) -> None:
     if interval_s <= 0:
         return
@@ -307,7 +360,12 @@ async def rest_snapshot_loop(
         for endpoint in PUBLIC_REST_ENDPOINTS:
             try:
                 write_rest_snapshot(
-                    root, endpoint, fetch_json(endpoint), run_id=run_id, recv_ms=recv_ms
+                    root,
+                    endpoint,
+                    fetch_json(endpoint),
+                    run_id=run_id,
+                    recv_ms=recv_ms,
+                    min_free_disk_gb=min_free_disk_gb,
                 )
             except Exception as exc:  # pragma: no cover - long-running operational path
                 print(f"REST snapshot failed for {endpoint}: {exc}", file=sys.stderr)
@@ -326,6 +384,8 @@ async def collect_ws(
     stop: asyncio.Event,
     batch_size: int,
     subscribe_delay_s: float,
+    min_free_disk_gb: float,
+    raw_payload_mode: str,
 ) -> None:
     try:
         import websockets
@@ -354,9 +414,17 @@ async def collect_ws(
                         except json.JSONDecodeError:
                             message = {"channel": "unparseable", "data": raw_text}
                         rows = event_rows_from_message(
-                            message, recv_ms=recv_ms, raw_text=raw_text
+                            message,
+                            recv_ms=recv_ms,
+                            raw_text=raw_text,
+                            raw_payload_mode=raw_payload_mode,
                         )
-                        write_jsonl_records(out_dir, rows, run_id=run_id)
+                        write_jsonl_records(
+                            out_dir,
+                            rows,
+                            run_id=run_id,
+                            min_free_disk_gb=min_free_disk_gb,
+                        )
                 finally:
                     heartbeat.cancel()
         except Exception as exc:  # pragma: no cover - long-running operational path
@@ -392,6 +460,8 @@ async def amain(args: argparse.Namespace) -> None:
         if args.dry_run:
             return
 
+    ensure_min_free_disk(out_dir, args.min_free_disk_gb)
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -410,6 +480,8 @@ async def amain(args: argparse.Namespace) -> None:
                 stop=stop,
                 batch_size=args.subscription_batch_size,
                 subscribe_delay_s=args.subscription_delay_s,
+                min_free_disk_gb=args.min_free_disk_gb,
+                raw_payload_mode=args.raw_payload_mode,
             )
         )
     ]
@@ -417,7 +489,11 @@ async def amain(args: argparse.Namespace) -> None:
         tasks.append(
             asyncio.create_task(
                 rest_snapshot_loop(
-                    out_dir, run_id, stop, interval_s=args.rest_snapshot_interval_s
+                    out_dir,
+                    run_id,
+                    stop,
+                    interval_s=args.rest_snapshot_interval_s,
+                    min_free_disk_gb=args.min_free_disk_gb,
                 )
             )
         )
@@ -451,6 +527,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rest-snapshot-interval-s", type=float, default=60.0)
     parser.add_argument("--subscription-batch-size", type=int, default=50)
     parser.add_argument("--subscription-delay-s", type=float, default=0.25)
+    parser.add_argument(
+        "--min-free-disk-gb",
+        type=float,
+        default=DEFAULT_MIN_FREE_DISK_GB,
+        help=(
+            "Refuse to write when filesystem free space under --out-dir is below "
+            "this GiB floor. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--raw-payload-mode",
+        choices=RAW_PAYLOAD_MODES,
+        default="compact",
+        help=(
+            "compact stores per-event payloads plus raw_text hash/size; full stores "
+            "the complete parsed raw message and raw text on every event row."
+        ),
+    )
     parser.add_argument("--run-id")
     parser.add_argument("--print-plan", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

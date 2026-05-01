@@ -22,6 +22,10 @@
     <string>25</string>
     <string>--subscription-delay-s</string>
     <string>0.5</string>
+    <string>--raw-payload-mode</string>
+    <string>compact</string>
+    <string>--min-free-disk-gb</string>
+    <string>50</string>
   </array>
 
   <key>RunAtLoad</key>

@@ -1,0 +1,21 @@
+[Unit]
+Description=Pacifica full-fidelity R2 lifecycle scan/upload/verify/prune
+Documentation=file:/opt/pacifica-full-fidelity/docs/ops/pacifica-full-fidelity-hetzner.md
+After=network-online.target mnt-pacifica\x2dspool.mount
+Wants=network-online.target
+RequiresMountsFor=/mnt/pacifica-spool
+
+[Service]
+Type=oneshot
+User=pacifica
+Group=pacifica
+EnvironmentFile=/etc/pacifica-full-fidelity.env
+WorkingDirectory=/opt/pacifica-full-fidelity
+ExecStart=/bin/bash -lc 'exec scripts/run_pacifica_full_fidelity_r2_lifecycle.sh'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pacifica-full-fidelity-r2-lifecycle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=/mnt/pacifica-spool /var/log/pacifica /opt/pacifica-full-fidelity

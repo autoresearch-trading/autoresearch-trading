@@ -1,0 +1,28 @@
+.git
+.gitignore
+.DS_Store
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+venv
+.env
+.env.*
+
+# Large/generated local state; never send to remote builders.
+data/
+logs/
+reports/
+research_cloud_provider_pacifica_collector/
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.jsonl.gz
+
+# Local/archived agent artifacts that are not needed in the runtime image.
+docs/archive/
+.hermes/
+.claude/

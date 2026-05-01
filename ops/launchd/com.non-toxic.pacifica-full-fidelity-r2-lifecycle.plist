@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.non-toxic.pacifica-full-fidelity-r2-lifecycle</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/diego/Dev/non-toxic/autoresearch-trading</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>scripts/run_pacifica_full_fidelity_r2_lifecycle.sh</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/diego/Dev/non-toxic/autoresearch-trading/logs/pacifica-full-fidelity-r2-lifecycle.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/diego/Dev/non-toxic/autoresearch-trading/logs/pacifica-full-fidelity-r2-lifecycle.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PACIFICA_FULL_FIDELITY_REMOTE_BASE</key>
+    <string>r2:pacifica-trading-data</string>
+    <key>PACIFICA_FULL_FIDELITY_R2_PREFIX</key>
+    <string>raw/pacifica/full_fidelity</string>
+    <key>PACIFICA_FULL_FIDELITY_RETENTION_DAYS</key>
+    <string>3</string>
+    <key>PACIFICA_R2_PRUNE_EXECUTE</key>
+    <string>0</string>
+  </dict>
+</dict>
+</plist>

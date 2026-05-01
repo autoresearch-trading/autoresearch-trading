@@ -1,0 +1,30 @@
+[Unit]
+Description=Pacifica full-fidelity collector
+Documentation=file:/opt/pacifica-full-fidelity/docs/ops/pacifica-full-fidelity-hetzner.md
+After=network-online.target mnt-pacifica\x2dspool.mount
+Wants=network-online.target
+RequiresMountsFor=/mnt/pacifica-spool
+
+[Service]
+Type=simple
+User=pacifica
+Group=pacifica
+EnvironmentFile=/etc/pacifica-full-fidelity.env
+WorkingDirectory=/opt/pacifica-full-fidelity
+ExecStart=/bin/bash -lc 'exec scripts/run_pacifica_full_fidelity_collector.sh'
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pacifica-full-fidelity-collector
+
+# Basic hardening while still allowing writes to spool and repo-local uv cache if configured.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=/mnt/pacifica-spool /var/log/pacifica /opt/pacifica-full-fidelity
+
+[Install]
+WantedBy=multi-user.target

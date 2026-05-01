@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Pacifica full-fidelity R2 lifecycle every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=pacifica-full-fidelity-r2-lifecycle.service
+
+[Install]
+WantedBy=timers.target

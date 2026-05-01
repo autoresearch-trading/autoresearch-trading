@@ -1,0 +1,21 @@
+[Unit]
+Description=Pacifica full-fidelity host health check
+Documentation=file:/opt/pacifica-full-fidelity/docs/ops/pacifica-full-fidelity-hetzner.md
+After=network-online.target mnt-pacifica\x2dspool.mount
+Wants=network-online.target
+RequiresMountsFor=/mnt/pacifica-spool
+
+[Service]
+Type=oneshot
+User=pacifica
+Group=pacifica
+EnvironmentFile=/etc/pacifica-full-fidelity.env
+WorkingDirectory=/opt/pacifica-full-fidelity
+ExecStart=/bin/bash -lc 'uv run python scripts/check_pacifica_full_fidelity_health.py --root "$PACIFICA_FULL_FIDELITY_ROOT" --state-db "$PACIFICA_FULL_FIDELITY_STATE_DB" --min-free-gb "$PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pacifica-full-fidelity-health
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=/mnt/pacifica-spool /var/log/pacifica /opt/pacifica-full-fidelity
