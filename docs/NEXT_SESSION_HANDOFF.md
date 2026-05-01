@@ -1,111 +1,283 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-04-30 22:04 EST
+Updated: 2026-05-01 08:15 EST
 
 ## Start here
 
-The active project is now an economics-first, non-HFT paper-trading program using a new full-fidelity Pacifica collector across the live symbol universe.
+The active project is an economics-first, non-HFT Pacifica paper-trading program using full-fidelity public market-data archival across the live Pacifica symbol universe.
 
-Do not resume by treating this as only the old 25-symbol representation-learning project. That project is historical context. The current direction is broader live archival, regime-state construction, and paper-trading validation.
+Do not resume from the old 25-symbol representation-learning branch. That work is historical context only. The current system is:
+
+1. full-fidelity raw collection;
+2. partitioned silver normalization;
+3. read-only realtime/silver research monitor;
+4. 1-minute non-HFT regime-state construction;
+5. fixed toxic/no-trade overlay diagnostics;
+6. future eligibility gates, sparse baselines, post-cost paper backtests.
 
 ## Primary goal
 
-Build a highly profitable paper-trading system, with Sortino > 2 as a high-quality bar, not as the only success criterion.
+Build a highly profitable paper-trading system. Sortino > 2 is a high-quality bar, but not the only success criterion.
 
 A candidate strategy must show:
 
 - positive net PnL after fees, slippage, funding, and adverse-selection assumptions;
 - Sortino > 2 over a pre-registered paper window;
-- enough trades/days to avoid one-off luck;
+- enough trades and enough distinct days to avoid one-off luck;
 - bounded drawdown;
 - no single day dominating total PnL;
 - no single symbol dominating total PnL unless explicitly intended;
 - performance above dumb baselines and random same-frequency controls.
 
-## Active thesis
+## Non-HFT constraint
 
-Use full-fidelity, high-frequency market data to make slower non-HFT decisions.
+The user cannot trade HFT. Do not propose latency-arb, next-tick alpha, queue-position edge, or high-turnover taker strategies.
 
-The user cannot trade HFT. Do not propose latency-arb, next-tick, queue-position, or high-turnover taker strategies. Use high-frequency data to infer 1m+ regime states, toxicity, dislocations, forced-flow states, and no-trade/risk filters.
+Use high-frequency/full-fidelity data to infer slower states:
 
-The strongest current direction is not generic direction prediction. It is:
-
-1. toxic-regime / no-trade / no-quote overlay;
-2. mark/oracle/mid dislocation reversion gated by liquidity and toxicity;
-3. post-liquidation absorption/stabilization event studies;
-4. execution-quality filters only after a real entry edge exists.
+- 1m+ toxicity/no-trade regimes;
+- mark/oracle/mid dislocations;
+- liquidity/spread/depth stress;
+- liquidation/forced-flow events;
+- funding/OI crowding;
+- execution-quality and data-quality filters.
 
 ## Universe policy
 
 Collect broadly, trade selectively.
 
-- Raw collection universe: all live public Pacifica symbols from `/info`; local archive currently has ~66 symbol partitions.
-- Research universe: all symbols with enough clean full-fidelity data.
+- Raw collection universe: all live public Pacifica symbols from `/info`.
+- Research universe: symbols with enough clean full-fidelity data.
 - Eligible trading universe: only symbols passing pre-registered liquidity, spread/cost, sample-size, stability, and concentration gates.
 - Paper-traded universe: selected subset with portfolio caps.
 
-Do not assume the system should trade all symbols. Do not restrict research to the old 25 symbols. The paper-trading engine should support all live symbols but the strategy should only trade eligible symbols.
+Do not hard-code symbol counts. Pacifica's live universe changes. Counts like 63, 65, or 66 are snapshots only. Refresh dynamically before operational decisions.
 
-Do not hard-code the live symbol count. Pacifica's universe changes; the collector fetches `/info` at startup. Counts like 63, 65, or 66 are snapshots only. Refresh dynamically before making operational decisions.
+Latest live `/info` check in this session:
 
-Suggested eligibility gates:
+```text
+live_symbols=65
+subscriptions=1626
+```
 
-- minimum clean data days;
-- minimum trade/bucket count;
-- acceptable spread and simulated slippage;
-- sufficient top-of-book/depth notional;
-- stable effect across days;
-- not dominated by one liquidation event;
-- not dominated by one symbol/day/hour;
-- post-cost expected edge exceeds a pre-registered threshold.
+## Current data/pipeline status
 
-## New collector and pipeline
+### Raw collector
 
-Raw collector:
+Script:
 
 - `scripts/collect_pacifica_full_fidelity.py`
-- output: `data/pacifica_full_fidelity/`
-- docs: `docs/ops/pacifica-full-fidelity-archival.md`
-- launchd plist: `ops/launchd/com.non-toxic.pacifica-full-fidelity.plist`
 
-Captured public streams:
+Output:
 
-- `prices` global stream;
-- `trades` per symbol;
-- `book` per symbol/aggregation level;
-- `bbo` per symbol;
-- `candle` per symbol/interval;
-- `mark_price_candle` per symbol/interval;
-- REST snapshots for `/info` and `/info/prices`.
+- `data/pacifica_full_fidelity/`
 
-Current local snapshot checked this session, for orientation only:
+Docs/config:
 
-- `data/pacifica_full_fidelity/` exists;
-- raw archive has 926 files, 66 symbol partitions, dates 2026-04-30 and 2026-05-01;
-- channels include bbo, book, candle, mark_price_candle, prices, trades, plus subscribe/control rows.
+- `docs/ops/pacifica-full-fidelity-archival.md`
+- `ops/launchd/com.non-toxic.pacifica-full-fidelity.plist`
 
-Silver builder:
+Captured public data:
+
+- global `prices` stream;
+- per-symbol `trades`;
+- per-symbol `book`;
+- per-symbol `bbo`;
+- per-symbol `candle`;
+- per-symbol `mark_price_candle`;
+- REST `/info` and `/info/prices` snapshots.
+
+Latest pre-handoff freshness check:
+
+```text
+data/pacifica_full_fidelity files=3710 latest_age_s=0.0
+```
+
+Raw collection appeared active at handoff time.
+
+### Silver builder
+
+Script:
 
 - `scripts/build_pacifica_full_fidelity_silver.py`
-- output: `data/pacifica_silver_partitioned/`
-- current silver snapshot has 406 files, 65 symbols, date 2026-04-30.
 
-Regime-state builder:
+Output:
+
+- `data/pacifica_silver_partitioned/`
+
+Silver was refreshed during this session from raw:
+
+```text
+bbo: 1095714 rows
+book: 4401938 rows
+candle: 827339 rows
+mark_price_candle: 11747782 rows
+prices: 548632 rows
+trades: 48054 rows
+wrote silver tables to data/pacifica_silver_partitioned
+```
+
+Immediately after refresh, the silver-backed monitor reported:
+
+```text
+Files: 900
+Rows: 19600683
+Symbols: 65
+Latest source row age seconds: 38.014
+Warnings: none
+```
+
+Later pre-handoff filesystem mtime check showed raw was still advancing while silver had not been rebuilt again:
+
+```text
+data/pacifica_silver_partitioned files=901 latest_age_s=24906.3
+```
+
+So in a fresh session, assume raw may be fresher than silver. Refresh silver before relying on new diagnostics.
+
+### Realtime research monitor
+
+New script created this session:
+
+- `scripts/watch_pacifica_realtime_research.py`
+
+New tests created this session:
+
+- `tests/scripts/test_watch_pacifica_realtime_research.py`
+
+Generated outputs:
+
+- `data/pacifica_realtime_research/README.md`
+- `data/pacifica_realtime_research/latest_features.csv`
+- `data/pacifica_realtime_research/raw_inventory.csv`
+- `data/pacifica_realtime_research/warnings.json`
+
+The monitor is read-only. It does not place trades, tune thresholds, or claim edge.
+
+Supported sources:
+
+- `--source silver` reads partitioned parquet from `data/pacifica_silver_partitioned` and is the preferred routine path.
+- `--source raw` reads recent/bounded raw JSONL.GZ files from `data/pacifica_full_fidelity` and is a fallback/debug path.
+
+Latest successful silver monitor command:
+
+```bash
+python scripts/watch_pacifica_realtime_research.py \
+  --source silver \
+  --silver-dir data/pacifica_silver_partitioned \
+  --out-dir data/pacifica_realtime_research \
+  --stale-after-s 300
+```
+
+Latest successful result after silver refresh:
+
+```text
+Files: 900
+Rows: 19600683
+Symbols: 65
+Latest source row age seconds: 38.014
+Warnings: none
+```
+
+Current V1 monitor features include:
+
+- trade count 1m;
+- trade volume 1m;
+- trade notional 1m;
+- signed volume 1m;
+- last price;
+- 1m return bps;
+- BBO spread bps;
+- top depth notional;
+- mark/oracle basis;
+- mid/oracle basis;
+- funding;
+- open interest;
+- simple stress score.
+
+### Regime-state builder
+
+Script:
 
 - `scripts/build_non_hft_regime_state.py`
-- report: `docs/experiments/non-hft-regime-state/README.md`
-- current report: 1-minute buckets, 7,410 rows, 65 symbols.
 
-Toxic overlay probe:
+Report/output:
+
+- `docs/experiments/non-hft-regime-state/README.md`
+- `docs/experiments/non-hft-regime-state/regime_state.parquet`
+- `docs/experiments/non-hft-regime-state/regime_state_preview.csv`
+- `docs/experiments/non-hft-regime-state/silver_quality_summary.csv`
+
+Rebuilt after silver refresh:
+
+```bash
+python scripts/build_non_hft_regime_state.py \
+  --silver-dir data/pacifica_silver_partitioned \
+  --out-dir docs/experiments/non-hft-regime-state
+```
+
+Latest result:
+
+```text
+wrote 32047 regime-state rows to docs/experiments/non-hft-regime-state
+Bucket: 1min
+Rows: 32047
+Symbols: 65
+```
+
+Liquidation classification status:
+
+- Current code counts `trade_class == "liquidation"`.
+- Current code counts `trade_class` values ending with `_liquidation`.
+- Current code counts `cause in ["market_liquidation", "backstop_liquidation"]`.
+- Focused test exists: `test_build_regime_state_counts_pacifica_cause_liquidations`.
+
+Latest observed silver trade-class values:
+
+```text
+normal: 48024
+market_liquidation: 29
+insolvency_liquidation: 1
+```
+
+### Toxic-regime overlay probe
+
+Script:
 
 - `scripts/non_hft_toxic_overlay_probe.py`
-- report: `docs/experiments/toxic-regime-overlay/README.md`
-- current verdict: `INSUFFICIENT_SAMPLE_DIAGNOSTIC`
-- current sample: 7,410 rows, 65 symbols, 1 distinct date.
+
+Report/output:
+
+- `docs/experiments/toxic-regime-overlay/README.md`
+- `docs/experiments/toxic-regime-overlay/overlay_scorecard.csv`
+- `docs/experiments/toxic-regime-overlay/symbol_summary.csv`
+- `docs/experiments/toxic-regime-overlay/hour_summary.csv`
+- `docs/experiments/toxic-regime-overlay/toxic_bucket_summary.csv`
+
+Rerun after regime rebuild:
+
+```bash
+python scripts/non_hft_toxic_overlay_probe.py \
+  --state-path docs/experiments/non-hft-regime-state/regime_state.parquet \
+  --out-dir docs/experiments/toxic-regime-overlay
+```
+
+Latest result:
+
+```text
+verdict: INSUFFICIENT_SAMPLE_DIAGNOSTIC
+Rows: 32047
+Symbols: 65
+Distinct dates: 2
+Horizons minutes: [5, 15, 30, 60]
+Toxicity cutoffs: [0.9, 0.8, 0.7]
+```
+
+This is expected. Two distinct dates is still diagnostic only, not edge evidence.
 
 ## Interpretation discipline
 
-The current full-fidelity archive is too young to claim edge. Treat early outputs as plumbing diagnostics until day gates pass.
+The current full-fidelity archive is too young to claim an edge.
 
 Use these maturity levels:
 
@@ -114,19 +286,94 @@ Use these maturity levels:
 - 30+ full days: provisional validation;
 - 60+ full days: preferred serious validation.
 
-Keep toxicity thresholds fixed while data accrues. Do not tune cutoffs based on the first diagnostic day.
+Keep toxicity thresholds fixed while data accrues. Do not tune cutoffs based on the initial diagnostic days.
 
-## Current recommended next steps
+## Verification status before handoff
 
-1. Verify collector is still running and accumulating raw JSONL.GZ.
-2. Refresh full-fidelity silver tables from raw archive.
-3. Rebuild 1-minute non-HFT regime-state table across all live symbols.
-4. Rerun the fixed toxic-regime overlay probe without changing thresholds.
-5. Update reports with current day counts and sample gates.
-6. Add paper-trading universe eligibility gates before any strategy trades all symbols.
-7. Build paper backtest/trade logger only after the risk/no-trade overlay and simple sparse rules are specified.
+Focused tests passed:
 
-## Commands to inspect quickly
+```bash
+pytest tests/scripts/test_watch_pacifica_realtime_research.py \
+  tests/scripts/test_build_pacifica_full_fidelity_silver.py \
+  tests/scripts/test_collect_pacifica_full_fidelity.py \
+  tests/scripts/test_build_non_hft_regime_state.py \
+  tests/scripts/test_non_hft_toxic_overlay_probe.py -q
+```
+
+Result:
+
+```text
+31 passed in 0.34s
+```
+
+Compile check passed:
+
+```bash
+python -m py_compile \
+  scripts/watch_pacifica_realtime_research.py \
+  scripts/build_non_hft_regime_state.py \
+  scripts/non_hft_toxic_overlay_probe.py
+```
+
+Diff whitespace check passed:
+
+```bash
+git diff --check
+```
+
+Ruff is unavailable in this environment:
+
+```text
+error: Failed to spawn: `ruff`
+Caused by: No such file or directory (os error 2)
+```
+
+## Current git state at handoff
+
+Modified generated experiment reports:
+
+```text
+M docs/experiments/non-hft-regime-state/README.md
+M docs/experiments/non-hft-regime-state/regime_state_preview.csv
+M docs/experiments/non-hft-regime-state/silver_quality_summary.csv
+M docs/experiments/toxic-regime-overlay/README.md
+M docs/experiments/toxic-regime-overlay/hour_summary.csv
+M docs/experiments/toxic-regime-overlay/overlay_scorecard.csv
+M docs/experiments/toxic-regime-overlay/symbol_summary.csv
+M docs/experiments/toxic-regime-overlay/toxic_bucket_summary.csv
+```
+
+New/untracked files to consider adding if committing this work:
+
+```text
+docs/research/2026-05-01-real-time-streaming-research-pass.md
+scripts/watch_pacifica_realtime_research.py
+tests/scripts/test_watch_pacifica_realtime_research.py
+```
+
+Do not add unless intentional:
+
+```text
+.hermes/
+```
+
+Do not commit credentials or local secret-bearing settings. `.claude/settings.local.json` had secret-like local content redacted earlier; do not preserve real credential values.
+
+## Recommended next steps in a fresh session
+
+1. Run `git status --short` and confirm the untracked/modified files above.
+2. Refresh silver again from raw, because raw collection continued after the last silver build.
+3. Rerun the silver-backed realtime monitor and confirm `warnings.json` is empty.
+4. Rebuild `docs/experiments/non-hft-regime-state` from refreshed silver.
+5. Rerun `docs/experiments/toxic-regime-overlay` without changing thresholds.
+6. Commit the monitor, tests, research pass, and refreshed reports if the diff is acceptable; do not commit `.hermes/` or raw/silver data archives.
+7. Add a short durable monitor usage doc if desired, because the current monitor docs are generated under `data/pacifica_realtime_research/`.
+8. Build explicit paper-trading eligibility gates before any strategy trades all symbols.
+9. Only after eligibility gates and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
+
+## Quick commands
+
+Inspect status and dynamic live universe:
 
 ```bash
 git status --short
@@ -136,22 +383,86 @@ from scripts.collect_pacifica_full_fidelity import build_subscriptions, fetch_li
 symbols = fetch_live_symbols()
 print('live_symbols=', len(symbols), 'subscriptions=', len(build_subscriptions(symbols)))
 PY
-python - <<'PY'
-from pathlib import Path
-for p in [Path('data/pacifica_full_fidelity'), Path('data/pacifica_silver_partitioned')]:
-    print(p, 'exists=', p.exists())
-    syms=set(); dates=set(); files=0
-    if p.exists():
-        for f in p.rglob('*'):
-            if f.is_file(): files += 1
-            for part in f.parts:
-                if part.startswith('symbol='): syms.add(part.split('=',1)[1])
-                if part.startswith('date='): dates.add(part.split('=',1)[1])
-    print('files=', files, 'symbols=', len(syms), 'dates=', sorted(dates)[:3], '...', sorted(dates)[-3:] if dates else [])
-PY
 ```
 
-## Important historical context
+Refresh silver from raw:
+
+```bash
+python scripts/build_pacifica_full_fidelity_silver.py \
+  --raw-dir data/pacifica_full_fidelity \
+  --out-dir data/pacifica_silver_partitioned
+```
+
+Run silver-backed realtime monitor:
+
+```bash
+python scripts/watch_pacifica_realtime_research.py \
+  --source silver \
+  --silver-dir data/pacifica_silver_partitioned \
+  --out-dir data/pacifica_realtime_research \
+  --stale-after-s 300
+```
+
+Safe raw fallback monitor command:
+
+```bash
+python scripts/watch_pacifica_realtime_research.py \
+  --source raw \
+  --raw-dir data/pacifica_full_fidelity \
+  --out-dir data/pacifica_realtime_research \
+  --stale-after-s 300 \
+  --max-files 200 \
+  --max-records-per-file 1000
+```
+
+Rebuild regime and toxic reports:
+
+```bash
+python scripts/build_non_hft_regime_state.py \
+  --silver-dir data/pacifica_silver_partitioned \
+  --out-dir docs/experiments/non-hft-regime-state
+
+python scripts/non_hft_toxic_overlay_probe.py \
+  --state-path docs/experiments/non-hft-regime-state/regime_state.parquet \
+  --out-dir docs/experiments/toxic-regime-overlay
+```
+
+Run focused verification:
+
+```bash
+pytest tests/scripts/test_watch_pacifica_realtime_research.py \
+  tests/scripts/test_build_pacifica_full_fidelity_silver.py \
+  tests/scripts/test_collect_pacifica_full_fidelity.py \
+  tests/scripts/test_build_non_hft_regime_state.py \
+  tests/scripts/test_non_hft_toxic_overlay_probe.py -q
+
+python -m py_compile \
+  scripts/watch_pacifica_realtime_research.py \
+  scripts/build_non_hft_regime_state.py \
+  scripts/non_hft_toxic_overlay_probe.py
+
+git diff --check
+```
+
+## Files most relevant for fresh-session context
+
+- `docs/NEXT_SESSION_HANDOFF.md` — this file.
+- `AGENTS.md` — canonical repo-level agent instructions.
+- `docs/AGENT_OPERATING_MAP.md` — current Hermes/tool/skill arsenal and archived Claude asset notes.
+- `docs/ops/pacifica-full-fidelity-archival.md`
+- `docs/research/2026-05-01-real-time-streaming-research-pass.md`
+- `docs/research/2026-04-30-pacifica-full-fidelity-product-ideas.md`
+- `docs/experiments/pacifica-full-fidelity-tradeability-filter-2026-04-30.md`
+- `docs/experiments/non-hft-regime-state/README.md`
+- `docs/experiments/toxic-regime-overlay/README.md`
+- `scripts/collect_pacifica_full_fidelity.py`
+- `scripts/build_pacifica_full_fidelity_silver.py`
+- `scripts/watch_pacifica_realtime_research.py`
+- `scripts/build_non_hft_regime_state.py`
+- `scripts/non_hft_toxic_overlay_probe.py`
+- `tests/scripts/test_watch_pacifica_realtime_research.py`
+
+## Historical context
 
 The old 25-symbol historical parquet/cache program remains useful context, but it is not the active starting point.
 
@@ -163,27 +474,14 @@ Historical findings:
 - Taker-side feasibility had no strict survivors under plausible costs.
 - April 14-26 cascade holdout was consumed; new clean validation requires fresh data.
 
-The reason the new collector matters is that it preserves fields the old lossy parquet data did not: mark/oracle/funding/open_interest, BBO order IDs, book nonces/order counts, raw trade IDs/nonces, and raw message timing. These fields enable toxicity, dislocation, forced-flow, and execution-quality studies that were not possible in the old framing.
-
-## Files most relevant for fresh-session context
-
-- `docs/NEXT_SESSION_HANDOFF.md` — this file.
-- `docs/AGENT_OPERATING_MAP.md` — current Hermes/tool/skill arsenal and status of repo-local `.claude` agents.
-- `docs/ops/pacifica-full-fidelity-archival.md`
-- `docs/experiments/pacifica-full-fidelity-tradeability-filter-2026-04-30.md`
-- `docs/research/2026-04-30-pacifica-full-fidelity-product-ideas.md`
-- `docs/experiments/non-hft-regime-state/README.md`
-- `docs/experiments/toxic-regime-overlay/README.md`
-- `scripts/collect_pacifica_full_fidelity.py`
-- `scripts/build_pacifica_full_fidelity_silver.py`
-- `scripts/build_non_hft_regime_state.py`
-- `scripts/non_hft_toxic_overlay_probe.py`
+The new collector matters because it preserves fields the old lossy parquet data did not: mark/oracle/funding/open_interest, BBO order IDs, book nonces/order counts, raw trade IDs/nonces, and raw message timing.
 
 ## Do not do next
 
 - Do not launch generic RL.
 - Do not optimize AUC without execution economics.
-- Do not claim an edge from the 1-day diagnostic probe.
+- Do not claim an edge from the 2-day diagnostic probe.
 - Do not blindly trade every collected symbol.
-- Do not tune toxicity thresholds on the initial diagnostic sample.
+- Do not tune toxicity thresholds on diagnostic samples.
 - Do not overwrite/commit raw data archives.
+- Do not commit `.hermes/` unless explicitly intended.

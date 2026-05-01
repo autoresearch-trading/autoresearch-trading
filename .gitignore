@@ -33,6 +33,7 @@ reports/
 # Git worktrees
 .worktrees/
 
-# Claude Code runtime
+# Agent/runtime local state
 .claude/scheduled_tasks.lock
+.hermes/
 runs/

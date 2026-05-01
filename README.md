@@ -6,7 +6,7 @@ The old 25-symbol representation-learning program remains historical context, bu
 
 Primary objective: highly profitable paper trading, with Sortino > 2 as a quality bar, plus positive net PnL after fees/slippage/funding, bounded drawdown, enough trades/days, and no single symbol/day dominating results.
 
-Fresh-session handoff: see `docs/NEXT_SESSION_HANDOFF.md` first. For the current tool/skill inventory and repo-local `.claude` agent status, see `docs/AGENT_OPERATING_MAP.md`.
+Fresh-session handoff: see `docs/NEXT_SESSION_HANDOFF.md` first. For current Hermes/tool/skill guidance, see `AGENTS.md` and `docs/AGENT_OPERATING_MAP.md`.
 
 ## Quick Start
 
@@ -142,30 +142,27 @@ Order-event dedup rule depends on the date:
 
 ## Agent System
 
-The project uses a multi-agent system orchestrated by `lead-0`:
+Hermes is the primary agent workflow for this repo. Start fresh sessions from:
 
-```
-claude --agent lead-0
-├── Council (parallel, advisory)
-│   council-1 (eval methodology), council-2 (microstructure),
-│   council-3 (information regimes), council-4 (tape reading),
-│   council-5 (skeptic), council-6 (DL architecture)
-└── Workers (sequential, execution)
-    runpod-7, builder-8, analyst-9, reviewer-10,
-    validator-11, prover-12, data-eng-13, researcher-14
-```
+1. `docs/NEXT_SESSION_HANDOFF.md`
+2. `AGENTS.md`
+3. `docs/AGENT_OPERATING_MAP.md`
+
+Claude Code is no longer used in this repo. The old tracked `.claude` assets have been archived under `docs/archive/claude-code-assets/.claude/` for historical reference.
 
 ## Project Structure
 
 ```
-CLAUDE.md                  — Working context for all agents
-docs/superpowers/specs/    — Master spec (2026-04-10)
+AGENTS.md                  — Canonical working context for agents
+docs/NEXT_SESSION_HANDOFF.md — Fresh-session handoff and current pipeline state
+docs/AGENT_OPERATING_MAP.md — Hermes/tool/skill map and archived Claude asset notes
+docs/superpowers/specs/    — Master spec (2026-04-10; legacy v1 context)
 docs/knowledge/            — Compiled wiki (concepts, decisions, experiments)
-docs/council-reviews/      — Agent review outputs
+docs/council-reviews/      — Historical agent review outputs
 docs/research/             — Literature surveys
 docs/archive/              — Historical artifacts (old supervised pipeline)
-scripts/                   — Data sync scripts
-data/                      — ~40GB Hive-partitioned Parquet (gitignored)
+scripts/                   — Data sync, collector, pipeline, and experiment scripts
+data/                      — Hive-partitioned market data archives (gitignored)
 .cache/                    — Preprocessed .npz feature files (gitignored)
 ```
 
