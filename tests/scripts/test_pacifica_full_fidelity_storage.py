@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.pacifica_full_fidelity_storage import (
@@ -75,6 +76,32 @@ def test_iter_archive_files_skips_active_tmp_and_state_files(tmp_path):
     _write(root / "state.sqlite")
 
     assert list(iter_archive_files(root)) == [keep]
+
+
+def test_iter_archive_files_can_skip_current_hour_partition(tmp_path):
+    root = tmp_path / "raw"
+    active_hour = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=13"
+        / "run-live.jsonl.gz"
+    )
+    closed_hour = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=12"
+        / "run-live.jsonl.gz"
+    )
+    now = datetime(2026, 5, 2, 13, 30, tzinfo=timezone.utc)
+
+    assert active_hour in list(iter_archive_files(root))
+    assert list(iter_archive_files(root, skip_current_hour=True, now=now)) == [
+        closed_hour
+    ]
 
 
 def test_prune_verified_files_deletes_only_verified_remote_durable_files(tmp_path):
@@ -181,6 +208,55 @@ def test_upload_pending_files_copies_data_and_sha256_sidecar_then_marks_uploaded
             "select status from archive_files where local_path=?", (str(raw_file),)
         ).fetchone()[0]
     assert status == "uploaded"
+
+
+def test_upload_pending_files_reuploads_uploaded_rows_with_verification_errors(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    raw_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=12"
+        / "run-live.jsonl.gz",
+        b"complete-hour",
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            update archive_files
+            set status='uploaded', uploaded_at=?, error='size mismatch remote=3 local=13'
+            where local_path=?
+            """,
+            (time.time(), str(raw_file)),
+        )
+        conn.commit()
+    runner = FakeRcloneRunner()
+
+    result = upload_pending_files(
+        db, remote_base="r2:pacifica-trading-data", runner=runner
+    )
+
+    assert result == {"uploaded": 1, "skipped": 0, "failed": 0}
+    copy_commands = [cmd for cmd, _ in runner.commands if cmd[0] == "copyto"]
+    assert copy_commands == [
+        (
+            "copyto",
+            "--s3-no-check-bucket",
+            str(raw_file),
+            "r2:pacifica-trading-data/raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-02/hour=12/run-live.jsonl.gz",
+        )
+    ]
+    with sqlite3.connect(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?",
+            (str(raw_file),),
+        ).fetchone()
+    assert saved == ("uploaded", None)
 
 
 def test_verify_uploaded_files_checks_remote_size_and_sha256_sidecar_before_marking_verified(

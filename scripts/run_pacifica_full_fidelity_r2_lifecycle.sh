@@ -26,7 +26,7 @@ fi
   --root "$ROOT" \
   --state-db "$STATE_DB" \
   --r2-prefix "$R2_PREFIX" \
-  scan
+  scan --skip-current-hour
 
 "${PYTHON_CMD[@]}" scripts/pacifica_full_fidelity_storage.py \
   --state-db "$STATE_DB" \

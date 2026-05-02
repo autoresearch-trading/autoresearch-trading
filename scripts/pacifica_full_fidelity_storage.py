@@ -23,6 +23,7 @@ import sqlite3
 import subprocess
 import time
 from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -63,15 +64,32 @@ def _set_error(conn: sqlite3.Connection, local_path: str, error: str | None) -> 
     )
 
 
-def iter_archive_files(root: Path) -> Iterator[Path]:
+def _is_current_hour_partition(path: Path, *, now: datetime) -> bool:
+    date_part = f"date={now.strftime('%Y-%m-%d')}"
+    hour_part = f"hour={now.strftime('%H')}"
+    parts = set(path.parts)
+    return date_part in parts and hour_part in parts
+
+
+def iter_archive_files(
+    root: Path, *, skip_current_hour: bool = False, now: datetime | None = None
+) -> Iterator[Path]:
     """Yield sealed archive payload files under ``root`` in stable order.
 
     Active temp files and SQLite state files are skipped so upload/prune jobs do
     not race a writer or accidentally treat control-plane state as market data.
+    When ``skip_current_hour`` is true, also skip the current UTC hour partition;
+    the live collector can still be appending to those gzip files.
     """
     root = root.resolve()
     if not root.exists():
         return
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
     files: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -84,6 +102,8 @@ def iter_archive_files(root: Path) -> Iterator[Path]:
             or name.endswith(".sqlite3")
             or name.endswith(".db")
         ):
+            continue
+        if skip_current_hour and _is_current_hour_partition(path, now=now):
             continue
         if any(name.endswith(ext) for ext in ARCHIVE_EXTENSIONS):
             files.append(path)
@@ -148,14 +168,14 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def scan_archive_files(
-    root: Path, db_path: Path, *, r2_prefix: str
+    root: Path, db_path: Path, *, r2_prefix: str, skip_current_hour: bool = False
 ) -> list[dict[str, Any]]:
     """Record sealed local archive files and return their state rows."""
     root = root.resolve()
     now = time.time()
     rows: list[dict[str, Any]] = []
     with connect_state(db_path) as conn:
-        for path in iter_archive_files(root):
+        for path in iter_archive_files(root, skip_current_hour=skip_current_hour):
             stat = path.stat()
             object_key = object_key_for(root, path, r2_prefix)
             digest = sha256_file(path)
@@ -247,7 +267,12 @@ def upload_pending_files(
     """
     result = {"uploaded": 0, "skipped": 0, "failed": 0}
     with connect_state(db_path) as conn:
-        query = "select * from archive_files where status='sealed' order by object_key"
+        query = """
+            select * from archive_files
+            where status='sealed'
+               or (status='uploaded' and error is not null)
+            order by object_key
+        """
         if limit is not None:
             query += f" limit {int(limit)}"
         rows = conn.execute(query).fetchall()
@@ -272,7 +297,7 @@ def upload_pending_files(
                 conn.execute(
                     """
                     update archive_files
-                    set status='uploaded', uploaded_at=coalesce(uploaded_at, ?), error=null
+                    set status='uploaded', uploaded_at=?, error=null
                     where local_path=?
                     """,
                     (now, row["local_path"]),
@@ -415,7 +440,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="optional max rows for upload/verify batches",
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("scan", help="scan sealed local archive files into state DB")
+    scan = sub.add_parser("scan", help="scan sealed local archive files into state DB")
+    scan.add_argument(
+        "--skip-current-hour",
+        action="store_true",
+        help="skip current UTC hour partitions that the live collector may still be appending",
+    )
     manifest = sub.add_parser("manifest", help="write JSONL manifest from state DB")
     manifest.add_argument("--out", type=Path, required=True)
     prune = sub.add_parser(
@@ -451,7 +481,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     if args.command == "scan":
-        rows = scan_archive_files(args.root, args.state_db, r2_prefix=args.r2_prefix)
+        rows = scan_archive_files(
+            args.root,
+            args.state_db,
+            r2_prefix=args.r2_prefix,
+            skip_current_hour=args.skip_current_hour,
+        )
         print(
             json.dumps(
                 {"scanned": len(rows), "state_db": str(args.state_db)}, sort_keys=True
