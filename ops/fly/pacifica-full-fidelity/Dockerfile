@@ -13,9 +13,11 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY scripts ./scripts
+COPY docs/ops/pacifica-api-surface-baseline.json ./docs/ops/pacifica-api-surface-baseline.json
 COPY ops/fly/pacifica-full-fidelity/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
     scripts/run_pacifica_full_fidelity_collector.sh \
-    scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+    scripts/run_pacifica_full_fidelity_r2_lifecycle.sh \
+    scripts/run_pacifica_fly_ops_watchdogs.py
 
 ENTRYPOINT ["/entrypoint.sh"]

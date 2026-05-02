@@ -16,7 +16,7 @@ Goal:
 - `ops/fly/pacifica-full-fidelity/entrypoint.sh`
 - `ops/fly/pacifica-full-fidelity/fly.toml`
 
-The container runs two processes:
+The container runs three process groups:
 
 1. Foreground collector:
    - `scripts/collect_pacifica_full_fidelity.py`
@@ -30,6 +30,12 @@ The container runs two processes:
    - upload `.sha256` sidecars
    - verify remote size and hash sidecar
    - prune only verified local files when `PACIFICA_R2_PRUNE_EXECUTE=1`
+
+3. Background ops-watchdog loop every hour, with per-operation due markers:
+   - API/docs surface watcher: daily by default (`PACIFICA_API_SURFACE_WATCH_INTERVAL_S=86400`);
+   - R2 inventory + raw-retention/cold-compaction policy planner: daily by default (`PACIFICA_R2_RETENTION_PLAN_INTERVAL_S=86400`);
+   - non-destructive reports under `/data/ops`;
+   - optional report upload to `r2:pacifica-trading-data/ops/pacifica/full_fidelity/watchdogs/latest` when `PACIFICA_OPS_UPLOAD_REPORTS=1`.
 
 ## Storage model
 
@@ -97,6 +103,8 @@ fly status -a pacifica-full-fidelity
 fly logs -a pacifica-full-fidelity
 fly ssh console -a pacifica-full-fidelity -C 'df -h /data'
 fly ssh console -a pacifica-full-fidelity -C 'sqlite3 /data/pacifica_full_fidelity_storage.sqlite "select status,count(*),sum(size_bytes) from archive_files group by status"'
+fly ssh console -a pacifica-full-fidelity -C 'python scripts/run_pacifica_fly_ops_watchdogs.py --once'
+fly ssh console -a pacifica-full-fidelity -C 'sed -n "1,120p" /data/ops/watchdogs/README.md'
 ```
 
 ## Important safety notes

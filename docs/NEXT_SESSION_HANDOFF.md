@@ -140,6 +140,8 @@ Storage lifecycle helper:
 - wrapper: `scripts/run_pacifica_full_fidelity_r2_lifecycle.sh`
 - health check: `scripts/check_pacifica_full_fidelity_health.py`
 - API/docs surface watcher: `scripts/watch_pacifica_api_surface.py`
+- Fly-side ops watchdogs: `scripts/run_pacifica_fly_ops_watchdogs.py`
+- R2 inventory converter: `scripts/pacifica_r2_inventory.py`
 - API/docs surface baseline/report: `docs/ops/pacifica-api-surface-baseline.json`, `docs/ops/pacifica-api-surface-watch/`
 - launchd template: `ops/launchd/com.non-toxic.pacifica-full-fidelity-r2-lifecycle.plist`
 - always-on Fly deployment docs/config: `docs/ops/pacifica-full-fidelity-fly.md`, `ops/fly/pacifica-full-fidelity/`
@@ -239,13 +241,25 @@ verdict: UNCHANGED
 current REST surface: /funding/history, /info, /info/prices, /kline
 ```
 
-Scheduled Hermes cron:
+Scheduled Hermes cron remains as a laptop/Hermes-side backup:
 
 ```text
 job_id: 4bbd973f8035
 name: Pacifica API surface watcher
 schedule: 0 8 * * *
 deliver: origin
+```
+
+Fly-side ops watchdog addition:
+
+```text
+script: scripts/run_pacifica_fly_ops_watchdogs.py
+entrypoint loop: wakes hourly, runs due operations using marker files under /data/ops/.state
+API surface watch interval: 86400 seconds (daily)
+R2 inventory/retention-plan interval: 86400 seconds (daily)
+reports root: /data/ops
+report upload target: r2:pacifica-trading-data/ops/pacifica/full_fidelity/watchdogs/latest
+remote raw deletion: not implemented; retention reports remain non-destructive planning artifacts
 ```
 
 ### R2 retention and cold-compaction policy
@@ -697,6 +711,8 @@ git diff --check
 - `scripts/run_pacifica_full_fidelity_r2_lifecycle.sh`
 - `scripts/check_pacifica_full_fidelity_health.py`
 - `scripts/watch_pacifica_api_surface.py`
+- `scripts/run_pacifica_fly_ops_watchdogs.py`
+- `scripts/pacifica_r2_inventory.py`
 - `docs/ops/pacifica-api-surface-baseline.json`
 - `docs/ops/pacifica-api-surface-watch/README.md`
 - `docs/ops/pacifica-r2-retention-compaction.md`

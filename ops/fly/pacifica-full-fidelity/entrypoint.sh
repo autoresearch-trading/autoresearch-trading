@@ -14,6 +14,12 @@ set -euo pipefail
 : "${PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB:=10}"
 : "${PACIFICA_R2_PRUNE_EXECUTE:=1}"
 : "${PACIFICA_FULL_FIDELITY_RAW_PAYLOAD_MODE:=compact}"
+: "${PACIFICA_OPS_ROOT:=/data/ops}"
+: "${PACIFICA_API_SURFACE_WATCH_INTERVAL_S:=86400}"
+: "${PACIFICA_R2_RETENTION_PLAN_INTERVAL_S:=86400}"
+: "${PACIFICA_OPS_R2_PREFIX:=ops/pacifica/full_fidelity}"
+: "${PACIFICA_OPS_UPLOAD_REPORTS:=1}"
+: "${PACIFICA_OPS_COMMAND_TIMEOUT_S:=1800}"
 
 export PACIFICA_FULL_FIDELITY_ROOT
 export PACIFICA_FULL_FIDELITY_STATE_DB
@@ -21,10 +27,16 @@ export PACIFICA_FULL_FIDELITY_R2_PREFIX
 export PACIFICA_FULL_FIDELITY_REMOTE_BASE
 export PACIFICA_FULL_FIDELITY_RETENTION_DAYS
 export PACIFICA_FULL_FIDELITY_BATCH_LIMIT
+export PACIFICA_OPS_ROOT
+export PACIFICA_API_SURFACE_WATCH_INTERVAL_S
+export PACIFICA_R2_RETENTION_PLAN_INTERVAL_S
+export PACIFICA_OPS_R2_PREFIX
+export PACIFICA_OPS_UPLOAD_REPORTS
+export PACIFICA_OPS_COMMAND_TIMEOUT_S
 export PACIFICA_R2_PRUNE_EXECUTE
 export PACIFICA_USE_SYSTEM_PYTHON=1
 
-mkdir -p "$PACIFICA_FULL_FIDELITY_ROOT" /data/logs
+mkdir -p "$PACIFICA_FULL_FIDELITY_ROOT" /data/logs "$PACIFICA_OPS_ROOT"
 
 lifecycle_loop() {
   while true; do
@@ -43,11 +55,25 @@ lifecycle_loop() {
   done
 }
 
+ops_watchdog_loop() {
+  while true; do
+    echo "[$(date -u +%FT%TZ)] ops watchdog run start"
+    if python scripts/run_pacifica_fly_ops_watchdogs.py --once; then
+      echo "[$(date -u +%FT%TZ)] ops watchdog run complete"
+    else
+      echo "[$(date -u +%FT%TZ)] ops watchdog run reported failures" >&2
+    fi
+    sleep 3600
+  done
+}
+
 lifecycle_loop &
 LIFECYCLE_PID=$!
+ops_watchdog_loop &
+OPS_WATCHDOG_PID=$!
 
 cleanup() {
-  kill "$LIFECYCLE_PID" 2>/dev/null || true
+  kill "$LIFECYCLE_PID" "$OPS_WATCHDOG_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 

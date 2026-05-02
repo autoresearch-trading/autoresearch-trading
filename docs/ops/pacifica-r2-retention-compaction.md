@@ -48,7 +48,16 @@ A raw R2 object can be considered for deletion only if all gates pass:
 
 ## Non-destructive planner
 
-Use:
+On Fly, the ops watchdog runs this daily by default:
+
+1. `rclone lsjson r2:pacifica-trading-data/raw/pacifica/full_fidelity --recursive --files-only`
+2. `scripts/pacifica_r2_inventory.py` to convert the R2 listing into `/data/ops/r2_inventory.csv`
+3. `scripts/plan_pacifica_r2_retention.py` to write `/data/ops/pacifica-r2-retention/`
+4. `rclone copy /data/ops r2:pacifica-trading-data/ops/pacifica/full_fidelity/watchdogs/latest` when `PACIFICA_OPS_UPLOAD_REPORTS=1`
+
+This gives the R2 compression/retention policy its own always-on operational path on the archival appliance. It is still non-destructive: the planner produces review artifacts only and never deletes raw objects.
+
+Manual usage remains:
 
 ```bash
 python scripts/plan_pacifica_r2_retention.py \
