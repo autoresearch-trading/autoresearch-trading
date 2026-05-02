@@ -1,0 +1,8 @@
+gate,passing_symbols,total_symbols
+sample_gate_pass,0,65
+liquidity_gate_pass,25,65
+spread_cost_gate_pass,60,65
+activity_gate_pass,4,65
+stability_gate_pass,63,65
+concentration_gate_pass,0,65
+eligible,0,65

@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-02 01:38 EST
+Updated: 2026-05-02 02:20 EST
 
 ## Start here
 
@@ -19,7 +19,17 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 Latest committed work:
 
 ```text
+5af8e3f docs: refresh Pacifica diagnostics after R2 lifecycle
 05edb6b feat: add Pacifica R2 spool lifecycle
+```
+
+Current uncommitted work in this session:
+
+```text
+scripts/build_pacifica_eligibility_gates.py
+ tests/scripts/test_build_pacifica_eligibility_gates.py
+ docs/experiments/paper-trading-eligibility/
+ docs/NEXT_SESSION_HANDOFF.md
 ```
 
 Relevant prior commits:
@@ -47,22 +57,17 @@ Latest local check in this handoff session:
 
 ```text
 branch: main
-latest commit: 05edb6b feat: add Pacifica R2 spool lifecycle
-working tree: refreshed diagnostic report artifacts after local silver rebuild; not yet committed
+latest commit: 5af8e3f docs: refresh Pacifica diagnostics after R2 lifecycle
+working tree: uncommitted paper-trading eligibility gate script/tests/report plus this handoff update
 ```
 
-Current uncommitted status snapshot at 2026-05-02 01:38 EST:
+Current uncommitted status snapshot at 2026-05-02 02:20 EST:
 
 ```text
  M docs/NEXT_SESSION_HANDOFF.md
- M docs/experiments/non-hft-regime-state/README.md
- M docs/experiments/non-hft-regime-state/regime_state_preview.csv
- M docs/experiments/non-hft-regime-state/silver_quality_summary.csv
- M docs/experiments/toxic-regime-overlay/README.md
- M docs/experiments/toxic-regime-overlay/hour_summary.csv
- M docs/experiments/toxic-regime-overlay/overlay_scorecard.csv
- M docs/experiments/toxic-regime-overlay/symbol_summary.csv
- M docs/experiments/toxic-regime-overlay/toxic_bucket_summary.csv
+?? docs/experiments/paper-trading-eligibility/
+?? scripts/build_pacifica_eligibility_gates.py
+?? tests/scripts/test_build_pacifica_eligibility_gates.py
 ```
 
 ## Primary goal
@@ -160,8 +165,8 @@ Latest storage incident / deployment check at 2026-05-01 17:25 EST:
 Laptop /System/Volumes/Data: 266Gi used, 173Gi available, 61% full after cache cleanup / APFS purgeable-space recovery
 prior collector log contained Errno 28 / No space left on device
 laptop launchd collector should remain stopped unless intentionally smoke-testing compact mode
-Fly /data volume: 98G total, 689M used, 93G available, 1% full
-Fly lifecycle DB: sealed=2821 files / 363,903,615 bytes; uploaded=94 files / 65,316,933 bytes; verified=306 files / 32,634,974 bytes
+Fly /data volume: 98G total, 2.9G used, 90G available, 4% full
+Fly lifecycle DB: sealed=4450 files / 1,835,082,475 bytes; uploaded=1638 files / 989,828,251 bytes; verified=335 files / 37,874,663 bytes
 Fly local spool currently has 3,221 files under /data/pacifica_full_fidelity
 old local R2 upload-verify background process completed successfully: session_id=proc_621d706409f0, pid=35414, exit code 0, uptime about 14,160s
 local lifecycle DB: verified=4,171 files / 18,301,666,532 bytes; local pruning has not been enabled or executed
@@ -182,7 +187,7 @@ region: iad / Ashburn, Virginia
 volume: pacifica_full_fidelity_data
 volume mount: /data
 volume size: 100GB requested, 98G filesystem observed
-latest /data usage: 689M used, 93G available, 1% full
+latest /data usage: 2.9G used, 90G available, 4% full
 R2 remote: r2:pacifica-trading-data
 R2 prefix: raw/pacifica/full_fidelity
 ```
@@ -206,9 +211,9 @@ R2 credentials were set as Fly secrets from local rclone config. Secret names: `
 Latest observed Fly lifecycle status shows upload and verification are working, but the backlog is still moving:
 
 ```text
-sealed|2821|363903615
-uploaded|94|65316933
-verified|306|32634974
+sealed|4450|1835082475
+uploaded|1638|989828251
+verified|335|37874663
 ```
 
 Interpretation: Fly collection is live, R2 upload is live, `.sha256` sidecar verification is live, and some rows have reached `verified`. Continue monitoring until the steady state is clear: files should not accumulate without bound on `/data`, and older verified files should prune after the one-day retention window.
@@ -359,6 +364,46 @@ Toxicity cutoffs: [0.9, 0.8, 0.7]
 
 Interpretation: expected diagnostic state. Two distinct dates is not edge evidence.
 
+### Paper-trading eligibility gates
+
+Script:
+
+- `scripts/build_pacifica_eligibility_gates.py`
+
+Tests:
+
+- `tests/scripts/test_build_pacifica_eligibility_gates.py`
+
+Output:
+
+- `docs/experiments/paper-trading-eligibility/README.md`
+- `docs/experiments/paper-trading-eligibility/symbol_eligibility.csv`
+- `docs/experiments/paper-trading-eligibility/eligible_symbols.csv`
+- `docs/experiments/paper-trading-eligibility/gate_counts.csv`
+- `docs/experiments/paper-trading-eligibility/thresholds.csv`
+
+Latest run:
+
+```text
+verdict: INSUFFICIENT_SAMPLE_DIAGNOSTIC
+symbols_evaluated: 65
+eligible_symbols: 0
+```
+
+Gate counts:
+
+```text
+sample_gate_pass: 0 / 65
+liquidity_gate_pass: 25 / 65
+spread_cost_gate_pass: 60 / 65
+activity_gate_pass: 4 / 65
+stability_gate_pass: 63 / 65
+concentration_gate_pass: 0 / 65
+eligible: 0 / 65
+```
+
+Interpretation: eligibility gates are now explicit and pre-backtester. No symbols are eligible yet because the archive only has 2 distinct dates and the day-concentration gate cannot pass. Do not loosen thresholds based on this diagnostic run.
+
 ## Interpretation discipline
 
 The full-fidelity archive is too young to claim an edge.
@@ -395,19 +440,18 @@ bash -n \
 Result:
 
 ```text
-34 passed in 0.90s for focused report/collector/silver/regime/toxic tests
+37 passed in 0.30s for focused eligibility/report/collector/silver/regime/toxic tests
 py_compile passed
-bash syntax checks passed
-git diff --check passed
+bash syntax checks passed previously for shell wrappers
 ```
 
 Also verified live operational state:
 
 ```text
-fly machine exec e2862502a76778 -a pacifica-full-fidelity ... df/sqlite checks passed
-Fly /data: 98G total, 689M used, 93G available
-Fly lifecycle DB includes verified rows, proving upload+sidecar verification path works; verified advanced to 306 rows in the latest check
-Laptop /System/Volumes/Data: 173Gi available
+fly status -a pacifica-full-fidelity shows machine e2862502a76778 started in iad
+Fly /data: 98G total, 2.9G used, 90G available
+Fly lifecycle DB: sealed=4450, uploaded=1638, verified=335; R2 upload+sidecar verification path is active and verified advanced from 306 to 335 since the prior check
+Laptop /System/Volumes/Data: 173Gi available in the prior local disk check
 ```
 
 Previous broader research/diagnostic verification before the Fly deployment remained:
@@ -418,7 +462,7 @@ Previous broader research/diagnostic verification before the Fly deployment rema
 
 ## Recommended next steps in a fresh session
 
-1. Start with `git status --short` and review the uncommitted storage-safety/R2/Fly deployment patch set. Do not assume a clean tree.
+1. Start with `git status --short`. Current uncommitted work should be the paper-trading eligibility gate script/tests/report and this handoff update, unless already committed.
 2. Monitor Fly steady state. App `pacifica-full-fidelity` in region `iad` has machine `e2862502a76778`, 100GB volume `pacifica_full_fidelity_data`, R2 secrets set, collector running, and lifecycle upload/verify working. Poll `/data` disk and lifecycle DB until `verified` grows and old verified files prune after the one-day retention window.
 3. Use these Fly checks first:
    - `fly status -a pacifica-full-fidelity`
@@ -428,9 +472,9 @@ Previous broader research/diagnostic verification before the Fly deployment rema
 5. Keep the local laptop collector stopped unless intentionally used for smoke/debug collection. The always-on collector is Fly, not laptop launchd.
 6. Laptop lifecycle pruning remains dry-run unless Diego explicitly enables `PACIFICA_R2_PRUNE_EXECUTE=1`; Fly spool pruning is enabled because `/data` is a bounded cache.
 7. Hetzner/systemd remains documented as a lower-cost fallback in `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, and `ops/systemd/`, but Diego chose Fly for now. Fly free capacity is not enough for the 100GB spool; this is a paid deployment.
-8. Then refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
-9. Add explicit paper-trading eligibility gates before any strategy can trade all symbols.
-10. Only after eligibility gates and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
+8. Refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
+9. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
+10. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
 
 ## Quick commands
 
