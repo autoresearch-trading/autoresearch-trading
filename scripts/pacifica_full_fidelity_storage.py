@@ -180,29 +180,38 @@ def scan_archive_files(
             object_key = object_key_for(root, path, r2_prefix)
             digest = sha256_file(path)
             existing = conn.execute(
-                "select status from archive_files where local_path=?", (str(path),)
+                "select status, size_bytes, sha256, error from archive_files where local_path=?",
+                (str(path),),
             ).fetchone()
-            status = existing["status"] if existing else "sealed"
-            if status in {"pruned", "missing"}:
-                status = "sealed"
+            status = "sealed"
+            error = None
+            if existing:
+                status = existing["status"]
+                unchanged = (
+                    int(existing["size_bytes"]) == int(stat.st_size)
+                    and existing["sha256"] == digest
+                )
+                if status in {"pruned", "missing"}:
+                    status = "sealed"
+                elif status in {"uploaded", "verified"} and not unchanged:
+                    status = "sealed"
+                if status == "uploaded" and unchanged:
+                    error = existing["error"]
             conn.execute(
                 """
                 insert into archive_files(
                     local_path, object_key, size_bytes, sha256, status,
-                    first_seen_at, last_seen_at
-                ) values (?, ?, ?, ?, ?, ?, ?)
+                    first_seen_at, last_seen_at, error
+                ) values (?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(local_path) do update set
                     object_key=excluded.object_key,
                     size_bytes=excluded.size_bytes,
                     sha256=excluded.sha256,
-                    status=case
-                        when archive_files.status in ('uploaded','verified') then archive_files.status
-                        else excluded.status
-                    end,
+                    status=excluded.status,
                     last_seen_at=excluded.last_seen_at,
-                    error=null
+                    error=excluded.error
                 """,
-                (str(path), object_key, stat.st_size, digest, status, now, now),
+                (str(path), object_key, stat.st_size, digest, status, now, now, error),
             )
             saved = conn.execute(
                 "select * from archive_files where local_path=?", (str(path),)

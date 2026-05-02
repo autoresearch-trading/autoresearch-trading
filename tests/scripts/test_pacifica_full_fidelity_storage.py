@@ -295,6 +295,57 @@ def test_upload_pending_files_reuploads_uploaded_rows_with_verification_errors(
     assert saved == ("uploaded", None)
 
 
+def test_scan_archive_files_resets_mutated_uploaded_rows_to_sealed(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    path = _write(
+        root
+        / "channel=book"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=17"
+        / "chunk.jsonl.gz",
+        b"before",
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    mark_uploaded(db, path)
+    path.write_bytes(b"after-append")
+
+    rows = scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "sealed"
+    assert rows[0]["error"] is None
+    assert rows[0]["size_bytes"] == len(b"after-append")
+
+
+def test_scan_archive_files_preserves_unchanged_uploaded_error_for_reupload(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    path = _write(
+        root
+        / "channel=book"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=17"
+        / "chunk.jsonl.gz"
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    mark_uploaded(db, path)
+    with connect_state(db) as conn:
+        conn.execute(
+            "update archive_files set error='size mismatch remote=1 local=2' where local_path=?",
+            (str(path),),
+        )
+        conn.commit()
+
+    rows = scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "uploaded"
+    assert rows[0]["error"] == "size mismatch remote=1 local=2"
+
+
 def test_upload_pending_files_prioritizes_errored_uploaded_rows_before_new_sealed_rows(
     tmp_path,
 ):
