@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-01 17:30 EST
+Updated: 2026-05-02 01:38 EST
 
 ## Start here
 
@@ -19,12 +19,13 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 Latest committed work:
 
 ```text
-f5c625a fix: tolerate active Pacifica gzip files in silver build
+05edb6b feat: add Pacifica R2 spool lifecycle
 ```
 
 Relevant prior commits:
 
 ```text
+f5c625a fix: tolerate active Pacifica gzip files in silver build
 bc20850 docs: update next session handoff
 8a5db43 chore: switch repo agent context to Hermes
 ```
@@ -46,31 +47,22 @@ Latest local check in this handoff session:
 
 ```text
 branch: main
-latest commit: f5c625a fix: tolerate active Pacifica gzip files in silver build
-working tree: uncommitted storage-safety/R2/Fly deployment patch set; do not assume clean
+latest commit: 05edb6b feat: add Pacifica R2 spool lifecycle
+working tree: refreshed diagnostic report artifacts after local silver rebuild; not yet committed
 ```
 
-Current uncommitted status snapshot at 2026-05-01 17:25 EST:
+Current uncommitted status snapshot at 2026-05-02 01:38 EST:
 
 ```text
  M docs/NEXT_SESSION_HANDOFF.md
- M docs/ops/pacifica-full-fidelity-archival.md
- M ops/launchd/com.non-toxic.pacifica-full-fidelity.plist
- M scripts/collect_pacifica_full_fidelity.py
- M tests/scripts/test_collect_pacifica_full_fidelity.py
-?? .dockerignore
-?? docs/ops/pacifica-full-fidelity-fly.md
-?? docs/ops/pacifica-full-fidelity-hetzner.md
-?? ops/fly/
-?? ops/hetzner/
-?? ops/launchd/com.non-toxic.pacifica-full-fidelity-r2-lifecycle.plist
-?? ops/systemd/
-?? research_cloud_provider_pacifica_collector/
-?? scripts/check_pacifica_full_fidelity_health.py
-?? scripts/pacifica_full_fidelity_storage.py
-?? scripts/run_pacifica_full_fidelity_collector.sh
-?? scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
-?? tests/scripts/test_pacifica_full_fidelity_storage.py
+ M docs/experiments/non-hft-regime-state/README.md
+ M docs/experiments/non-hft-regime-state/regime_state_preview.csv
+ M docs/experiments/non-hft-regime-state/silver_quality_summary.csv
+ M docs/experiments/toxic-regime-overlay/README.md
+ M docs/experiments/toxic-regime-overlay/hour_summary.csv
+ M docs/experiments/toxic-regime-overlay/overlay_scorecard.csv
+ M docs/experiments/toxic-regime-overlay/symbol_summary.csv
+ M docs/experiments/toxic-regime-overlay/toxic_bucket_summary.csv
 ```
 
 ## Primary goal
@@ -168,8 +160,8 @@ Latest storage incident / deployment check at 2026-05-01 17:25 EST:
 Laptop /System/Volumes/Data: 266Gi used, 173Gi available, 61% full after cache cleanup / APFS purgeable-space recovery
 prior collector log contained Errno 28 / No space left on device
 laptop launchd collector should remain stopped unless intentionally smoke-testing compact mode
-Fly /data volume: 98G total, 258M used, 93G available, 1% full
-Fly lifecycle DB: sealed=2049 files / 143,861,083 bytes; uploaded=50 files / 3,988,870 bytes; verified=150 files / 3,890,946 bytes
+Fly /data volume: 98G total, 689M used, 93G available, 1% full
+Fly lifecycle DB: sealed=2821 files / 363,903,615 bytes; uploaded=94 files / 65,316,933 bytes; verified=306 files / 32,634,974 bytes
 Fly local spool currently has 3,221 files under /data/pacifica_full_fidelity
 old local R2 upload-verify background process completed successfully: session_id=proc_621d706409f0, pid=35414, exit code 0, uptime about 14,160s
 local lifecycle DB: verified=4,171 files / 18,301,666,532 bytes; local pruning has not been enabled or executed
@@ -190,7 +182,7 @@ region: iad / Ashburn, Virginia
 volume: pacifica_full_fidelity_data
 volume mount: /data
 volume size: 100GB requested, 98G filesystem observed
-latest /data usage: 258M used, 93G available, 1% full
+latest /data usage: 689M used, 93G available, 1% full
 R2 remote: r2:pacifica-trading-data
 R2 prefix: raw/pacifica/full_fidelity
 ```
@@ -214,9 +206,9 @@ R2 credentials were set as Fly secrets from local rclone config. Secret names: `
 Latest observed Fly lifecycle status shows upload and verification are working, but the backlog is still moving:
 
 ```text
-sealed|2049|143861083
-uploaded|50|3988870
-verified|150|3890946
+sealed|2821|363903615
+uploaded|94|65316933
+verified|306|32634974
 ```
 
 Interpretation: Fly collection is live, R2 upload is live, `.sha256` sidecar verification is live, and some rows have reached `verified`. Continue monitoring until the steady state is clear: files should not accumulate without bound on `/data`, and older verified files should prune after the one-day retention window.
@@ -234,23 +226,23 @@ Output:
 Last local silver refresh completed successfully after adding active-gzip robustness:
 
 ```text
-bbo: 2340115 rows
-book: 7762239 rows
-candle: 1483561 rows
-mark_price_candle: 20686075 rows
-prices: 964508 rows
-trades: 87637 rows
+bbo: 2545618 rows
+book: 8142998 rows
+candle: 1551675 rows
+mark_price_candle: 21521071 rows
+prices: 998593 rows
+trades: 90446 rows
 wrote silver tables to data/pacifica_silver_partitioned_refresh
 ```
 
-Latest filesystem freshness check at 2026-05-01 09:54 EST:
+Latest filesystem freshness check at 2026-05-02 01:38 EST:
 
 ```text
 data/pacifica_silver_partitioned_refresh exists=True
-files=912
+files=974
 symbols=65
 dates=2026-04-30, 2026-05-01
-latest_age_s=90.4
+latest_age_s≈fresh at rebuild time
 ```
 
 Interpretation: refreshed diagnostics below were built from `data/pacifica_silver_partitioned_refresh`. The canonical `data/pacifica_silver_partitioned` directory was not replaced because a cleanup command was denied; either use the refresh directory explicitly or safely replace the canonical generated silver directory later. The silver builder now skips incomplete active gzip files from the live collector instead of failing with `gzip.BadGzipFile`/CRC errors.
@@ -282,8 +274,10 @@ Supported sources:
 Latest silver-backed monitor verification used `data/pacifica_silver_partitioned_refresh` and wrote to `data/pacifica_realtime_research` with:
 
 ```text
-warnings.json = []
+warnings.json = ["silver archive stale: latest row age 54523.7s exceeds 300.0s"]
 ```
+
+Interpretation: this warning is expected for the local laptop silver cache because the always-on collector has moved to Fly and local raw is no longer advancing. It is not a Fly liveness failure.
 
 Current V1 monitor features include:
 
@@ -317,9 +311,9 @@ Report/output:
 Latest local refreshed result:
 
 ```text
-wrote 57372 regime-state rows to docs/experiments/non-hft-regime-state
+wrote 59534 regime-state rows to docs/experiments/non-hft-regime-state
 Bucket: 1min
-Rows: 57372
+Rows: 59534
 Symbols: 65
 ```
 
@@ -356,7 +350,7 @@ Latest local refreshed result:
 
 ```text
 verdict: INSUFFICIENT_SAMPLE_DIAGNOSTIC
-Rows: 57372
+Rows: 59534
 Symbols: 65
 Distinct dates: 2
 Horizons minutes: [5, 15, 30, 60]
@@ -401,17 +395,18 @@ bash -n \
 Result:
 
 ```text
-15 passed in 0.04s
+34 passed in 0.90s for focused report/collector/silver/regime/toxic tests
 py_compile passed
 bash syntax checks passed
+git diff --check passed
 ```
 
 Also verified live operational state:
 
 ```text
 fly machine exec e2862502a76778 -a pacifica-full-fidelity ... df/sqlite checks passed
-Fly /data: 98G total, 258M used, 93G available
-Fly lifecycle DB includes verified rows, proving upload+sidecar verification path works; verified advanced to 150 rows in the latest check
+Fly /data: 98G total, 689M used, 93G available
+Fly lifecycle DB includes verified rows, proving upload+sidecar verification path works; verified advanced to 306 rows in the latest check
 Laptop /System/Volumes/Data: 173Gi available
 ```
 
