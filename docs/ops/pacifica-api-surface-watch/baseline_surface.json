@@ -1,0 +1,33 @@
+{
+  "intervals": [
+    "12h",
+    "15m",
+    "1d",
+    "1h",
+    "1m",
+    "2h",
+    "30m",
+    "3m",
+    "4h",
+    "5m",
+    "8h"
+  ],
+  "rest_paths": [
+    "/funding/history",
+    "/info",
+    "/info/prices",
+    "/kline"
+  ],
+  "source_urls": [
+    "https://docs.pacifica.fi/api-documentation/api reviewed on 2026-05-02",
+    "scripts/collect_pacifica_full_fidelity.py"
+  ],
+  "ws_sources": [
+    "bbo",
+    "book",
+    "candle",
+    "mark_price_candle",
+    "prices",
+    "trades"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "intervals": [
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "8h",
+    "12h",
+    "1d"
+  ],
+  "note": "Reviewed baseline for Pacifica public market-data API surface. This is a docs-change baseline, not a guarantee that every surface is collected. Private/account surfaces are intentionally excluded. Current collector coverage is tracked separately in docs/ops/pacifica-full-fidelity-archival.md and scripts/collect_pacifica_full_fidelity.py.",
+  "rest_paths": [
+    "/funding/history",
+    "/info",
+    "/info/prices",
+    "/kline"
+  ],
+  "source_urls": [
+    "https://docs.pacifica.fi/api-documentation/api reviewed on 2026-05-02",
+    "scripts/collect_pacifica_full_fidelity.py"
+  ],
+  "updated_at": "2026-05-02T00:00:00Z",
+  "ws_sources": [
+    "prices",
+    "trades",
+    "book",
+    "bbo",
+    "candle",
+    "mark_price_candle"
+  ]
+}

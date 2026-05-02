@@ -18,6 +18,8 @@ It covers public market-data streams only and is intended to collect the full li
 - `mark_price_candle`, per symbol and interval
 - REST snapshots for `/info` and `/info/prices`
 
+The reviewed public REST/API-docs surface also includes `/funding/history` and `/kline`; those are tracked in `docs/ops/pacifica-api-surface-baseline.json` and should be reviewed before expanding collection beyond the current raw collector.
+
 Private/account streams are intentionally excluded.
 
 ## Why JSONL.GZ instead of parquet first
@@ -125,6 +127,7 @@ Use `--raw-payload-mode full` only for short debugging runs. Full mode writes th
 - Recommended lifecycle sequence: scan sealed files, upload/copy to R2, verify remote object size and `.sha256` sidecar against the manifest, mark rows verified, then prune verified local copies after the retention window. Do not prune `sealed` or merely `uploaded` files.
 - Full-fidelity mode is high-cardinality. Subscription count is dynamic: `1 + N_symbols * (trades + bbo + book agg levels + 2 * candle intervals)`. With the default 1 book aggregation level and 11 candle intervals, that is `1 + N_symbols * 25`. Use the count snippet above to see the current count. If Pacifica rate-limits this, run multiple symbol shards with separate plists or reduce intervals temporarily.
 - `data/pacifica_full_fidelity/` should be treated as raw data, not source code. Do not commit captured archives.
+- `scripts/watch_pacifica_api_surface.py` compares Pacifica's public docs/OpenAPI surface against `docs/ops/pacifica-api-surface-baseline.json` and writes `docs/ops/pacifica-api-surface-watch/`. A `CHANGED` verdict is a manual review trigger, not permission to auto-update collector subscriptions.
 
 ## Local/R2 lifecycle commands
 

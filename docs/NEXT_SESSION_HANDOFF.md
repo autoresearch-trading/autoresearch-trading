@@ -139,6 +139,8 @@ Storage lifecycle helper:
 - collector wrapper: `scripts/run_pacifica_full_fidelity_collector.sh`
 - wrapper: `scripts/run_pacifica_full_fidelity_r2_lifecycle.sh`
 - health check: `scripts/check_pacifica_full_fidelity_health.py`
+- API/docs surface watcher: `scripts/watch_pacifica_api_surface.py`
+- API/docs surface baseline/report: `docs/ops/pacifica-api-surface-baseline.json`, `docs/ops/pacifica-api-surface-watch/`
 - launchd template: `ops/launchd/com.non-toxic.pacifica-full-fidelity-r2-lifecycle.plist`
 - always-on Fly deployment docs/config: `docs/ops/pacifica-full-fidelity-fly.md`, `ops/fly/pacifica-full-fidelity/`
 - always-on Hetzner/systemd docs/config: `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, `ops/systemd/`
@@ -218,6 +220,33 @@ verified|335|37874663
 ```
 
 Interpretation: Fly collection is live, R2 upload is live, `.sha256` sidecar verification is live, and some rows have reached `verified`. Continue monitoring until the steady state is clear: files should not accumulate without bound on `/data`, and older verified files should prune after the one-day retention window.
+
+### Pacifica API/docs surface watcher
+
+Read-only watcher:
+
+- script: `scripts/watch_pacifica_api_surface.py`
+- reviewed baseline: `docs/ops/pacifica-api-surface-baseline.json`
+- latest report/output: `docs/ops/pacifica-api-surface-watch/README.md`, `current_surface.json`, `api_surface_diff.json`
+
+Purpose: detect when Pacifica's public docs/OpenAPI surface appears to expose new collectable market-data REST paths, websocket sources, or intervals. It currently follows `https://docs.pacifica.fi/api-documentation/api`, discovers the linked OpenAPI YAML, filters out private/account/order surfaces, and compares against the reviewed baseline. It is non-mutating: a `CHANGED` verdict means manually inspect docs/API, decide if the new surface is public market data, add collector/silver/tests if useful, and only then update the baseline.
+
+Latest run from this handoff session:
+
+```text
+python scripts/watch_pacifica_api_surface.py --out-dir docs/ops/pacifica-api-surface-watch --timeout-s 20
+verdict: UNCHANGED
+current REST surface: /funding/history, /info, /info/prices, /kline
+```
+
+Scheduled Hermes cron:
+
+```text
+job_id: 4bbd973f8035
+name: Pacifica API surface watcher
+schedule: 0 8 * * *
+deliver: origin
+```
 
 ### R2 retention and cold-compaction policy
 
@@ -503,9 +532,10 @@ Previous broader research/diagnostic verification before the Fly deployment rema
 6. Laptop lifecycle pruning remains dry-run unless Diego explicitly enables `PACIFICA_R2_PRUNE_EXECUTE=1`; Fly spool pruning is enabled because `/data` is a bounded cache.
 7. Hetzner/systemd remains documented as a lower-cost fallback in `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, and `ops/systemd/`, but Diego chose Fly for now. Fly free capacity is not enough for the 100GB spool; this is a paid deployment.
 8. Refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
-9. For R2 remote growth control, build the compacted cold archive + manifest verifier before enabling any R2 raw expiry. Use `scripts/plan_pacifica_r2_retention.py` only as a non-destructive planner until a separate destructive apply step is explicitly approved.
-10. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
-11. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
+9. Run or monitor the Pacifica API/docs surface watcher (`scripts/watch_pacifica_api_surface.py`). If it reports `CHANGED`, manually inspect whether any added REST path/websocket source/interval is public collectable market data before changing the collector or baseline.
+10. For R2 remote growth control, build the compacted cold archive + manifest verifier before enabling any R2 raw expiry. Use `scripts/plan_pacifica_r2_retention.py` only as a non-destructive planner until a separate destructive apply step is explicitly approved.
+11. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
+12. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
 
 ## Quick commands
 
@@ -614,6 +644,15 @@ python scripts/non_hft_toxic_overlay_probe.py \
   --out-dir docs/experiments/toxic-regime-overlay
 ```
 
+Run API/docs surface watcher:
+
+```bash
+python scripts/watch_pacifica_api_surface.py \
+  --out-dir docs/ops/pacifica-api-surface-watch \
+  --timeout-s 20 \
+  --fail-on-change
+```
+
 Inspect R2 durable archive size and retention policy:
 
 ```bash
@@ -637,7 +676,8 @@ uv run pytest tests/scripts/test_watch_pacifica_realtime_research.py \
 python -m py_compile \
   scripts/watch_pacifica_realtime_research.py \
   scripts/build_non_hft_regime_state.py \
-  scripts/non_hft_toxic_overlay_probe.py
+  scripts/non_hft_toxic_overlay_probe.py \
+  scripts/watch_pacifica_api_surface.py
 
 git diff --check
 ```
@@ -656,6 +696,9 @@ git diff --check
 - `scripts/run_pacifica_full_fidelity_collector.sh`
 - `scripts/run_pacifica_full_fidelity_r2_lifecycle.sh`
 - `scripts/check_pacifica_full_fidelity_health.py`
+- `scripts/watch_pacifica_api_surface.py`
+- `docs/ops/pacifica-api-surface-baseline.json`
+- `docs/ops/pacifica-api-surface-watch/README.md`
 - `docs/ops/pacifica-r2-retention-compaction.md`
 - `scripts/plan_pacifica_r2_retention.py`
 - `tests/scripts/test_plan_pacifica_r2_retention.py`
