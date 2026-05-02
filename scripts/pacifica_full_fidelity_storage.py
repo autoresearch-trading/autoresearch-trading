@@ -297,7 +297,7 @@ def upload_pending_files(
                 local_path, min_age_seconds=min_upload_age_seconds
             ):
                 result["skipped"] += 1
-                _set_error(conn, row["local_path"], "local file too recent for upload")
+                _set_error(conn, row["local_path"], None)
                 conn.commit()
                 continue
             remote_path = remote_path_for(remote_base, row["object_key"])
@@ -372,9 +372,7 @@ def verify_uploaded_files(
                 local_path, min_age_seconds=min_verify_age_seconds
             ):
                 result["skipped"] += 1
-                _set_error(
-                    conn, row["local_path"], "local file too recent for verification"
-                )
+                _set_error(conn, row["local_path"], None)
                 conn.commit()
                 continue
             remote_path = remote_path_for(remote_base, row["object_key"])

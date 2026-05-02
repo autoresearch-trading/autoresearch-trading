@@ -202,7 +202,7 @@ def test_upload_pending_files_skips_recently_modified_chunks(tmp_path):
             "select status, error from archive_files where local_path=?",
             (str(recent_file),),
         ).fetchone()
-    assert saved == ("sealed", "local file too recent for upload")
+    assert saved == ("sealed", None)
 
 
 def test_upload_pending_files_copies_data_and_sha256_sidecar_then_marks_uploaded(
@@ -330,7 +330,7 @@ def test_verify_uploaded_files_skips_recently_modified_uploaded_rows(tmp_path):
             "select status, error from archive_files where local_path=?",
             (str(recent_file),),
         ).fetchone()
-    assert saved == ("uploaded", "local file too recent for verification")
+    assert saved == ("uploaded", None)
 
 
 def test_verify_uploaded_files_checks_remote_size_and_sha256_sidecar_before_marking_verified(
