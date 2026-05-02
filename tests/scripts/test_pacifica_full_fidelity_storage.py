@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.pacifica_full_fidelity_storage import (
+    connect_state,
     iter_archive_files,
+    mark_uploaded,
     object_key_for,
     prune_verified_files,
     scan_archive_files,
@@ -293,6 +295,91 @@ def test_upload_pending_files_reuploads_uploaded_rows_with_verification_errors(
     assert saved == ("uploaded", None)
 
 
+def test_upload_pending_files_prioritizes_errored_uploaded_rows_before_new_sealed_rows(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    sealed_file = _write(
+        root
+        / "channel=book"
+        / "symbol=AAA"
+        / "date=2026-05-02"
+        / "hour=17"
+        / "sealed.jsonl.gz"
+    )
+    errored_uploaded_file = _write(
+        root
+        / "channel=book"
+        / "symbol=ZZZ"
+        / "date=2026-05-02"
+        / "hour=17"
+        / "errored.jsonl.gz"
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    mark_uploaded(db, errored_uploaded_file)
+    with connect_state(db) as conn:
+        conn.execute(
+            "update archive_files set error='size mismatch remote=1 local=2' where local_path=?",
+            (str(errored_uploaded_file),),
+        )
+        conn.commit()
+
+    copied: list[str] = []
+
+    def runner(args, *, input_text=None):
+        if args[0] == "copyto":
+            copied.append(Path(args[2]).name)
+        return ""
+
+    result = upload_pending_files(db, remote_base="r2:bucket", runner=runner, limit=1)
+
+    assert result == {"uploaded": 1, "skipped": 0, "failed": 0}
+    assert copied == [errored_uploaded_file.name]
+    with connect_state(db) as conn:
+        rows = conn.execute(
+            "select local_path,status,error from archive_files order by object_key"
+        ).fetchall()
+    by_name = {
+        Path(row["local_path"]).name: (row["status"], row["error"]) for row in rows
+    }
+    assert by_name[errored_uploaded_file.name] == ("uploaded", None)
+    assert by_name[sealed_file.name] == ("sealed", None)
+
+
+def test_verify_uploaded_files_defers_errored_rows_until_reupload(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    path = _write(
+        root
+        / "channel=book"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=17"
+        / "chunk.jsonl.gz"
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    mark_uploaded(db, path)
+    with connect_state(db) as conn:
+        conn.execute(
+            "update archive_files set error='size mismatch remote=1 local=2' where local_path=?",
+            (str(path),),
+        )
+        conn.commit()
+
+    def runner(args, *, input_text=None):
+        raise AssertionError(f"unexpected rclone command: {args}")
+
+    result = verify_uploaded_files(db, remote_base="r2:bucket", runner=runner)
+
+    assert result == {"verified": 0, "failed": 0, "skipped": 0}
+    with connect_state(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?", (str(path),)
+        ).fetchone()
+    assert tuple(saved) == ("uploaded", "size mismatch remote=1 local=2")
+
+
 def test_verify_uploaded_files_skips_recently_modified_uploaded_rows(tmp_path):
     root = tmp_path / "raw"
     db = tmp_path / "state.sqlite"
@@ -310,7 +397,7 @@ def test_verify_uploaded_files_skips_recently_modified_uploaded_rows(tmp_path):
     scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
     with sqlite3.connect(db) as conn:
         conn.execute(
-            "update archive_files set status='uploaded', uploaded_at=?, error='size mismatch remote=1 local=2' where local_path=?",
+            "update archive_files set status='uploaded', uploaded_at=?, error=null where local_path=?",
             (now, str(recent_file)),
         )
         conn.commit()

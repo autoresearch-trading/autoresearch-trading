@@ -278,7 +278,10 @@ def upload_pending_files(
             select * from archive_files
             where status='sealed'
                or (status='uploaded' and error is not null)
-            order by object_key
+            order by case
+                when status='uploaded' and error is not null then 0
+                else 1
+            end, object_key
         """
         if limit is not None:
             query += f" limit {int(limit)}"
@@ -353,9 +356,11 @@ def verify_uploaded_files(
     """
     result = {"verified": 0, "failed": 0, "skipped": 0}
     with connect_state(db_path) as conn:
-        query = (
-            "select * from archive_files where status='uploaded' order by object_key"
-        )
+        query = """
+            select * from archive_files
+            where status='uploaded' and error is null
+            order by object_key
+        """
         if limit is not None:
             query += f" limit {int(limit)}"
         rows = conn.execute(query).fetchall()
