@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-02 02:45 EST
+Updated: 2026-05-02 09:05 EST
 
 ## Start here
 
@@ -16,22 +16,30 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 
 ## Current commit/state
 
-Latest committed work:
+Latest functional commits before this handoff doc update:
 
 ```text
-32af641 feat: add Pacifica paper eligibility gates
-5af8e3f docs: refresh Pacifica diagnostics after R2 lifecycle
-05edb6b feat: add Pacifica R2 spool lifecycle
+80244c7 fix: avoid uploading active Pacifica raw chunks
+35c7540 chore: raise Pacifica Fly disk guard
+436664f feat: run Pacifica ops watchdogs on Fly
+05b7625 feat: add Pacifica API surface watcher
+b3889ba feat: add Pacifica R2 retention planner
 ```
 
-Current uncommitted work in this session:
+Current working tree at the start of this handoff update:
 
 ```text
-docs/ops/pacifica-r2-retention-compaction.md
-scripts/plan_pacifica_r2_retention.py
-tests/scripts/test_plan_pacifica_r2_retention.py
-docs/NEXT_SESSION_HANDOFF.md
+branch: main
+working tree: clean before this handoff edit
+active Fly deployment: app pacifica-full-fidelity, machine e2862502a76778, region iad, version 7
+active Fly image: pacifica-full-fidelity:deployment-01KQMEZKX06KB8VHSRK7SZ9TJS
 ```
+
+Important latest operational fix:
+
+- The R2 lifecycle had uploaded some current-hour raw chunks while the collector could still append to them, which produced size-mismatch verification errors.
+- Commit `80244c7` fixes this by making lifecycle scans skip the current UTC hour partition and by allowing uploaded rows with verification errors to be re-uploaded.
+- The fix was deployed to Fly as machine version `7`.
 
 Relevant prior commits:
 
@@ -53,23 +61,6 @@ Included in the Hermes-context switch:
 - external/current research note added:
   - `docs/research/2026-05-01-real-time-streaming-research-pass.md`
 - non-HFT regime-state and toxic overlay diagnostic reports refreshed from the newer silver snapshot.
-
-Latest local check in this handoff session:
-
-```text
-branch: main
-latest commit: 32af641 feat: add Pacifica paper eligibility gates
-working tree: uncommitted R2 retention/compaction policy doc, non-destructive planner script/tests, and this handoff update
-```
-
-Current uncommitted status snapshot at 2026-05-02 02:45 EST:
-
-```text
- M docs/NEXT_SESSION_HANDOFF.md
-?? docs/ops/pacifica-r2-retention-compaction.md
-?? scripts/plan_pacifica_r2_retention.py
-?? tests/scripts/test_plan_pacifica_r2_retention.py
-```
 
 ## Primary goal
 
@@ -124,9 +115,11 @@ Script:
 
 - `scripts/collect_pacifica_full_fidelity.py`
 
-Output:
+Primary active output is now on Fly, not the laptop:
 
-- `data/pacifica_full_fidelity/`
+- Fly local spool: `/data/pacifica_full_fidelity/` on machine `e2862502a76778`
+- Durable remote archive: `r2:pacifica-trading-data/raw/pacifica/full_fidelity/...`
+- Laptop local `data/pacifica_full_fidelity`, `data/pacifica_silver_partitioned`, and `data/pacifica_silver_partitioned_refresh` were explicitly deleted on 2026-05-02 after Diego confirmed he did not want local laptop data/cache retained. Do not assume local raw/silver exists. Rehydrate selected data from R2 when needed.
 
 Docs/config:
 
@@ -146,12 +139,12 @@ Storage lifecycle helper:
 - launchd template: `ops/launchd/com.non-toxic.pacifica-full-fidelity-r2-lifecycle.plist`
 - always-on Fly deployment docs/config: `docs/ops/pacifica-full-fidelity-fly.md`, `ops/fly/pacifica-full-fidelity/`
 - always-on Hetzner/systemd docs/config: `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, `ops/systemd/`
-- state DB: `data/pacifica_full_fidelity_storage.sqlite` (generated, do not commit)
+- state DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - manifest output: JSONL rows with local path, deterministic R2 object key, size, SHA-256, and upload/verification status
 - R2 upload path: `r2:pacifica-trading-data/raw/pacifica/full_fidelity/...`
 - upload semantics: rclone `copyto`/`rcat` only, never destructive `sync`; each data object gets a sibling `.sha256` sidecar
 - verification semantics: remote object byte size plus `.sha256` sidecar hash must match before local state becomes `verified`
-- local canary: scanned 4,171 local files into the state DB, then uploaded+verified all 4,171 local files totaling 18,301,666,532 bytes; local pruning has not been enabled or executed
+- lifecycle safety as of `80244c7`: scan skips current UTC hour partitions so active gzip chunks are not uploaded while still being appended; rows with verification errors are eligible for re-upload
 - always-on Fly deployment is live: app `pacifica-full-fidelity`, machine `e2862502a76778`, region `iad`, 100GB volume `pacifica_full_fidelity_data` mounted at `/data`, compact-mode collector running, R2 lifecycle loop running with prune enabled for Fly spool only
 
 Captured public data:
@@ -164,24 +157,32 @@ Captured public data:
 - per-symbol `mark_price_candle`;
 - REST `/info` and `/info/prices` snapshots.
 
-Latest storage incident / deployment check at 2026-05-01 17:25 EST:
+Latest operational check at 2026-05-02 09:00 EST:
 
 ```text
-Laptop /System/Volumes/Data: 266Gi used, 173Gi available, 61% full after cache cleanup / APFS purgeable-space recovery
-prior collector log contained Errno 28 / No space left on device
-laptop launchd collector should remain stopped unless intentionally smoke-testing compact mode
-Fly /data volume: 98G total, 2.9G used, 90G available, 4% full
-Fly lifecycle DB: sealed=4450 files / 1,835,082,475 bytes; uploaded=1638 files / 989,828,251 bytes; verified=335 files / 37,874,663 bytes
-Fly local spool currently has 3,221 files under /data/pacifica_full_fidelity
-old local R2 upload-verify background process completed successfully: session_id=proc_621d706409f0, pid=35414, exit code 0, uptime about 14,160s
-local lifecycle DB: verified=4,171 files / 18,301,666,532 bytes; local pruning has not been enabled or executed
+Fly app: pacifica-full-fidelity
+Machine: e2862502a76778
+Region: iad
+Machine state: started
+Machine version: 7
+Image: pacifica-full-fidelity:deployment-01KQMEZKX06KB8VHSRK7SZ9TJS
+Health check: ok=true, failures=[]
+Free disk: 87.96 GB
+Disk guard: 50 GiB floor active
+Newest raw file: fresh under /data/pacifica_full_fidelity
+Lifecycle DB: sealed=7224 files / ~3.19 GB; uploaded=3068 files / ~1.71 GB; verified=373 files / ~0.037 GB
+Unverified backlog: ~4.56 GB
+Collector process: alive with --min-free-disk-gb 50 and compact raw payload mode
+Lifecycle process: running upload-verify batch after deploy
+R2 raw prefix spot check: succeeded
+R2 ops/watchdog prefix spot check: succeeded
 ```
 
-Interpretation: raw collection had recently overwhelmed disk and hit `No space left on device`. The collector was patched to default to compact raw payload rows and to refuse writes below a configurable free-space floor (`--min-free-disk-gb`, launchd plist currently 50 GiB). Current laptop free space is above the 50 GiB floor, but keep the laptop collector stopped unless intentionally resuming it for smoke/debug with compact mode. Do not paste launchd environment output in docs/reports; redact credentials if encountered.
+Interpretation: Fly collection is healthy and R2 is reachable. The lifecycle was still catching up after the current-hour-skip fix; monitor that verification errors clear/re-upload and that verified/pruned counts advance over subsequent lifecycle loops.
 
 ### Fly always-on collector status
 
-Chosen deployment path: Fly.io paid deployment, not Hetzner for now.
+Chosen deployment path: Fly.io paid deployment, not Hetzner for now. Fly is the active always-on collector and local spool; the laptop is not the active collector.
 
 Fly deployment details:
 
@@ -189,10 +190,12 @@ Fly deployment details:
 app: pacifica-full-fidelity
 machine: e2862502a76778
 region: iad / Ashburn, Virginia
+machine version: 7
+image: pacifica-full-fidelity:deployment-01KQMEZKX06KB8VHSRK7SZ9TJS
 volume: pacifica_full_fidelity_data
 volume mount: /data
 volume size: 100GB requested, 98G filesystem observed
-latest /data usage: 2.9G used, 90G available, 4% full
+latest free disk: ~87.96GB
 R2 remote: r2:pacifica-trading-data
 R2 prefix: raw/pacifica/full_fidelity
 ```
@@ -203,25 +206,42 @@ Runtime defaults on Fly:
 PACIFICA_USE_SYSTEM_PYTHON=1
 PACIFICA_FULL_FIDELITY_ROOT=/data/pacifica_full_fidelity
 PACIFICA_FULL_FIDELITY_STATE_DB=/data/pacifica_full_fidelity_storage.sqlite
-PACIFICA_FULL_FIDELITY_MIN_FREE_GB=10
+PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB=50
 PACIFICA_FULL_FIDELITY_RAW_PAYLOAD_MODE=compact
 PACIFICA_FULL_FIDELITY_RETENTION_DAYS=1
 PACIFICA_FULL_FIDELITY_LIFECYCLE_INTERVAL_S=1800
 PACIFICA_FULL_FIDELITY_BATCH_LIMIT=200
 PACIFICA_R2_PRUNE_EXECUTE=1
+PACIFICA_OPS_ROOT=/data/ops
+PACIFICA_API_SURFACE_WATCH_INTERVAL_S=86400
+PACIFICA_R2_RETENTION_PLAN_INTERVAL_S=86400
+PACIFICA_OPS_R2_PREFIX=ops/pacifica/full_fidelity
+PACIFICA_OPS_UPLOAD_REPORTS=1
+PACIFICA_OPS_COMMAND_TIMEOUT_S=1800
 ```
 
 R2 credentials were set as Fly secrets from local rclone config. Secret names: `RCLONE_CONFIG_R2_ACCESS_KEY_ID`, `RCLONE_CONFIG_R2_SECRET_ACCESS_KEY`, `RCLONE_CONFIG_R2_ENDPOINT`. Never print or store their values.
 
-Latest observed Fly lifecycle status shows upload and verification are working, but the backlog is still moving:
+Fly process groups:
+
+1. Collector: writes compact raw `.jsonl.gz` chunks to `/data/pacifica_full_fidelity`.
+2. Lifecycle loop: every 1800s scans sealed chunks, uploads to R2, writes `.sha256` sidecars, verifies, and prunes only verified local spool older than retention.
+3. Ops watchdog loop: wakes hourly; API surface watch and R2 retention planner are due-gated daily and write reports under `/data/ops`, optionally uploading reports to R2 ops prefix.
+
+Latest observed Fly status is healthy, but monitor the R2 lifecycle backlog after commit `80244c7`:
 
 ```text
-sealed|4450|1835082475
-uploaded|1638|989828251
-verified|335|37874663
+health ok: true
+failures: []
+free_gb: 87.96
+newest_raw_age_min: fresh
+sealed: 7224 files / ~3.19 GB
+uploaded: 3068 files / ~1.71 GB
+verified: 373 files / ~0.037 GB
+unverified_gb: 4.56
 ```
 
-Interpretation: Fly collection is live, R2 upload is live, `.sha256` sidecar verification is live, and some rows have reached `verified`. Continue monitoring until the steady state is clear: files should not accumulate without bound on `/data`, and older verified files should prune after the one-day retention window.
+Interpretation: collection is live and R2 is reachable. Verification had historical size-mismatch rows from active current-hour uploads; fix `80244c7` should prevent new current-hour races and re-upload failed uploaded rows. Confirm on the next lifecycle completions that `rows_with_errors` trends down and `verified` increases.
 
 ### Pacifica API/docs surface watcher
 
@@ -295,11 +315,20 @@ Script:
 
 - `scripts/build_pacifica_full_fidelity_silver.py`
 
-Output:
+Typical output when rebuilt locally:
 
-- `data/pacifica_silver_partitioned/`
+- `data/pacifica_silver_partitioned/` or `data/pacifica_silver_partitioned_refresh/`
 
-Last local silver refresh completed successfully after adding active-gzip robustness:
+Important current local-data state:
+
+- Diego approved deleting the laptop's local generated data/cache directories on 2026-05-02:
+  - `data/pacifica_full_fidelity` (~17.0 GiB)
+  - `data/pacifica_silver_partitioned` (~0.37 GiB)
+  - `data/pacifica_silver_partitioned_refresh` (~0.42 GiB)
+- Do not assume any of those local directories exists in a fresh session.
+- To refresh diagnostics, first rehydrate selected raw partitions from R2 or build a bounded local cache.
+
+Last local silver refresh before deletion completed successfully after adding active-gzip robustness:
 
 ```text
 bbo: 2545618 rows
@@ -311,17 +340,7 @@ trades: 90446 rows
 wrote silver tables to data/pacifica_silver_partitioned_refresh
 ```
 
-Latest filesystem freshness check at 2026-05-02 01:38 EST:
-
-```text
-data/pacifica_silver_partitioned_refresh exists=True
-files=974
-symbols=65
-dates=2026-04-30, 2026-05-01
-latest_age_s≈fresh at rebuild time
-```
-
-Interpretation: refreshed diagnostics below were built from `data/pacifica_silver_partitioned_refresh`. The canonical `data/pacifica_silver_partitioned` directory was not replaced because a cleanup command was denied; either use the refresh directory explicitly or safely replace the canonical generated silver directory later. The silver builder now skips incomplete active gzip files from the live collector instead of failing with `gzip.BadGzipFile`/CRC errors.
+Interpretation: the refreshed diagnostics below were built from the now-deleted local `data/pacifica_silver_partitioned_refresh`. Treat those reports as diagnostic historical outputs. The silver builder itself skips incomplete active gzip files from live archives instead of failing with `gzip.BadGzipFile`/CRC errors.
 
 ### Realtime research monitor
 
@@ -490,65 +509,77 @@ Keep toxicity thresholds fixed while data accrues. Do not tune cutoffs based on 
 
 ## Verification status
 
-Verification in this handoff update:
+Verification for latest lifecycle fix and deploy:
 
 ```bash
-uv run pytest \
-  tests/scripts/test_pacifica_full_fidelity_storage.py \
-  tests/scripts/test_collect_pacifica_full_fidelity.py -q
-
 python -m py_compile \
-  scripts/collect_pacifica_full_fidelity.py \
   scripts/pacifica_full_fidelity_storage.py \
-  scripts/check_pacifica_full_fidelity_health.py
+  scripts/check_pacifica_full_fidelity_health.py \
+  scripts/collect_pacifica_full_fidelity.py
 
 bash -n \
-  scripts/run_pacifica_full_fidelity_collector.sh \
   scripts/run_pacifica_full_fidelity_r2_lifecycle.sh \
   ops/fly/pacifica-full-fidelity/entrypoint.sh
+
+uv run pytest \
+  tests/scripts/test_pacifica_full_fidelity_storage.py \
+  tests/scripts/test_collect_pacifica_full_fidelity.py \
+  tests/scripts/test_watch_pacifica_api_surface.py \
+  tests/scripts/test_run_pacifica_fly_ops_watchdogs.py \
+  tests/scripts/test_pacifica_r2_inventory.py -q
+
+git diff --check
 ```
 
 Result:
 
 ```text
-47 passed in 0.67s for focused R2-retention/eligibility/storage/collector/silver/regime/toxic tests
+27 passed in 0.26s
 py_compile passed
+bash syntax checks passed
 git diff --check passed
-bash syntax checks passed previously for shell wrappers
+commit: 80244c7 fix: avoid uploading active Pacifica raw chunks
+deployed to Fly machine version 7
 ```
 
-Also verified live operational state:
+Also verified live operational state after deployment:
 
 ```text
-fly status -a pacifica-full-fidelity shows machine e2862502a76778 started in iad
-Fly /data: 98G total, 2.9G used, 90G available
-Fly lifecycle DB: sealed=4450, uploaded=1638, verified=335; R2 upload+sidecar verification path is active and verified advanced from 306 to 335 since the prior check
-Laptop /System/Volumes/Data: 173Gi available in the prior local disk check
+fly status -a pacifica-full-fidelity: machine e2862502a76778 started in iad, version 7
+health check: ok=true, failures=[]
+free_gb: 87.96
+newest raw file: fresh under /data/pacifica_full_fidelity
+collector process: alive
+lifecycle process: running upload-verify batch
+R2 raw prefix spot check: succeeded
+R2 ops/watchdog prefix spot check: succeeded
 ```
 
-Previous broader research/diagnostic verification before the Fly deployment remained:
-
-```text
-32 passed in 0.84s
-```
+Note: the post-deploy lifecycle had not yet printed final `lifecycle complete` when Diego asked “all good?”; the health check and process/R2 checks were good, and lifecycle was actively running/catching up.
 
 ## Recommended next steps in a fresh session
 
-1. Start with `git status --short`. Current uncommitted work should be the R2 retention/compaction policy doc, non-destructive planner script/tests, and this handoff update, unless already committed.
-2. Monitor Fly steady state. App `pacifica-full-fidelity` in region `iad` has machine `e2862502a76778`, 100GB volume `pacifica_full_fidelity_data`, R2 secrets set, collector running, and lifecycle upload/verify working. Poll `/data` disk and lifecycle DB until `verified` grows and old verified files prune after the one-day retention window.
-3. Use these Fly checks first:
+1. Start with `git status --short` and `git log --oneline -5`. Latest expected commit is `80244c7 fix: avoid uploading active Pacifica raw chunks`.
+2. Monitor Fly steady state. App `pacifica-full-fidelity` in region `iad` has machine `e2862502a76778`, 100GB volume `pacifica_full_fidelity_data`, R2 secrets set, collector running, and lifecycle upload/verify working.
+3. Specifically confirm the R2 lifecycle catch-up after `80244c7`:
+   - latest lifecycle loop prints `lifecycle complete`;
+   - `rows_with_errors` in `archive_files` trends down from the observed 200 historical size-mismatch rows;
+   - `verified` count increases;
+   - old verified local files prune after the one-day retention window;
+   - no new current-hour size mismatch errors are generated.
+4. Use these Fly checks first:
    - `fly status -a pacifica-full-fidelity`
-   - `fly machine exec e2862502a76778 -a pacifica-full-fidelity "df -h /data" --timeout 60`
-   - `fly machine exec e2862502a76778 -a pacifica-full-fidelity 'sh -c "sqlite3 /data/pacifica_full_fidelity_storage.sqlite \"select status,count(*),coalesce(sum(size_bytes),0) from archive_files group by status order by status;\""' --timeout 60`
-4. The old laptop R2 upload/verify background process completed successfully: `process(action="poll", session_id="proc_621d706409f0")` returned exit code 0 with 4,166 uploaded and 4,166 verified during that run; local lifecycle DB now has 4,171 verified files totaling 18,301,666,532 bytes. No laptop pruning has been enabled or executed.
+   - `fly machine exec e2862502a76778 -a pacifica-full-fidelity --timeout 120 "sh -lc 'cd /app && python scripts/check_pacifica_full_fidelity_health.py --root /data/pacifica_full_fidelity --state-db /data/pacifica_full_fidelity_storage.sqlite --min-free-gb 50 --max-newest-age-min 10'"`
+   - `fly machine exec e2862502a76778 -a pacifica-full-fidelity --timeout 120 'sh -lc "sqlite3 /data/pacifica_full_fidelity_storage.sqlite \"select status,count(*),coalesce(sum(size_bytes),0) from archive_files group by status order by status;\""'`
 5. Keep the local laptop collector stopped unless intentionally used for smoke/debug collection. The always-on collector is Fly, not laptop launchd.
-6. Laptop lifecycle pruning remains dry-run unless Diego explicitly enables `PACIFICA_R2_PRUNE_EXECUTE=1`; Fly spool pruning is enabled because `/data` is a bounded cache.
-7. Hetzner/systemd remains documented as a lower-cost fallback in `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, and `ops/systemd/`, but Diego chose Fly for now. Fly free capacity is not enough for the 100GB spool; this is a paid deployment.
-8. Refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
-9. Run or monitor the Pacifica API/docs surface watcher (`scripts/watch_pacifica_api_surface.py`). If it reports `CHANGED`, manually inspect whether any added REST path/websocket source/interval is public collectable market data before changing the collector or baseline.
-10. For R2 remote growth control, build the compacted cold archive + manifest verifier before enabling any R2 raw expiry. Use `scripts/plan_pacifica_r2_retention.py` only as a non-destructive planner until a separate destructive apply step is explicitly approved.
-11. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
-12. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
+6. Do not expect local laptop raw/silver directories to exist. Diego approved deleting `data/pacifica_full_fidelity`, `data/pacifica_silver_partitioned`, and `data/pacifica_silver_partitioned_refresh` from the laptop on 2026-05-02. Rehydrate selected data from R2 when needed.
+7. Laptop lifecycle pruning remains dry-run unless Diego explicitly enables it; Fly spool pruning is enabled because `/data` is a bounded cache.
+8. Hetzner/systemd remains documented as a lower-cost fallback in `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, and `ops/systemd/`, but Diego chose Fly for now.
+9. Refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
+10. Run or monitor the Pacifica API/docs surface watcher (`scripts/watch_pacifica_api_surface.py`). If it reports `CHANGED`, manually inspect whether any added REST path/websocket source/interval is public collectable market data before changing the collector or baseline.
+11. For R2 remote growth control, build the compacted cold archive + manifest verifier before enabling any R2 raw expiry. Use `scripts/plan_pacifica_r2_retention.py` only as a non-destructive planner until a separate destructive apply step is explicitly approved.
+12. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
+13. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
 
 ## Quick commands
 
@@ -569,50 +600,30 @@ Inspect Fly always-on collector/storage:
 ```bash
 fly status -a pacifica-full-fidelity
 fly volumes list -a pacifica-full-fidelity
-fly machine exec e2862502a76778 -a pacifica-full-fidelity "df -h /data" --timeout 60
-fly machine exec e2862502a76778 -a pacifica-full-fidelity 'sh -c "sqlite3 /data/pacifica_full_fidelity_storage.sqlite \"select status,count(*),coalesce(sum(size_bytes),0) from archive_files group by status order by status;\""' --timeout 60
+fly machine exec e2862502a76778 -a pacifica-full-fidelity --timeout 120 "sh -lc 'cd /app && python scripts/check_pacifica_full_fidelity_health.py --root /data/pacifica_full_fidelity --state-db /data/pacifica_full_fidelity_storage.sqlite --min-free-gb 50 --max-newest-age-min 10'"
+fly machine exec e2862502a76778 -a pacifica-full-fidelity --timeout 120 'sh -lc "sqlite3 /data/pacifica_full_fidelity_storage.sqlite \"select status,count(*),coalesce(sum(size_bytes),0) from archive_files group by status order by status;\""'
 ```
 
-Check completed old local background R2 upload/verify process in Hermes:
+Inspect Fly R2 lifecycle errors/backlog:
 
-```text
-process(action="poll", session_id="proc_621d706409f0")
-# expected: exited, exit_code=0, uploaded=4166, verified=4166 for that run
+```bash
+fly machine exec e2862502a76778 -a pacifica-full-fidelity --timeout 120 'sh -lc "sqlite3 /data/pacifica_full_fidelity_storage.sqlite \"select count(*) as rows_with_errors from archive_files where error is not null; select status,error,object_key from archive_files where error is not null order by coalesce(uploaded_at,last_seen_at) desc limit 10;\""'
 ```
 
-Inspect local archive freshness and lifecycle inventory:
+Inspect local cache directories; expected after 2026-05-02 cleanup is that raw/silver caches are missing unless rehydrated:
 
 ```bash
 python - <<'PY'
 from pathlib import Path
-import time
-for p in [Path('data/pacifica_full_fidelity'), Path('data/pacifica_silver_partitioned')]:
-    print(p, 'exists=', p.exists())
-    files=0; syms=set(); dates=set(); latest=0
+for p in [Path('data/pacifica_full_fidelity'), Path('data/pacifica_silver_partitioned'), Path('data/pacifica_silver_partitioned_refresh')]:
+    files=0; bytes_=0
     if p.exists():
         for f in p.rglob('*'):
             if f.is_file():
                 files += 1
-                try: latest=max(latest, f.stat().st_mtime)
-                except OSError: pass
-                for part in f.parts:
-                    if part.startswith('symbol='): syms.add(part.split('=',1)[1])
-                    if part.startswith('date='): dates.add(part.split('=',1)[1])
-    age = None if latest == 0 else round(time.time()-latest, 1)
-    print('files=', files, 'symbols=', len(syms), 'dates=', sorted(dates)[:3], '...', sorted(dates)[-3:] if dates else [], 'latest_age_s=', age)
+                bytes_ += f.stat().st_size
+    print(f'{p}: exists={p.exists()} files={files} gib={bytes_/1024**3:.3f}')
 PY
-
-uv run python scripts/pacifica_full_fidelity_storage.py \
-  --root data/pacifica_full_fidelity \
-  --state-db data/pacifica_full_fidelity_storage.sqlite \
-  --r2-prefix raw/pacifica/full_fidelity \
-  scan
-
-uv run python scripts/pacifica_full_fidelity_storage.py \
-  --state-db data/pacifica_full_fidelity_storage.sqlite \
-  --remote-base r2:pacifica-trading-data \
-  --limit 100 \
-  upload-verify
 ```
 
 Refresh silver from raw:
