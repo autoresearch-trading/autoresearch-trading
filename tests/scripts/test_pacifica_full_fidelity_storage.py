@@ -171,6 +171,40 @@ class FakeRcloneRunner:
         raise AssertionError(f"unexpected rclone command: {args}")
 
 
+def test_upload_pending_files_skips_recently_modified_chunks(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    recent_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=18"
+        / "run-live.jsonl.gz",
+        b"still-changing",
+    )
+    now = time.time()
+    os.utime(recent_file, (now, now))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    runner = FakeRcloneRunner()
+
+    result = upload_pending_files(
+        db,
+        remote_base="r2:pacifica-trading-data",
+        runner=runner,
+        min_upload_age_seconds=3600,
+    )
+
+    assert result == {"uploaded": 0, "skipped": 1, "failed": 0}
+    assert runner.commands == []
+    with sqlite3.connect(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?",
+            (str(recent_file),),
+        ).fetchone()
+    assert saved == ("sealed", "local file too recent for upload")
+
+
 def test_upload_pending_files_copies_data_and_sha256_sidecar_then_marks_uploaded(
     tmp_path,
 ):
@@ -257,6 +291,46 @@ def test_upload_pending_files_reuploads_uploaded_rows_with_verification_errors(
             (str(raw_file),),
         ).fetchone()
     assert saved == ("uploaded", None)
+
+
+def test_verify_uploaded_files_skips_recently_modified_uploaded_rows(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    recent_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=18"
+        / "run-live.jsonl.gz",
+        b"still-changing",
+    )
+    now = time.time()
+    os.utime(recent_file, (now, now))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "update archive_files set status='uploaded', uploaded_at=?, error='size mismatch remote=1 local=2' where local_path=?",
+            (now, str(recent_file)),
+        )
+        conn.commit()
+    runner = FakeRcloneRunner()
+
+    result = verify_uploaded_files(
+        db,
+        remote_base="r2:pacifica-trading-data",
+        runner=runner,
+        min_verify_age_seconds=3600,
+    )
+
+    assert result == {"verified": 0, "failed": 0, "skipped": 1}
+    assert runner.commands == []
+    with sqlite3.connect(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?",
+            (str(recent_file),),
+        ).fetchone()
+    assert saved == ("uploaded", "local file too recent for verification")
 
 
 def test_verify_uploaded_files_checks_remote_size_and_sha256_sidecar_before_marking_verified(

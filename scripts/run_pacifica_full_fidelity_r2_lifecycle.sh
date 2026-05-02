@@ -21,6 +21,7 @@ LIMIT_ARG=()
 if [ -n "${PACIFICA_FULL_FIDELITY_BATCH_LIMIT:-}" ]; then
   LIMIT_ARG=(--limit "${PACIFICA_FULL_FIDELITY_BATCH_LIMIT}")
 fi
+MIN_UPLOAD_AGE_SECONDS="${PACIFICA_FULL_FIDELITY_MIN_UPLOAD_AGE_SECONDS:-7200}"
 
 "${PYTHON_CMD[@]}" scripts/pacifica_full_fidelity_storage.py \
   --root "$ROOT" \
@@ -31,6 +32,7 @@ fi
 "${PYTHON_CMD[@]}" scripts/pacifica_full_fidelity_storage.py \
   --state-db "$STATE_DB" \
   --remote-base "$REMOTE_BASE" \
+  --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
   "${LIMIT_ARG[@]}" \
   upload-verify
 

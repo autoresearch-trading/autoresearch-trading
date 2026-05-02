@@ -253,12 +253,19 @@ def write_manifest(
     return manifest_path
 
 
+def _local_file_too_recent(path: Path, *, min_age_seconds: float) -> bool:
+    if min_age_seconds <= 0:
+        return False
+    return time.time() - path.stat().st_mtime < min_age_seconds
+
+
 def upload_pending_files(
     db_path: Path,
     *,
     remote_base: str,
     runner: Callable[..., str] = run_rclone,
     limit: int | None = None,
+    min_upload_age_seconds: float = 0.0,
 ) -> dict[str, int]:
     """Copy sealed files and SHA-256 sidecars to R2, then mark rows uploaded.
 
@@ -284,6 +291,13 @@ def upload_pending_files(
                     "update archive_files set status='missing', error=? where local_path=?",
                     ("local file missing during upload", row["local_path"]),
                 )
+                conn.commit()
+                continue
+            if _local_file_too_recent(
+                local_path, min_age_seconds=min_upload_age_seconds
+            ):
+                result["skipped"] += 1
+                _set_error(conn, row["local_path"], "local file too recent for upload")
                 conn.commit()
                 continue
             remote_path = remote_path_for(remote_base, row["object_key"])
@@ -328,6 +342,7 @@ def verify_uploaded_files(
     remote_base: str,
     runner: Callable[..., str] = run_rclone,
     limit: int | None = None,
+    min_verify_age_seconds: float = 0.0,
 ) -> dict[str, int]:
     """Verify uploaded R2 objects by remote size and SHA-256 sidecar.
 
@@ -338,15 +353,27 @@ def verify_uploaded_files(
     """
     result = {"verified": 0, "failed": 0, "skipped": 0}
     with connect_state(db_path) as conn:
-        query = "select * from archive_files where status in ('sealed','uploaded') order by object_key"
+        query = (
+            "select * from archive_files where status='uploaded' order by object_key"
+        )
         if limit is not None:
             query += f" limit {int(limit)}"
         rows = conn.execute(query).fetchall()
         for row in rows:
-            if not Path(row["local_path"]).exists():
+            local_path = Path(row["local_path"])
+            if not local_path.exists():
                 result["skipped"] += 1
                 _set_error(
                     conn, row["local_path"], "local file missing during verification"
+                )
+                conn.commit()
+                continue
+            if _local_file_too_recent(
+                local_path, min_age_seconds=min_verify_age_seconds
+            ):
+                result["skipped"] += 1
+                _set_error(
+                    conn, row["local_path"], "local file too recent for verification"
                 )
                 conn.commit()
                 continue
@@ -439,6 +466,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional max rows for upload/verify batches",
     )
+    parser.add_argument(
+        "--min-upload-age-seconds",
+        type=float,
+        default=0.0,
+        help="skip local payloads modified more recently than this many seconds before upload",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="scan sealed local archive files into state DB")
     scan.add_argument(
@@ -528,20 +561,32 @@ def main() -> None:
         )
     elif args.command == "upload":
         result = upload_pending_files(
-            args.state_db, remote_base=args.remote_base, limit=args.limit
+            args.state_db,
+            remote_base=args.remote_base,
+            limit=args.limit,
+            min_upload_age_seconds=args.min_upload_age_seconds,
         )
         print(json.dumps(result, sort_keys=True))
     elif args.command == "verify":
         result = verify_uploaded_files(
-            args.state_db, remote_base=args.remote_base, limit=args.limit
+            args.state_db,
+            remote_base=args.remote_base,
+            limit=args.limit,
+            min_verify_age_seconds=args.min_upload_age_seconds,
         )
         print(json.dumps(result, sort_keys=True))
     elif args.command == "upload-verify":
         upload_result = upload_pending_files(
-            args.state_db, remote_base=args.remote_base, limit=args.limit
+            args.state_db,
+            remote_base=args.remote_base,
+            limit=args.limit,
+            min_upload_age_seconds=args.min_upload_age_seconds,
         )
         verify_result = verify_uploaded_files(
-            args.state_db, remote_base=args.remote_base, limit=args.limit
+            args.state_db,
+            remote_base=args.remote_base,
+            limit=args.limit,
+            min_verify_age_seconds=args.min_upload_age_seconds,
         )
         print(
             json.dumps(
