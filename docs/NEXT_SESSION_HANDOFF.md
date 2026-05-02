@@ -255,11 +255,10 @@ Fly-side ops watchdog addition:
 ```text
 script: scripts/run_pacifica_fly_ops_watchdogs.py
 entrypoint loop: wakes hourly, runs due operations using marker files under /data/ops/.state
-API surface watch interval: 86400 seconds (daily)
-R2 inventory/retention-plan interval: 86400 seconds (daily)
-reports root: /data/ops
-report upload target: r2:pacifica-trading-data/ops/pacifica/full_fidelity/watchdogs/latest
-remote raw deletion: not implemented; retention reports remain non-destructive planning artifacts
+API surface watch: daily by default (86400s)
+R2 retention/compression planner: daily by default (86400s)
+reports: /data/ops locally and optionally r2:pacifica-trading-data/ops/pacifica/full_fidelity/watchdogs/latest
+Fly collector disk floor: PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB=50
 ```
 
 ### R2 retention and cold-compaction policy

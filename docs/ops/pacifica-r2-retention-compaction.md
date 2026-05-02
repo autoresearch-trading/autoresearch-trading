@@ -14,7 +14,7 @@ Fly is bounded by:
 
 - compact payload mode: `PACIFICA_FULL_FIDELITY_RAW_PAYLOAD_MODE=compact`;
 - gzip raw chunks: `.jsonl.gz`;
-- free disk guard: `PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB=10` on Fly;
+- free disk guard: `PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB=50` on Fly;
 - lifecycle loop: `PACIFICA_FULL_FIDELITY_LIFECYCLE_INTERVAL_S=1800`;
 - local spool retention: `PACIFICA_FULL_FIDELITY_RETENTION_DAYS=1`;
 - Fly local prune execute: `PACIFICA_R2_PRUNE_EXECUTE=1`;

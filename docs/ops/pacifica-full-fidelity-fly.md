@@ -22,7 +22,7 @@ The container runs three process groups:
    - `scripts/collect_pacifica_full_fidelity.py`
    - output: `/data/pacifica_full_fidelity`
    - compact raw payload mode
-   - free-space guard
+   - free-space guard (`PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB=50` on Fly)
 
 2. Background lifecycle loop every 30 minutes:
    - scan local sealed files
