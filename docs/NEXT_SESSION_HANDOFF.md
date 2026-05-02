@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-02 02:20 EST
+Updated: 2026-05-02 02:45 EST
 
 ## Start here
 
@@ -19,6 +19,7 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 Latest committed work:
 
 ```text
+32af641 feat: add Pacifica paper eligibility gates
 5af8e3f docs: refresh Pacifica diagnostics after R2 lifecycle
 05edb6b feat: add Pacifica R2 spool lifecycle
 ```
@@ -26,10 +27,10 @@ Latest committed work:
 Current uncommitted work in this session:
 
 ```text
-scripts/build_pacifica_eligibility_gates.py
- tests/scripts/test_build_pacifica_eligibility_gates.py
- docs/experiments/paper-trading-eligibility/
- docs/NEXT_SESSION_HANDOFF.md
+docs/ops/pacifica-r2-retention-compaction.md
+scripts/plan_pacifica_r2_retention.py
+tests/scripts/test_plan_pacifica_r2_retention.py
+docs/NEXT_SESSION_HANDOFF.md
 ```
 
 Relevant prior commits:
@@ -57,17 +58,17 @@ Latest local check in this handoff session:
 
 ```text
 branch: main
-latest commit: 5af8e3f docs: refresh Pacifica diagnostics after R2 lifecycle
-working tree: uncommitted paper-trading eligibility gate script/tests/report plus this handoff update
+latest commit: 32af641 feat: add Pacifica paper eligibility gates
+working tree: uncommitted R2 retention/compaction policy doc, non-destructive planner script/tests, and this handoff update
 ```
 
-Current uncommitted status snapshot at 2026-05-02 02:20 EST:
+Current uncommitted status snapshot at 2026-05-02 02:45 EST:
 
 ```text
  M docs/NEXT_SESSION_HANDOFF.md
-?? docs/experiments/paper-trading-eligibility/
-?? scripts/build_pacifica_eligibility_gates.py
-?? tests/scripts/test_build_pacifica_eligibility_gates.py
+?? docs/ops/pacifica-r2-retention-compaction.md
+?? scripts/plan_pacifica_r2_retention.py
+?? tests/scripts/test_plan_pacifica_r2_retention.py
 ```
 
 ## Primary goal
@@ -217,6 +218,34 @@ verified|335|37874663
 ```
 
 Interpretation: Fly collection is live, R2 upload is live, `.sha256` sidecar verification is live, and some rows have reached `verified`. Continue monitoring until the steady state is clear: files should not accumulate without bound on `/data`, and older verified files should prune after the one-day retention window.
+
+### R2 retention and cold-compaction policy
+
+R2 is durable append-only raw archive for now, but remote retention gates are now documented/planned so R2 does not silently accumulate forever.
+
+New non-destructive policy/tooling:
+
+- policy doc: `docs/ops/pacifica-r2-retention-compaction.md`
+- planner: `scripts/plan_pacifica_r2_retention.py`
+- tests: `tests/scripts/test_plan_pacifica_r2_retention.py`
+
+Default policy:
+
+```text
+0-60 days: keep raw full-fidelity .jsonl.gz and .sha256 sidecars
+60+ days: require verified compacted/cold archive before raw expiry can be considered
+90+ days: raw objects can become eligible for remote-expiry review only with compacted_verified=true and manifest_verified=true
+```
+
+Current live R2 size smoke check:
+
+```text
+rclone size r2:pacifica-trading-data/raw/pacifica/full_fidelity --json
+count=12688
+bytes=19203724868
+```
+
+Interpretation: R2 remote deletion is not enabled and no remote objects were deleted. This is intentional while the archive is young. Next durable-storage work is a compacted cold archive builder + manifest verification, then a separately approved destructive apply step if/when needed.
 
 ### Silver builder
 
@@ -440,8 +469,9 @@ bash -n \
 Result:
 
 ```text
-37 passed in 0.30s for focused eligibility/report/collector/silver/regime/toxic tests
+47 passed in 0.67s for focused R2-retention/eligibility/storage/collector/silver/regime/toxic tests
 py_compile passed
+git diff --check passed
 bash syntax checks passed previously for shell wrappers
 ```
 
@@ -462,7 +492,7 @@ Previous broader research/diagnostic verification before the Fly deployment rema
 
 ## Recommended next steps in a fresh session
 
-1. Start with `git status --short`. Current uncommitted work should be the paper-trading eligibility gate script/tests/report and this handoff update, unless already committed.
+1. Start with `git status --short`. Current uncommitted work should be the R2 retention/compaction policy doc, non-destructive planner script/tests, and this handoff update, unless already committed.
 2. Monitor Fly steady state. App `pacifica-full-fidelity` in region `iad` has machine `e2862502a76778`, 100GB volume `pacifica_full_fidelity_data`, R2 secrets set, collector running, and lifecycle upload/verify working. Poll `/data` disk and lifecycle DB until `verified` grows and old verified files prune after the one-day retention window.
 3. Use these Fly checks first:
    - `fly status -a pacifica-full-fidelity`
@@ -473,8 +503,9 @@ Previous broader research/diagnostic verification before the Fly deployment rema
 6. Laptop lifecycle pruning remains dry-run unless Diego explicitly enables `PACIFICA_R2_PRUNE_EXECUTE=1`; Fly spool pruning is enabled because `/data` is a bounded cache.
 7. Hetzner/systemd remains documented as a lower-cost fallback in `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, and `ops/systemd/`, but Diego chose Fly for now. Fly free capacity is not enough for the 100GB spool; this is a paid deployment.
 8. Refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
-9. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
-10. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
+9. For R2 remote growth control, build the compacted cold archive + manifest verifier before enabling any R2 raw expiry. Use `scripts/plan_pacifica_r2_retention.py` only as a non-destructive planner until a separate destructive apply step is explicitly approved.
+10. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
+11. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
 
 ## Quick commands
 
@@ -583,6 +614,17 @@ python scripts/non_hft_toxic_overlay_probe.py \
   --out-dir docs/experiments/toxic-regime-overlay
 ```
 
+Inspect R2 durable archive size and retention policy:
+
+```bash
+rclone size 'r2:pacifica-trading-data/raw/pacifica/full_fidelity' --json
+python scripts/plan_pacifica_r2_retention.py \
+  --inventory-csv path/to/r2_inventory.csv \
+  --out-dir docs/ops/pacifica-r2-retention
+```
+
+Do not run remote R2 deletion from the planner. It is non-destructive by design.
+
 Run focused verification:
 
 ```bash
@@ -614,6 +656,9 @@ git diff --check
 - `scripts/run_pacifica_full_fidelity_collector.sh`
 - `scripts/run_pacifica_full_fidelity_r2_lifecycle.sh`
 - `scripts/check_pacifica_full_fidelity_health.py`
+- `docs/ops/pacifica-r2-retention-compaction.md`
+- `scripts/plan_pacifica_r2_retention.py`
+- `tests/scripts/test_plan_pacifica_r2_retention.py`
 - `tests/scripts/test_pacifica_full_fidelity_storage.py`
 - `.dockerignore`
 - `docs/research/2026-05-01-real-time-streaming-research-pass.md`
@@ -650,5 +695,6 @@ The new collector matters because it preserves fields the old lossy parquet data
 - Do not blindly trade every collected symbol.
 - Do not tune toxicity thresholds on diagnostic samples.
 - Do not overwrite, delete, or commit raw data archives.
+- Do not configure R2 raw expiry or delete remote R2 objects until compacted cold archive + manifest gates exist and Diego explicitly approves a separate destructive apply step.
 - Do not commit `.hermes/` unless explicitly intended.
 - Do not recreate `CLAUDE.md` or revive Claude Code assets unless Diego explicitly decides to support Claude in this repo again.
