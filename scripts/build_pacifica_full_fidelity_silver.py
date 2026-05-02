@@ -236,7 +236,7 @@ def iter_raw_records(
     raw_dir: Path, *, channels: Sequence[str] | None = None
 ) -> Iterable[JsonObject]:
     wanted = set(channels or DEFAULT_CHANNELS)
-    for path in sorted(raw_dir.glob("channel=*/symbol=*/date=*/*.jsonl.gz")):
+    for path in sorted(raw_dir.rglob("*.jsonl.gz")):
         channel = next(
             (
                 part.split("=", 1)[1]

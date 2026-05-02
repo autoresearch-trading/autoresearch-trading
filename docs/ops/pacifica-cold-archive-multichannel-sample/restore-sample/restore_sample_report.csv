@@ -1,0 +1,13 @@
+source_key,expected_rows,restored_rows,raw_rows,match
+channel=bbo/symbol=2Z/date=2026-04-30/run-20260430T212120Z.jsonl.gz,2909,2909,2909,True
+channel=bbo/symbol=2Z/date=2026-05-01/hour=21/run-20260501T214645Z.jsonl.gz,48,48,48,True
+channel=book/symbol=2Z/date=2026-05-01/hour=21/run-20260501T214645Z.jsonl.gz,619,619,619,True
+channel=book/symbol=2Z/date=2026-05-01/hour=21/run-20260501T215139Z.jsonl.gz,1068,1068,1068,True
+channel=candle/symbol=2Z/date=2026-04-30/run-20260430T212120Z.jsonl.gz,4770,4770,4770,True
+channel=candle/symbol=2Z/date=2026-05-01/hour=00/run-20260501T214645Z.jsonl.gz,6,6,6,True
+channel=mark_price_candle/symbol=2Z/date=2026-05-01/run-20260501T034250Z.jsonl.gz,1301,1301,1301,True
+channel=mark_price_candle/symbol=2Z/date=2026-05-01/run-20260501T101433Z.jsonl.gz,316,316,316,True
+channel=prices/symbol=2Z/date=2026-05-01/run-20260501T034250Z.jsonl.gz,40,40,40,True
+channel=prices/symbol=2Z/date=2026-05-01/run-20260501T101433Z.jsonl.gz,10,10,10,True
+channel=trades/symbol=2Z/date=2026-04-30/run-20260430T212120Z.jsonl.gz,252,252,252,True
+channel=trades/symbol=2Z/date=2026-05-01/run-20260430T212120Z.jsonl.gz,911,911,911,True

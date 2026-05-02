@@ -60,6 +60,36 @@ def test_iter_raw_records_reads_partitioned_jsonl_gz(tmp_path: Path) -> None:
     assert records == [row]
 
 
+def test_iter_raw_records_reads_hour_partitioned_jsonl_gz(tmp_path: Path) -> None:
+    row = _record(
+        "bbo",
+        "ETH",
+        {
+            "s": "ETH",
+            "b": "99",
+            "B": "3",
+            "a": "101",
+            "A": "4",
+            "i": 10,
+            "li": 12,
+            "t": 2,
+        },
+    )
+    _write_raw(
+        tmp_path
+        / "channel=bbo"
+        / "symbol=ETH"
+        / "date=2026-04-30"
+        / "hour=22"
+        / "run.jsonl.gz",
+        [row],
+    )
+
+    records = list(iter_raw_records(tmp_path, channels=["bbo"]))
+
+    assert records == [row]
+
+
 def test_iter_raw_records_skips_incomplete_active_gzip_file(tmp_path: Path) -> None:
     row = _record(
         "trades",

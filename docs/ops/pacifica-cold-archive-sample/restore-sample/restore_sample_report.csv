@@ -1,0 +1,4 @@
+source_key,expected_rows,restored_rows,raw_rows,match
+channel=bbo/symbol=2Z/date=2026-05-01/hour=22/run-20260501T215139Z.jsonl.gz,1,1,1,True
+channel=bbo/symbol=2Z/date=2026-05-01/hour=22/run-20260501T220740Z.jsonl.gz,321,321,321,True
+channel=bbo/symbol=2Z/date=2026-05-01/hour=23/run-20260501T220740Z.jsonl.gz,333,333,333,True

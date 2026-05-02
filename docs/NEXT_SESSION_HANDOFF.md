@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-02 09:05 EST
+Updated: 2026-05-02 14:30 EST
 
 ## Start here
 
@@ -19,14 +19,51 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 Latest functional commits before this handoff doc update:
 
 ```text
+b12e9b9 docs: update Pacifica session handoff
 80244c7 fix: avoid uploading active Pacifica raw chunks
 35c7540 chore: raise Pacifica Fly disk guard
 436664f feat: run Pacifica ops watchdogs on Fly
 05b7625 feat: add Pacifica API surface watcher
-b3889ba feat: add Pacifica R2 retention planner
 ```
 
-Current working tree at the start of this handoff update:
+Current working tree at this handoff update includes uncommitted cold-archive and R2 archive-health tooling work:
+
+```text
+modified: docs/NEXT_SESSION_HANDOFF.md
+modified: docs/ops/pacifica-r2-retention-compaction.md
+modified: scripts/build_pacifica_full_fidelity_silver.py
+modified: tests/scripts/test_build_pacifica_full_fidelity_silver.py
+added: docs/ops/pacifica-r2-archive-health/
+added: docs/ops/pacifica-cold-archive-sample/
+added: docs/ops/pacifica-cold-archive-multichannel-sample/
+added: docs/ops/pacifica-cold-archive-broader-sample/
+added: scripts/build_pacifica_cold_archive.py
+added: scripts/check_pacifica_r2_archive_health.py
+added: tests/scripts/test_build_pacifica_cold_archive.py
+added: tests/scripts/test_check_pacifica_r2_archive_health.py
+```
+
+Latest local verification for the cold-archive tooling, R2 archive-health checker, and focused Pacifica pipeline tests:
+
+```text
+uv run pytest tests/scripts/test_check_pacifica_r2_archive_health.py tests/scripts/test_build_pacifica_cold_archive.py tests/scripts/test_build_pacifica_full_fidelity_silver.py -q
+18 passed in 0.47s
+python -m py_compile scripts/check_pacifica_r2_archive_health.py scripts/build_pacifica_cold_archive.py scripts/build_pacifica_full_fidelity_silver.py && git diff --check
+passed
+```
+
+Prior broader focused verification before the latest gzip-audit edit:
+
+```text
+uv run pytest tests/scripts/test_watch_pacifica_realtime_research.py tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_collect_pacifica_full_fidelity.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_non_hft_toxic_overlay_probe.py tests/scripts/test_build_pacifica_cold_archive.py tests/scripts/test_check_pacifica_r2_archive_health.py tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_plan_pacifica_r2_retention.py -q
+48 passed in 0.39s
+python -m py_compile scripts/check_pacifica_r2_archive_health.py scripts/build_pacifica_cold_archive.py scripts/build_pacifica_full_fidelity_silver.py scripts/pacifica_r2_inventory.py scripts/plan_pacifica_r2_retention.py
+passed
+git diff --check
+passed
+```
+
+Current working tree snapshot before the latest cold-archive edits was:
 
 ```text
 branch: main
@@ -135,6 +172,7 @@ Storage lifecycle helper:
 - API/docs surface watcher: `scripts/watch_pacifica_api_surface.py`
 - Fly-side ops watchdogs: `scripts/run_pacifica_fly_ops_watchdogs.py`
 - R2 inventory converter: `scripts/pacifica_r2_inventory.py`
+- read-only R2 archive health checker: `scripts/check_pacifica_r2_archive_health.py`
 - API/docs surface baseline/report: `docs/ops/pacifica-api-surface-baseline.json`, `docs/ops/pacifica-api-surface-watch/`
 - launchd template: `ops/launchd/com.non-toxic.pacifica-full-fidelity-r2-lifecycle.plist`
 - always-on Fly deployment docs/config: `docs/ops/pacifica-full-fidelity-fly.md`, `ops/fly/pacifica-full-fidelity/`
@@ -156,6 +194,20 @@ Captured public data:
 - per-symbol `candle`;
 - per-symbol `mark_price_candle`;
 - REST `/info` and `/info/prices` snapshots.
+
+Latest follow-up operational check at 2026-05-02 14:30 EST:
+
+```text
+fly status: machine e2862502a76778 started in iad, version 7
+recent logs: lifecycle complete printed at 16:22Z, 17:27Z, and 18:32Z; next loop started at 19:02Z and had scanned 13862 objects when checked
+health log: ok=true, failures=[]
+free disk: 86.68 GB at 18:32Z
+newest raw file: fresh under /data/pacifica_full_fidelity
+SQLite status counts at check: sealed=9312 files / 4434330455 bytes; uploaded=4099 files / 2227365305 bytes; verified=451 files / 46859399 bytes
+rows_with_errors: 0
+```
+
+Interpretation: the current-hour upload race fix is behaving correctly so far. Historical error rows cleared to zero and verified count rose from the prior 373 to 451. Backlog still exists and the active lifecycle loops continue to verify only a small subset per batch, so keep monitoring verified growth and disk runway.
 
 Latest operational check at 2026-05-02 09:00 EST:
 
@@ -285,11 +337,98 @@ Fly collector disk floor: PACIFICA_FULL_FIDELITY_MIN_FREE_DISK_GB=50
 
 R2 is durable append-only raw archive for now, but remote retention gates are now documented/planned so R2 does not silently accumulate forever.
 
-New non-destructive policy/tooling:
+Non-destructive policy/tooling:
 
 - policy doc: `docs/ops/pacifica-r2-retention-compaction.md`
 - planner: `scripts/plan_pacifica_r2_retention.py`
-- tests: `tests/scripts/test_plan_pacifica_r2_retention.py`
+- planner tests: `tests/scripts/test_plan_pacifica_r2_retention.py`
+- read-only archive health checker: `scripts/check_pacifica_r2_archive_health.py`
+- archive health tests: `tests/scripts/test_check_pacifica_r2_archive_health.py`
+- initial local cold archive builder/verifier: `scripts/build_pacifica_cold_archive.py`
+- cold archive tests: `tests/scripts/test_build_pacifica_cold_archive.py`
+
+The read-only archive health checker consumes an R2 object inventory and writes local reports for sidecar pairing, latest remote freshness, active current-hour payloads, and channel/date prefix summary. It can also run an optional local-only gzip decompression/readability audit over rehydrated payloads from the same inventory via `--local-raw-root`; this never reads, writes, or deletes remote R2 objects. A bounded Cloudflare MCP sample was run on 2026-05-02 against bucket `pacifica-trading-data`, prefix `raw/pacifica/full_fidelity/`, and wrote `docs/ops/pacifica-r2-archive-health/`. The sample listed 20 objects: 10 payloads, 10 sidecars, 0 missing sidecars, 0 orphan sidecars, and 0 current-hour payloads. Treat this as a spot check only, not full archive proof.
+
+Usage:
+
+```bash
+python scripts/check_pacifica_r2_archive_health.py \
+  --inventory-csv path/to/r2_inventory.csv \
+  --out-dir docs/ops/pacifica-r2-archive-health
+
+python scripts/check_pacifica_r2_archive_health.py \
+  --inventory-csv path/to/r2_inventory.csv \
+  --out-dir docs/ops/pacifica-r2-archive-health \
+  --local-raw-root path/to/rehydrated/raw/pacifica_full_fidelity
+```
+
+The initial cold archive builder/verifier is intentionally local and non-destructive. It reads a bounded local raw cache or restored R2 partitions, writes a lossless parquet archive with original `raw_json` line text, and writes/verifies `manifest.csv` with source size, SHA-256, row count, archive file, archive size, and archive SHA-256.
+
+Usage:
+
+```bash
+python scripts/build_pacifica_cold_archive.py build \
+  --raw-root path/to/rehydrated/raw/pacifica_full_fidelity \
+  --out-dir docs/ops/pacifica-cold-archive
+
+python scripts/build_pacifica_cold_archive.py verify \
+  --manifest docs/ops/pacifica-cold-archive/manifest.csv \
+  --raw-root path/to/rehydrated/raw/pacifica_full_fidelity
+
+python scripts/build_pacifica_cold_archive.py restore-sample \
+  --manifest docs/ops/pacifica-cold-archive/manifest.csv \
+  --raw-root path/to/rehydrated/raw/pacifica_full_fidelity \
+  --out-dir docs/ops/pacifica-cold-archive/restore-sample \
+  --max-sources 5
+
+python scripts/build_pacifica_cold_archive.py restore-raw-cache \
+  --manifest docs/ops/pacifica-cold-archive/manifest.csv \
+  --out-raw-root data/pacifica_cold_restored_raw_sample \
+  --original-raw-root path/to/rehydrated/raw/pacifica_full_fidelity
+```
+
+Bounded samples already run:
+
+Single-channel smoke:
+
+```text
+R2 source: pacifica-trading-data/raw/pacifica/full_fidelity/
+local rehydrated root: data/pacifica_r2_rehydrate_sample/ (gitignored)
+selected payloads: 3 non-current-hour BBO chunks for symbol 2Z, date 2026-05-01, hours 22-23
+cold archive output: docs/ops/pacifica-cold-archive-sample/
+build/verify: ok=true, sources=3, verified_sources=3, rows=655
+restore sample: sampled_sources=3, matched_sources=3, mismatched_sources=0
+restore-raw-cache: restored_sources=3, row_mismatches=0, line_mismatches=0
+silver smoke from restored raw: bbo=655 rows, symbols=1 (`2Z`)
+remote writes/deletes: none
+```
+
+Multi-symbol / multi-date broader smoke:
+
+```text
+R2 source: pacifica-trading-data/raw/pacifica/full_fidelity/
+selection inventory: docs/ops/pacifica-r2-archive-health/broader_selected_objects.csv
+local rehydrated root: data/pacifica_r2_rehydrate_broader_sample/ (gitignored)
+selected payloads: 27 non-current-hour chunks across symbols 2Z/BTC/ETH/SOL and dates 2026-04-30/2026-05-01
+channel coverage: bbo=5, book=4, candle=5, mark_price_candle=4, prices=4, trades=5
+local SHA+gzip check: payloads=27, channels=6, symbols=4, dates=2, rows=8313, bad=0
+important finding: one sidecar-valid `prices/2Z/date=2026-05-01/run-20260501T101607Z.jsonl.gz` failed gzip CRC and was replaced with a decompressible sibling chunk; sidecar match alone is not a gzip-integrity proof.
+cold archive output: docs/ops/pacifica-cold-archive-broader-sample/
+build/verify: ok=true, sources=27, verified_sources=27, rows=8313
+restore sample: sampled_sources=27, matched_sources=27, mismatched_sources=0
+restore-raw-cache output: data/pacifica_cold_restored_raw_broader_sample/ (gitignored)
+restore-raw-cache: restored_sources=27, row_mismatches=0, line_mismatches=0
+silver smoke output: data/pacifica_silver_from_cold_broader_sample/ (gitignored)
+silver rows: bbo=2927, book=71, candle=4794, mark_price_candle=241, prices=23, trades=257, total=8313
+remote writes/deletes: none
+```
+
+Still not implemented/approved:
+
+- R2 upload/copy of cold archive outputs under a durable cold prefix;
+- full/inventory-scale gzip-decompression integrity audit and repair/backfill path for sidecar-valid but gzip-invalid raw objects; V1 local-only audit exists via `scripts/check_pacifica_r2_archive_health.py --local-raw-root`, but it has only test coverage and has not yet been run at full inventory scale;
+- enrichment of R2 inventory with `compacted_verified` / `manifest_verified` from cold manifests;
+- any destructive R2 raw expiry/apply step.
 
 Default policy:
 
@@ -307,7 +446,7 @@ count=12688
 bytes=19203724868
 ```
 
-Interpretation: R2 remote deletion is not enabled and no remote objects were deleted. This is intentional while the archive is young. Next durable-storage work is a compacted cold archive builder + manifest verification, then a separately approved destructive apply step if/when needed.
+Interpretation: R2 remote deletion is not enabled and no remote objects were deleted. This is intentional while the archive is young. The local cold archive path now works for a small BBO sample and a broader bounded sample spanning 4 symbols, 2 dates, and 6 channels through restore-raw-cache and silver smoke. The broader sample also found one sidecar-valid but gzip-CRC-invalid R2 object, so next durable-storage work should add a read-only gzip decompression integrity audit/repair plan before any cold-prefix upload or retention planner enrichment.
 
 ### Silver builder
 
@@ -327,6 +466,7 @@ Important current local-data state:
   - `data/pacifica_silver_partitioned_refresh` (~0.42 GiB)
 - Do not assume any of those local directories exists in a fresh session.
 - To refresh diagnostics, first rehydrate selected raw partitions from R2 or build a bounded local cache.
+- `scripts/build_pacifica_full_fidelity_silver.py` now scans raw files recursively, so restored hourly paths like `date=YYYY-MM-DD/hour=HH/run.jsonl.gz` are included.
 
 Last local silver refresh before deletion completed successfully after adding active-gzip robustness:
 
@@ -577,7 +717,7 @@ Note: the post-deploy lifecycle had not yet printed final `lifecycle complete` w
 8. Hetzner/systemd remains documented as a lower-cost fallback in `docs/ops/pacifica-full-fidelity-hetzner.md`, `ops/hetzner/`, and `ops/systemd/`, but Diego chose Fly for now.
 9. Refresh silver/regime/toxic diagnostics from bounded local cache or selected R2 rehydration, without changing fixed toxicity thresholds.
 10. Run or monitor the Pacifica API/docs surface watcher (`scripts/watch_pacifica_api_surface.py`). If it reports `CHANGED`, manually inspect whether any added REST path/websocket source/interval is public collectable market data before changing the collector or baseline.
-11. For R2 remote growth control, build the compacted cold archive + manifest verifier before enabling any R2 raw expiry. Use `scripts/plan_pacifica_r2_retention.py` only as a non-destructive planner until a separate destructive apply step is explicitly approved.
+11. For R2 remote growth control, continue from the initial local cold archive builder/verifier (`scripts/build_pacifica_cold_archive.py`): add restore sampling from cold archive to silver/regime diagnostics, then add durable cold-prefix upload + manifest inventory enrichment. Keep `scripts/plan_pacifica_r2_retention.py` non-destructive until a separate destructive apply step is explicitly approved.
 12. Rerun `scripts/build_pacifica_eligibility_gates.py` after each mature regime-state refresh; keep thresholds fixed unless deliberately changed before reviewing outcomes.
 13. Only after eligibility gates, enough full days, and simple sparse baselines exist, build the post-cost event-driven paper backtester/logger.
 
@@ -677,13 +817,19 @@ python scripts/watch_pacifica_api_surface.py \
   --fail-on-change
 ```
 
-Inspect R2 durable archive size and retention policy:
+Inspect R2 durable archive size, retention policy, and local cold-archive tooling:
 
 ```bash
 rclone size 'r2:pacifica-trading-data/raw/pacifica/full_fidelity' --json
 python scripts/plan_pacifica_r2_retention.py \
   --inventory-csv path/to/r2_inventory.csv \
   --out-dir docs/ops/pacifica-r2-retention
+python scripts/build_pacifica_cold_archive.py build \
+  --raw-root path/to/rehydrated/raw/pacifica_full_fidelity \
+  --out-dir docs/ops/pacifica-cold-archive
+python scripts/build_pacifica_cold_archive.py verify \
+  --manifest docs/ops/pacifica-cold-archive/manifest.csv \
+  --raw-root path/to/rehydrated/raw/pacifica_full_fidelity
 ```
 
 Do not run remote R2 deletion from the planner. It is non-destructive by design.
@@ -695,13 +841,17 @@ uv run pytest tests/scripts/test_watch_pacifica_realtime_research.py \
   tests/scripts/test_build_pacifica_full_fidelity_silver.py \
   tests/scripts/test_collect_pacifica_full_fidelity.py \
   tests/scripts/test_build_non_hft_regime_state.py \
-  tests/scripts/test_non_hft_toxic_overlay_probe.py -q
+  tests/scripts/test_non_hft_toxic_overlay_probe.py \
+  tests/scripts/test_build_pacifica_cold_archive.py \
+  tests/scripts/test_plan_pacifica_r2_retention.py -q
 
 python -m py_compile \
   scripts/watch_pacifica_realtime_research.py \
   scripts/build_non_hft_regime_state.py \
   scripts/non_hft_toxic_overlay_probe.py \
-  scripts/watch_pacifica_api_surface.py
+  scripts/watch_pacifica_api_surface.py \
+  scripts/build_pacifica_cold_archive.py \
+  scripts/plan_pacifica_r2_retention.py
 
 git diff --check
 ```
@@ -727,6 +877,8 @@ git diff --check
 - `docs/ops/pacifica-api-surface-watch/README.md`
 - `docs/ops/pacifica-r2-retention-compaction.md`
 - `scripts/plan_pacifica_r2_retention.py`
+- `scripts/build_pacifica_cold_archive.py`
+- `tests/scripts/test_build_pacifica_cold_archive.py`
 - `tests/scripts/test_plan_pacifica_r2_retention.py`
 - `tests/scripts/test_pacifica_full_fidelity_storage.py`
 - `.dockerignore`
