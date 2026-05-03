@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-02 14:30 EST
+Updated: 2026-05-03 09:39 EST
 
 ## Start here
 
@@ -19,71 +19,69 @@ There is no active `CLAUDE.md` and no active root `.claude/` workflow. Hermes is
 Latest functional commits before this handoff doc update:
 
 ```text
-b12e9b9 docs: update Pacifica session handoff
-80244c7 fix: avoid uploading active Pacifica raw chunks
-35c7540 chore: raise Pacifica Fly disk guard
-436664f feat: run Pacifica ops watchdogs on Fly
-05b7625 feat: add Pacifica API surface watcher
+dba8d60 fix: run Pacifica mismatch repair in lifecycle
+17b4fa4 fix: add Pacifica mismatch reset repair
+71c1a25 fix: preserve Pacifica upload errors until reupload
+5756742 fix: rescan mutable Pacifica uploads as sealed
+7dffb3d fix: prioritize Pacifica R2 reuploads before verify
+d369622 fix: keep stable-age skips non-error
 ```
 
-Current working tree at this handoff update includes uncommitted cold-archive and R2 archive-health tooling work:
+Working tree was clean after `dba8d60` verification. The handoff doc itself is being updated after that clean check.
+
+Latest focused verification for the lifecycle/storage hardening path:
 
 ```text
-modified: docs/NEXT_SESSION_HANDOFF.md
-modified: docs/ops/pacifica-r2-retention-compaction.md
-modified: scripts/build_pacifica_full_fidelity_silver.py
-modified: tests/scripts/test_build_pacifica_full_fidelity_silver.py
-added: docs/ops/pacifica-r2-archive-health/
-added: docs/ops/pacifica-cold-archive-sample/
-added: docs/ops/pacifica-cold-archive-multichannel-sample/
-added: docs/ops/pacifica-cold-archive-broader-sample/
-added: scripts/build_pacifica_cold_archive.py
-added: scripts/check_pacifica_r2_archive_health.py
-added: tests/scripts/test_build_pacifica_cold_archive.py
-added: tests/scripts/test_check_pacifica_r2_archive_health.py
-```
-
-Latest local verification for the cold-archive tooling, R2 archive-health checker, and focused Pacifica pipeline tests:
-
-```text
-uv run pytest tests/scripts/test_check_pacifica_r2_archive_health.py tests/scripts/test_build_pacifica_cold_archive.py tests/scripts/test_build_pacifica_full_fidelity_silver.py -q
-18 passed in 0.47s
-python -m py_compile scripts/check_pacifica_r2_archive_health.py scripts/build_pacifica_cold_archive.py scripts/build_pacifica_full_fidelity_silver.py && git diff --check
-passed
-```
-
-Prior broader focused verification before the latest gzip-audit edit:
-
-```text
-uv run pytest tests/scripts/test_watch_pacifica_realtime_research.py tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_collect_pacifica_full_fidelity.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_non_hft_toxic_overlay_probe.py tests/scripts/test_build_pacifica_cold_archive.py tests/scripts/test_check_pacifica_r2_archive_health.py tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_plan_pacifica_r2_retention.py -q
-48 passed in 0.39s
-python -m py_compile scripts/check_pacifica_r2_archive_health.py scripts/build_pacifica_cold_archive.py scripts/build_pacifica_full_fidelity_silver.py scripts/pacifica_r2_inventory.py scripts/plan_pacifica_r2_retention.py
-passed
+uv run pytest tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_collect_pacifica_full_fidelity.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py -q
+30 passed in 0.09s
+python -m py_compile scripts/pacifica_full_fidelity_storage.py scripts/collect_pacifica_full_fidelity.py scripts/check_pacifica_full_fidelity_health.py
+bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh ops/fly/pacifica-full-fidelity/entrypoint.sh
 git diff --check
 passed
 ```
 
-Current working tree snapshot before the latest cold-archive edits was:
+Latest active Fly deployment after lifecycle repair:
 
 ```text
-branch: main
-working tree: clean before this handoff edit
-active Fly deployment: app pacifica-full-fidelity, machine e2862502a76778, region iad, version 7
-active Fly image: pacifica-full-fidelity:deployment-01KQMEZKX06KB8VHSRK7SZ9TJS
+app: pacifica-full-fidelity
+machine: e2862502a76778
+region: iad
+machine version: 14
+image: pacifica-full-fidelity:deployment-01KQQ3R892EEF9YCK6YGCRPYS7
+state: started
 ```
 
-Important latest operational fix:
+Important latest lifecycle fixes:
 
-- The R2 lifecycle had uploaded some current-hour raw chunks while the collector could still append to them, which produced size-mismatch verification errors.
-- Commit `80244c7` fixes this by making lifecycle scans skip the current UTC hour partition and by allowing uploaded rows with verification errors to be re-uploaded.
-- The fix was deployed to Fly as machine version `7`.
+- `b038502` added a 2-hour stable-age gate so recent appendable chunks are not uploaded prematurely.
+- `d369622` made stable-age skips non-errors.
+- `7dffb3d` prioritized errored uploaded rows for reupload and deferred them from verify until reuploaded.
+- `5756742` made rescan reset mutated uploaded/verified local files to `sealed`.
+- `71c1a25` preserved existing uploaded-row errors until an actual reupload succeeds.
+- `17b4fa4` added a narrow repair command that resets only stable historical `uploaded` size/hash mismatch rows to `sealed` for non-destructive reupload; it does not delete R2 objects.
+- `dba8d60` runs that repair command inside the Fly lifecycle after scan and before upload/verify, so historical mismatch recovery is not blocked behind manual DB edits.
+
+Latest live DB check after version `14` deploy, at `2026-05-03T14:28:21Z`:
+
+```text
+pruned|373|39374870
+sealed|19035|9493830980
+uploaded|2993|2168053753
+verified|2351|301264472
+rows_with_errors|0|0
+mismatch_errors|0|0
+```
+
+Interpretation: collector is healthy and the historical size/hash mismatch backlog has cleared to zero without R2 deletion. A version-14 lifecycle run started at `2026-05-03T14:28:02Z`; watcher `/tmp/pacifica_wait_v14_repair.sh` is running as Hermes background process `proc_a72a88192b0d` to capture the first full post-deploy lifecycle completion and re-check that `rows_with_errors` stays `0`.
 
 Relevant prior commits:
 
 ```text
-f5c625a fix: tolerate active Pacifica gzip files in silver build
-bc20850 docs: update next session handoff
-8a5db43 chore: switch repo agent context to Hermes
+158b090 feat: add Pacifica R2 archive health tooling
+80244c7 fix: avoid uploading active Pacifica raw chunks
+35c7540 chore: raise Pacifica Fly disk guard
+436664f feat: run Pacifica ops watchdogs on Fly
+05b7625 feat: add Pacifica API surface watcher
 ```
 
 Included in the Hermes-context switch:
@@ -182,7 +180,7 @@ Storage lifecycle helper:
 - R2 upload path: `r2:pacifica-trading-data/raw/pacifica/full_fidelity/...`
 - upload semantics: rclone `copyto`/`rcat` only, never destructive `sync`; each data object gets a sibling `.sha256` sidecar
 - verification semantics: remote object byte size plus `.sha256` sidecar hash must match before local state becomes `verified`
-- lifecycle safety as of `80244c7`: scan skips current UTC hour partitions so active gzip chunks are not uploaded while still being appended; rows with verification errors are eligible for re-upload
+- lifecycle safety as of `dba8d60`: scan skips current UTC hour partitions, upload/verify enforces a 2-hour stable-age gate, stable-age skips are non-errors, errored uploaded rows are preserved/prioritized for reupload, mutated uploaded rows are reset to `sealed`, and stable historical mismatch rows are reset to `sealed` by a narrow non-destructive repair path before upload/verify
 - always-on Fly deployment is live: app `pacifica-full-fidelity`, machine `e2862502a76778`, region `iad`, 100GB volume `pacifica_full_fidelity_data` mounted at `/data`, compact-mode collector running, R2 lifecycle loop running with prune enabled for Fly spool only
 
 Captured public data:
