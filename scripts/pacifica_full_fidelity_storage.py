@@ -425,6 +425,57 @@ def verify_uploaded_files(
     return result
 
 
+def reset_mismatch_errors_to_sealed(
+    db_path: Path,
+    *,
+    min_age_seconds: float = 0.0,
+    limit: int | None = None,
+    dry_run: bool = True,
+) -> dict[str, int]:
+    """Reset stable historical uploaded mismatch rows to sealed for re-upload.
+
+    This is intentionally narrow and non-destructive: it only targets rows that
+    are already marked uploaded with size/hash verification mismatch errors. It
+    never touches R2 objects and only clears the DB error when the local file
+    exists and is old enough to be considered stable.
+    """
+    result = {"reset": 0, "skipped_recent": 0, "skipped_missing": 0}
+    with connect_state(db_path) as conn:
+        query = """
+            select local_path from archive_files
+            where status='uploaded'
+              and (
+                error like 'size mismatch%'
+                or error like 'sha256 sidecar mismatch%'
+              )
+            order by object_key
+        """
+        if limit is not None:
+            query += f" limit {int(limit)}"
+        rows = conn.execute(query).fetchall()
+        for row in rows:
+            local_path = Path(row["local_path"])
+            if not local_path.exists():
+                result["skipped_missing"] += 1
+                continue
+            if _local_file_too_recent(local_path, min_age_seconds=min_age_seconds):
+                result["skipped_recent"] += 1
+                continue
+            result["reset"] += 1
+            if not dry_run:
+                conn.execute(
+                    """
+                    update archive_files
+                    set status='sealed', error=null, uploaded_at=null,
+                        remote_verified_at=null
+                    where local_path=?
+                    """,
+                    (row["local_path"],),
+                )
+        conn.commit()
+    return result
+
+
 def prune_verified_files(
     db_path: Path, *, older_than_epoch: float, dry_run: bool = True
 ) -> list[Path]:
@@ -521,6 +572,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "upload-verify", help="run upload and then verification in one batch"
     )
+    repair = sub.add_parser(
+        "reset-mismatch-errors",
+        help="reset stable uploaded size/hash mismatch rows to sealed for non-destructive reupload",
+    )
+    repair.add_argument(
+        "--execute",
+        action="store_true",
+        help="actually reset rows; default is dry-run",
+    )
     return parser
 
 
@@ -588,6 +648,19 @@ def main() -> None:
             min_verify_age_seconds=args.min_upload_age_seconds,
         )
         print(json.dumps(result, sort_keys=True))
+    elif args.command == "reset-mismatch-errors":
+        result = reset_mismatch_errors_to_sealed(
+            args.state_db,
+            min_age_seconds=args.min_upload_age_seconds,
+            limit=args.limit,
+            dry_run=not args.execute,
+        )
+        print(
+            json.dumps(
+                {"dry_run": not args.execute, **result},
+                sort_keys=True,
+            )
+        )
     elif args.command == "upload-verify":
         upload_result = upload_pending_files(
             args.state_db,

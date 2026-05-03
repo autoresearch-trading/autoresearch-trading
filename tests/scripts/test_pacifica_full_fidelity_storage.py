@@ -442,6 +442,99 @@ def test_upload_pending_files_prioritizes_errored_uploaded_rows_before_new_seale
     assert by_name[sealed_file.name] == ("sealed", None)
 
 
+def test_reset_mismatch_errors_to_sealed_repairs_only_stable_uploaded_mismatch_rows(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    stable_mismatch = _write(
+        root / "channel=bbo" / "symbol=BTC" / "date=2026-05-02" / "stable.jsonl.gz"
+    )
+    recent_mismatch = _write(
+        root / "channel=bbo" / "symbol=ETH" / "date=2026-05-02" / "recent.jsonl.gz"
+    )
+    stable_non_mismatch = _write(
+        root / "channel=bbo" / "symbol=SOL" / "date=2026-05-02" / "other.jsonl.gz"
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    now = time.time()
+    old = now - 7200
+    os.utime(stable_mismatch, (old, old))
+    os.utime(stable_non_mismatch, (old, old))
+    os.utime(recent_mismatch, (now, now))
+    with connect_state(db) as conn:
+        conn.execute(
+            "update archive_files set status='uploaded', error='size mismatch remote=1 local=2' where local_path=?",
+            (str(stable_mismatch),),
+        )
+        conn.execute(
+            "update archive_files set status='uploaded', error='sha256 sidecar mismatch remote=a local=b' where local_path=?",
+            (str(recent_mismatch),),
+        )
+        conn.execute(
+            "update archive_files set status='uploaded', error='network timeout' where local_path=?",
+            (str(stable_non_mismatch),),
+        )
+        conn.commit()
+
+    from scripts.pacifica_full_fidelity_storage import reset_mismatch_errors_to_sealed
+
+    result = reset_mismatch_errors_to_sealed(
+        db,
+        min_age_seconds=3600,
+        limit=None,
+        dry_run=False,
+    )
+
+    assert result == {"reset": 1, "skipped_recent": 1, "skipped_missing": 0}
+    with connect_state(db) as conn:
+        rows = conn.execute(
+            "select local_path,status,error from archive_files order by local_path"
+        ).fetchall()
+    by_name = {
+        Path(row["local_path"]).name: (row["status"], row["error"]) for row in rows
+    }
+    assert by_name["stable.jsonl.gz"] == ("sealed", None)
+    assert by_name["recent.jsonl.gz"] == (
+        "uploaded",
+        "sha256 sidecar mismatch remote=a local=b",
+    )
+    assert by_name["other.jsonl.gz"] == ("uploaded", "network timeout")
+
+
+def test_reset_mismatch_errors_to_sealed_dry_run_does_not_mutate_rows(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    path = _write(
+        root / "channel=bbo" / "symbol=BTC" / "date=2026-05-02" / "stable.jsonl.gz"
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    old = time.time() - 7200
+    os.utime(path, (old, old))
+    with connect_state(db) as conn:
+        conn.execute(
+            "update archive_files set status='uploaded', error='size mismatch remote=1 local=2' where local_path=?",
+            (str(path),),
+        )
+        conn.commit()
+
+    from scripts.pacifica_full_fidelity_storage import reset_mismatch_errors_to_sealed
+
+    result = reset_mismatch_errors_to_sealed(
+        db,
+        min_age_seconds=3600,
+        limit=None,
+        dry_run=True,
+    )
+
+    assert result == {"reset": 1, "skipped_recent": 0, "skipped_missing": 0}
+    with connect_state(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?", (str(path),)
+        ).fetchone()
+    assert tuple(saved) == ("uploaded", "size mismatch remote=1 local=2")
+
+
 def test_verify_uploaded_files_defers_errored_rows_until_reupload(tmp_path):
     root = tmp_path / "raw"
     db = tmp_path / "state.sqlite"
