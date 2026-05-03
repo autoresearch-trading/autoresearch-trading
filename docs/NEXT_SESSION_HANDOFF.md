@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-03 09:39 EST
+Updated: 2026-05-03 11:08 EST
 
 ## Start here
 
@@ -27,7 +27,13 @@ dba8d60 fix: run Pacifica mismatch repair in lifecycle
 d369622 fix: keep stable-age skips non-error
 ```
 
-Working tree was clean after `dba8d60` verification. The handoff doc itself is being updated after that clean check.
+Latest handoff commit before this update:
+
+```text
+e9ea79a docs: update Pacifica lifecycle repair handoff
+```
+
+Working tree was clean after `e9ea79a`. This handoff update records the final watcher result from `proc_64a455612222`.
 
 Latest focused verification for the lifecycle/storage hardening path:
 
@@ -61,18 +67,27 @@ Important latest lifecycle fixes:
 - `17b4fa4` added a narrow repair command that resets only stable historical `uploaded` size/hash mismatch rows to `sealed` for non-destructive reupload; it does not delete R2 objects.
 - `dba8d60` runs that repair command inside the Fly lifecycle after scan and before upload/verify, so historical mismatch recovery is not blocked behind manual DB edits.
 
-Latest live DB check after version `14` deploy, at `2026-05-03T14:28:21Z`:
+Latest live DB check after the version `14` lifecycle repair cycle, watcher `proc_64a455612222`, at `2026-05-03T16:08:33Z`:
 
 ```text
-pruned|373|39374870
-sealed|19035|9493830980
-uploaded|2993|2168053753
-verified|2351|301264472
+pruned|386|39618688
+sealed|21542|10091948921
+uploaded|2835|2152106417
+verified|2463|311974967
 rows_with_errors|0|0
 mismatch_errors|0|0
 ```
 
-Interpretation: collector is healthy and the historical size/hash mismatch backlog has cleared to zero without R2 deletion. A version-14 lifecycle run started at `2026-05-03T14:28:02Z`; watcher `/tmp/pacifica_wait_v14_repair.sh` is running as Hermes background process `proc_a72a88192b0d` to capture the first full post-deploy lifecycle completion and re-check that `rows_with_errors` stays `0`.
+Relevant lifecycle evidence:
+
+```text
+2026-05-03T15:38:43Z lifecycle scan/upload/verify/prune start
+2026-05-03T16:08:07Z {"scanned": 26840, "state_db": "/data/pacifica_full_fidelity_storage.sqlite"}
+2026-05-03T16:08:13Z {"dry_run": false, "reset": 75, "skipped_missing": 0, "skipped_recent": 0}
+rows_with_errors cleared at 2026-05-03T16:08:33Z
+```
+
+Interpretation: collector is healthy and the historical size/hash mismatch backlog cleared to zero without R2 deletion. The lifecycle repair path reset 75 stable historical `uploaded` mismatch rows to `sealed`; normal upload/verify should continue from there. Continue monitoring that `rows_with_errors` stays `0`, `verified` grows, and disk remains above the 50 GiB floor.
 
 Relevant prior commits:
 
@@ -697,14 +712,14 @@ Note: the post-deploy lifecycle had not yet printed final `lifecycle complete` w
 
 ## Recommended next steps in a fresh session
 
-1. Start with `git status --short` and `git log --oneline -5`. Latest expected commit is `80244c7 fix: avoid uploading active Pacifica raw chunks`.
-2. Monitor Fly steady state. App `pacifica-full-fidelity` in region `iad` has machine `e2862502a76778`, 100GB volume `pacifica_full_fidelity_data`, R2 secrets set, collector running, and lifecycle upload/verify working.
-3. Specifically confirm the R2 lifecycle catch-up after `80244c7`:
+1. Start with `git status --short` and `git log --oneline -8`. Latest expected repair/handoff commits include `dba8d60 fix: run Pacifica mismatch repair in lifecycle` and `e9ea79a docs: update Pacifica lifecycle repair handoff` plus the subsequent handoff update recording watcher `proc_64a455612222`.
+2. Monitor Fly steady state. App `pacifica-full-fidelity` in region `iad` has machine `e2862502a76778`, 100GB volume `pacifica_full_fidelity_data`, R2 secrets set, collector running, and lifecycle upload/verify/repair working.
+3. Specifically confirm the R2 lifecycle stays clean after the 75-row historical mismatch repair:
    - latest lifecycle loop prints `lifecycle complete`;
-   - `rows_with_errors` in `archive_files` trends down from the observed 200 historical size-mismatch rows;
-   - `verified` count increases;
+   - `rows_with_errors` and `mismatch_errors` stay at `0` after the `2026-05-03T16:08:33Z` clear;
+   - `verified` count increases beyond `2463`;
    - old verified local files prune after the one-day retention window;
-   - no new current-hour size mismatch errors are generated.
+   - no new current-hour or recently modified size/hash mismatch errors are generated.
 4. Use these Fly checks first:
    - `fly status -a pacifica-full-fidelity`
    - `fly machine exec e2862502a76778 -a pacifica-full-fidelity --timeout 120 "sh -lc 'cd /app && python scripts/check_pacifica_full_fidelity_health.py --root /data/pacifica_full_fidelity --state-db /data/pacifica_full_fidelity_storage.sqlite --min-free-gb 50 --max-newest-age-min 10'"`
