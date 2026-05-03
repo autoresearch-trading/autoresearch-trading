@@ -309,7 +309,8 @@ def upload_pending_files(
                 local_path, min_age_seconds=min_upload_age_seconds
             ):
                 result["skipped"] += 1
-                _set_error(conn, row["local_path"], None)
+                if not (row["status"] == "uploaded" and row["error"] is not None):
+                    _set_error(conn, row["local_path"], None)
                 conn.commit()
                 continue
             remote_path = remote_path_for(remote_base, row["object_key"])

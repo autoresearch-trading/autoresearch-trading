@@ -207,6 +207,50 @@ def test_upload_pending_files_skips_recently_modified_chunks(tmp_path):
     assert saved == ("sealed", None)
 
 
+def test_upload_pending_files_preserves_recent_uploaded_error_until_reupload(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    recent_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-02"
+        / "hour=18"
+        / "run-live.jsonl.gz",
+        b"still-changing",
+    )
+    now = time.time()
+    os.utime(recent_file, (now, now))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            update archive_files
+            set status='uploaded', uploaded_at=?, error='size mismatch remote=3 local=14'
+            where local_path=?
+            """,
+            (now - 7200, str(recent_file)),
+        )
+        conn.commit()
+    runner = FakeRcloneRunner()
+
+    result = upload_pending_files(
+        db,
+        remote_base="r2:pacifica-trading-data",
+        runner=runner,
+        min_upload_age_seconds=3600,
+    )
+
+    assert result == {"uploaded": 0, "skipped": 1, "failed": 0}
+    assert runner.commands == []
+    with sqlite3.connect(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?",
+            (str(recent_file),),
+        ).fetchone()
+    assert saved == ("uploaded", "size mismatch remote=3 local=14")
+
+
 def test_upload_pending_files_copies_data_and_sha256_sidecar_then_marks_uploaded(
     tmp_path,
 ):
