@@ -60,6 +60,14 @@ def mark_run(marker: Path, *, now: datetime | None = None) -> None:
     marker.write_text(now.isoformat())
 
 
+def _subprocess_output_to_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def operation_status_row(
     operation: str,
     *,
@@ -107,8 +115,9 @@ def run_command(
         return operation_status_row(
             operation,
             returncode=124,
-            stdout=exc.stdout or "",
-            stderr=(exc.stderr or "") + f"\ntimeout after {timeout_s}s",
+            stdout=_subprocess_output_to_text(exc.stdout),
+            stderr=_subprocess_output_to_text(exc.stderr)
+            + f"\ntimeout after {timeout_s}s",
             started_at=started_at,
             finished_at=utc_now().isoformat(),
             command=command,
@@ -144,7 +153,7 @@ def run_command_stdout_to_file(
             command=command,
         )
     except subprocess.TimeoutExpired as exc:
-        stderr = exc.stderr or ""
+        stderr = _subprocess_output_to_text(exc.stderr)
         return operation_status_row(
             operation,
             returncode=124,

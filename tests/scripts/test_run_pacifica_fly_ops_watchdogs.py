@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -71,3 +72,30 @@ def test_run_command_stdout_to_file_preserves_full_stdout(tmp_path):
     assert row["ok"] is True
     assert row["stdout_tail"].startswith("wrote ")
     assert len(out.read_text().strip()) == 12000
+
+
+def test_run_command_stdout_to_file_handles_timeout_bytes_stderr(tmp_path, monkeypatch):
+    out = tmp_path / "partial_stdout.txt"
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=["rclone", "lsjson"],
+            timeout=1800,
+            output=b"partial inventory",
+            stderr=b"remote stalled",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    row = run_command_stdout_to_file(
+        "r2_inventory_lsjson",
+        ["rclone", "lsjson"],
+        stdout_path=out,
+        timeout_s=1800,
+    )
+
+    assert row["ok"] is False
+    assert row["returncode"] == 124
+    assert "partial stdout retained" in row["stdout_tail"]
+    assert "remote stalled" in row["stderr_tail"]
+    assert "timeout after 1800s" in row["stderr_tail"]
