@@ -127,7 +127,7 @@ Raw Parquet (trades + orderbook + funding)
 - **Date range**: 2025-10-16 to 2026-04-26 (~178 days; April 14-26 consumed for cascade-precursor OOS testing)
 - **Held-out symbol**: AVAX (excluded from v1 contrastive pretraining; not a clean active holdout anymore)
 - **Test set note**: April 14-26 cascade holdout was deliberately consumed; future clean validation requires fresh full-fidelity accrual or a new pre-registered split
-- **Pipeline**: Fly.io collector -> GitHub Actions daily sync -> Cloudflare R2 -> local
+- **Retired pipeline**: legacy `pacifica-collector` Fly app plus GitHub Actions daily sync to Cloudflare R2 has been removed; active archival now runs from `pacifica-full-fidelity` lifecycle directly to R2 `raw/`.
 
 ### Schema change (2026-04-01)
 

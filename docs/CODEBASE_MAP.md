@@ -60,11 +60,9 @@ autoresearch-trading/
 ├── docs/archive/claude-code-assets/.claude/  # Archived Claude Code assets, historical only
 │
 ├── scripts/
-│   ├── fetch_cloud_data.sh            # Generic S3/R2 sync (legacy)
-│   └── sync_cloud_data.sh            # Fly.io → R2 daily sync
+│   └── fetch_cloud_data.sh            # Generic S3/R2 sync (legacy/local fetch helper)
 │
-├── .github/workflows/
-│   └── daily_sync.yml                 # 02:00 UTC cron → sync_cloud_data.sh
+├── .github/workflows/                 # No active legacy collector cron; daily_sync.yml removed
 │
 ├── data/                              # 40GB raw parquet (gitignored)
 │   ├── trades/symbol={SYM}/date={DATE}/
@@ -194,8 +192,8 @@ sequenceDiagram
     participant Pipeline as tape_dataset.py
     participant Model as tape_train.py
 
-    Note over Fly,R2: Daily at 02:00 UTC (GHA cron)
-    Fly->>R2: sync_cloud_data.sh (2 days)
+    Note over Fly,R2: Legacy GitHub Actions daily sync retired
+    Fly--xR2: removed daily_sync.yml / pacifica-collector path
 
     Note over R2,Local: Manual (rclone sync)
     R2->>Local: trades/, orderbook/, funding/, prices/
