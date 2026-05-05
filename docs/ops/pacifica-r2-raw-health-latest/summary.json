@@ -1,0 +1,32 @@
+{
+  "bytes": 21433734139,
+  "channels": {
+    "bbo": 6814,
+    "book": 2394,
+    "candle": 1728,
+    "mark_price_candle": 595,
+    "pong": 1,
+    "prices": 650,
+    "subscribe": 615,
+    "trades": 495
+  },
+  "checked_at": "2026-05-05T14:33:55.231258+00:00",
+  "dates": [
+    "2026-04-30",
+    "2026-05-01",
+    "2026-05-02",
+    "2026-05-03",
+    "2026-05-04",
+    "2026-05-05"
+  ],
+  "gib": 19.962,
+  "gzip_bad_examples": [],
+  "gzip_sample_bad_count": 0,
+  "gzip_sample_checked": 199,
+  "jsonl_gz_files": 13348,
+  "missing_sha_count": 0,
+  "orphan_sha_count": 0,
+  "root": "data/pacifica_full_fidelity",
+  "sha256_sidecars": 13348,
+  "symbols": 66
+}
