@@ -35,43 +35,43 @@ The current archive is still young, so this report is diagnostic until enough fu
 | spread_cost_gate_pass | 60 | 65 |
 | activity_gate_pass | 0 | 65 |
 | stability_gate_pass | 63 | 65 |
-| concentration_gate_pass | 41 | 65 |
+| concentration_gate_pass | 63 | 65 |
 | eligible | 0 | 65 |
 
 ## Symbol eligibility preview
 
 | symbol | eligible | n_days | n_observations | median_top_depth_notional | median_spread_bps | median_trade_notional_per_min | max_day_observation_concentration | failure_reasons |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| BTC | False | 6 | 5793 | 138854.2569 | 0.1281 | 0 | 0.2396 | sample;activity |
-| ETH | False | 6 | 5854 | 102164.3733 | 0.4384 | 0 | 0.2388 | sample;activity |
-| SOL | False | 6 | 5702 | 61233.6680 | 1.1954 | 0 | 0.2406 | sample;activity |
-| WLFI | False | 6 | 5517 | 15616.0824 | 18.2983 | 0 | 0.2400 | sample;activity |
-| PUMP | False | 6 | 5469 | 15474.1991 | 5.6978 | 0 | 0.2443 | sample;activity |
-| CRV | False | 6 | 4956 | 14695.8536 | 17.3233 | 0 | 0.2520 | sample;activity;concentration |
-| kPEPE | False | 3 | 1979 | 14604.3582 | 7.4151 | 0 | 0.4760 | sample;activity;concentration |
-| 2Z | False | 6 | 4918 | 11683.0304 | 21.7983 | 0 | 0.2519 | sample;activity;concentration |
-| XRP | False | 6 | 5295 | 11128.9173 | 0.9227 | 0 | 0.2457 | sample;activity |
-| BNB | False | 6 | 5322 | 10369.2604 | 0.1976 | 0 | 0.2445 | sample;activity |
-| NEAR | False | 6 | 4805 | 9481.1421 | 18.7793 | 0 | 0.2595 | sample;activity;concentration |
-| JUP | False | 6 | 5047 | 9001.3310 | 13.1112 | 0 | 0.2453 | sample;activity |
-| AVAX | False | 6 | 5261 | 8486.7002 | 6.2223 | 0 | 0.2425 | sample;activity |
-| HYPE | False | 6 | 5708 | 7813.4763 | 0.4078 | 0 | 0.2398 | sample;activity |
-| UNI | False | 6 | 5281 | 7386.1459 | 7.8780 | 0 | 0.2403 | sample;activity |
-| FARTCOIN | False | 6 | 5601 | 7297.0898 | 9.8207 | 0 | 0.2398 | sample;activity |
-| LTC | False | 6 | 4720 | 6748.5902 | 7.2173 | 0 | 0.2540 | sample;activity;concentration |
-| ICP | False | 6 | 5105 | 6012.8306 | 19.8387 | 0 | 0.2447 | sample;activity |
-| AAVE | False | 6 | 5284 | 5817.1516 | 5.8980 | 0 | 0.2383 | sample;activity |
-| kBONK | False | 5 | 4216 | 5522.9810 | 6.9719 | 0 | 0.3107 | sample;activity;concentration |
-| XPL | False | 6 | 4946 | 17598.1474 | 32.4500 | 0 | 0.2497 | sample;spread_cost;activity |
-| CHIP | False | 6 | 5483 | 8955.3869 | 30.9081 | 0 | 0.2468 | sample;spread_cost;activity |
-| STRK | False | 6 | 4994 | 6271.0496 | 30.4063 | 0 | 0.2497 | sample;spread_cost;activity |
-| ZEC | False | 6 | 5770 | 4942.7356 | 1.7197 | 0 | 0.2414 | sample;liquidity;activity |
-| PLATINUM | False | 6 | 4161 | 4666.4410 | 18.9222 | 0 | 0.2610 | sample;liquidity;activity;concentration |
-| TAO | False | 6 | 5621 | 4285.8745 | 3.7550 | 0 | 0.2400 | sample;liquidity;activity |
-| WLD | False | 6 | 4930 | 4285.7813 | 12.5971 | 0 | 0.2448 | sample;liquidity;activity |
-| PENGU | False | 6 | 5609 | 3974.2895 | 8.1555 | 0 | 0.2393 | sample;liquidity;activity |
-| XAG | False | 6 | 5022 | 3878.0666 | 1.1791 | 0 | 0.2698 | sample;liquidity;activity;concentration |
-| DOGE | False | 6 | 5411 | 3851.6468 | 3.5256 | 0 | 0.2421 | sample;liquidity;activity |
+| BTC | False | 7 | 7235 | 142073.1396 | 0.1280 | 0 | 0.1920 | sample;activity |
+| ETH | False | 7 | 7301 | 104130.2619 | 0.4363 | 0 | 0.1915 | sample;activity |
+| SOL | False | 7 | 7130 | 61799.9660 | 1.1942 | 0 | 0.1927 | sample;activity |
+| kPEPE | False | 7 | 7006 | 15533.2194 | 7.3792 | 0 | 0.1921 | sample;activity |
+| CRV | False | 7 | 6170 | 15449.5279 | 17.4419 | 0 | 0.2024 | sample;activity |
+| PUMP | False | 7 | 6859 | 15187.4176 | 5.7144 | 0 | 0.1949 | sample;activity |
+| WLFI | False | 7 | 6798 | 15158.2518 | 18.0343 | 0 | 0.1948 | sample;activity |
+| 2Z | False | 7 | 6240 | 11625.6819 | 21.1430 | 0 | 0.2127 | sample;activity |
+| XRP | False | 7 | 6687 | 10941.6015 | 0.9272 | 0 | 0.1946 | sample;activity |
+| BNB | False | 7 | 6659 | 9866.7045 | 0.2116 | 0 | 0.1954 | sample;activity |
+| NEAR | False | 7 | 5963 | 9535.4911 | 19.1332 | 0 | 0.2091 | sample;activity |
+| AVAX | False | 7 | 6592 | 9191.7263 | 6.3199 | 0 | 0.1936 | sample;activity |
+| JUP | False | 7 | 6328 | 9083.3650 | 13.3380 | 0 | 0.1956 | sample;activity |
+| HYPE | False | 7 | 7132 | 7954.7270 | 0.4066 | 0 | 0.1920 | sample;activity |
+| LTC | False | 7 | 5837 | 7414.2098 | 7.1762 | 0 | 0.2054 | sample;activity |
+| FARTCOIN | False | 7 | 7020 | 7152.4985 | 9.8571 | 0 | 0.1920 | sample;activity |
+| UNI | False | 7 | 6577 | 6995.2551 | 7.4966 | 0 | 0.1929 | sample;activity |
+| ICP | False | 7 | 6485 | 6202.0686 | 20.0239 | 0 | 0.1926 | sample;activity |
+| AAVE | False | 7 | 6604 | 5970.4934 | 6.1073 | 0 | 0.1906 | sample;activity |
+| kBONK | False | 7 | 6862 | 5571.5925 | 7.1347 | 0 | 0.1943 | sample;activity |
+| XPL | False | 7 | 6187 | 17058.2088 | 31.9732 | 0 | 0.1996 | sample;spread_cost;activity |
+| CHIP | False | 7 | 6692 | 9064.3485 | 31.3640 | 0 | 0.2022 | sample;spread_cost;activity |
+| STRK | False | 7 | 6243 | 6491.6553 | 36.7545 | 0 | 0.1997 | sample;spread_cost;activity |
+| PLATINUM | False | 7 | 5196 | 4922.2042 | 20.5323 | 0 | 0.2090 | sample;liquidity;activity |
+| ZEC | False | 7 | 7269 | 4823.1846 | 1.8523 | 0 | 0.1916 | sample;liquidity;activity |
+| TAO | False | 7 | 7018 | 4572.7459 | 3.7103 | 0 | 0.1922 | sample;liquidity;activity |
+| WLD | False | 7 | 6159 | 4422.2494 | 12.6024 | 0 | 0.1960 | sample;liquidity;activity |
+| PENGU | False | 7 | 7024 | 4075.2968 | 8.2739 | 0 | 0.1952 | sample;liquidity;activity |
+| XAG | False | 7 | 6424 | 4071.7817 | 1.5998 | 0 | 0.2109 | sample;liquidity;activity |
+| DOGE | False | 7 | 6780 | 3863.2257 | 3.4212 | 0 | 0.1932 | sample;liquidity;activity |
 
 ## Output files
 
