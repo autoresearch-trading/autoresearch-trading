@@ -1,0 +1,20 @@
+{
+  "checked_at": "2026-05-10T22:05:28Z",
+  "fly_state": "started",
+  "collector_newest_raw_age_min": 0.0,
+  "free_gb": 141.0,
+  "rows_with_errors": 0,
+  "lifecycle_upload_failed": 0,
+  "lifecycle_verify_failed": 0,
+  "r2_raw_present": true,
+  "r2_latest_remote_age_min": 471.2,
+  "r2_sidecar_mismatch_count": 0,
+  "watchdog_status_age_min": 25.9,
+  "watchdog_ok": true,
+  "api_surface_changed": false,
+  "archive_inventory_age_hours": 8.45,
+  "archive_inventory_timed_out": false,
+  "research_refresh_ok": true,
+  "delivery_channels": ["hermes_cron:e61c2f7c5593"],
+  "evidence_caveat": "24h follow-up after volume extension. Fly app remains started and local raw files are fresh; disk is healthy. Lifecycle DB shows progress versus 2026-05-10T00:07Z (verified/pruned increased, rows_with_errors remains 0) but sealed backlog has not net-decreased because collection continues adding rows and R2 newest sampled raw payload remains stale by alert thresholds. Bounded R2 sample newest payload: channel=bbo symbol=HYPE/SOL date=2026-05-10 hour=18, modified around 2026-05-10T14:09Z, sidecar matched, gzip read 20 rows. Latest Fly watchdog status is OK and fresh. This snapshot is diagnostic and non-destructive."
+}

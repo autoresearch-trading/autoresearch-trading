@@ -1,0 +1,17 @@
+{
+  "checked_at": "2026-05-10T22:05:28Z",
+  "counts": {
+    "OK": 13,
+    "PAGE": 1,
+    "WARN": 0
+  },
+  "overall_severity": "PAGE",
+  "rows": 14,
+  "thresholds": {
+    "archive_inventory_stale_after_hours": 24.0,
+    "free_disk_floor_gb": 50.0,
+    "r2_remote_stale_after_min": 60.0,
+    "raw_stale_after_min": 15.0,
+    "watchdog_stale_after_min": 180.0
+  }
+}

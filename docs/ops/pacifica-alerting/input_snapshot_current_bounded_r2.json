@@ -1,0 +1,22 @@
+{
+  "api_surface_changed": false,
+  "archive_inventory_age_hours": 24.4,
+  "archive_inventory_timed_out": false,
+  "checked_at": "2026-05-09T15:24:04Z",
+  "collector_newest_raw_age_min": 538.7,
+  "delivery_channels": [
+    "hermes_cron_local_no_agent:e61c2f7c5593"
+  ],
+  "evidence_caveat": "Direct Fly status/log/lifecycle health command was blocked by approval policy in this session; snapshot is conservative and bounded-R2 based. Negative numeric lifecycle/disk signals intentionally force fail-closed PAGE/invalid classification rather than pretending OK. Latest sampled R2 raw payload age came from bounded channel/symbol scan; newest sampled payload channel=bbo symbol=STRK date=2026-05-09 hour=11 modified=2026-05-09T06:24:13Z; sidecar hash prefix matched local sha256 and gzip read 20 JSONL rows.",
+  "fly_state": "UNKNOWN_FLY_CHECK_BLOCKED",
+  "free_gb": -1,
+  "lifecycle_upload_failed": -1,
+  "lifecycle_verify_failed": -1,
+  "r2_latest_remote_age_min": 538.7,
+  "r2_raw_present": true,
+  "r2_sidecar_mismatch_count": 0,
+  "research_refresh_ok": true,
+  "rows_with_errors": -1,
+  "watchdog_ok": true,
+  "watchdog_status_age_min": 29.6
+}

@@ -1,0 +1,22 @@
+{
+  "api_surface_changed": false,
+  "archive_inventory_age_hours": 0.7,
+  "archive_inventory_timed_out": false,
+  "checked_at": "2026-05-10T00:04:58Z",
+  "collector_newest_raw_age_min": 0.1,
+  "delivery_channels": [
+    "hermes_cron_origin_no_agent:e61c2f7c5593"
+  ],
+  "evidence_caveat": "After extending the Fly volume to 200GB and redeploying deployment-01KR7JQA20E7TFVKX6CANZ7H37, local collector writes were fresh and disk was healthy. R2 remote freshness remains stale until lifecycle upload/verify catches up; this remains PAGE. Lifecycle loop was redeployed with PACIFICA_FULL_FIDELITY_BATCH_LIMIT=2000 and PACIFICA_FULL_FIDELITY_LIFECYCLE_INTERVAL_S=900.",
+  "fly_state": "started",
+  "free_gb": 144.38,
+  "lifecycle_upload_failed": 0,
+  "lifecycle_verify_failed": 0,
+  "r2_latest_remote_age_min": 630.7,
+  "r2_raw_present": true,
+  "r2_sidecar_mismatch_count": 0,
+  "research_refresh_ok": true,
+  "rows_with_errors": 0,
+  "watchdog_ok": true,
+  "watchdog_status_age_min": 16.5
+}

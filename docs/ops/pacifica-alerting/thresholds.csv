@@ -1,0 +1,2 @@
+raw_stale_after_min,free_disk_floor_gb,r2_remote_stale_after_min,watchdog_stale_after_min,archive_inventory_stale_after_hours
+15.0,50.0,60.0,180.0,24.0
