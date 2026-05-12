@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-12 15:50 UTC
+Updated: 2026-05-12 17:27 UTC
 
 ## Current state
 
@@ -14,6 +14,101 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-12 v23 batch fresh-upload remediation
+
+Timestamp: `2026-05-12T17:27Z`
+
+Diego said to proceed with everything. Non-destructive work completed; destructive legacy R2 cleanup remains blocked unless Diego separately approves exact scope.
+
+Live evidence before the fix:
+
+```text
+Fly status: pacifica-full-fidelity machine e2862502a76778 was started on version 22.
+Bounded local R2 freshness at 2026-05-12T16:42:46Z:
+  ok=false
+  failures=[R2_REMOTE_FRESHNESS_STALE]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=12/run-20260512T111943Z.jsonl.gz
+  latest_payload_modified=2026-05-12T13:06:41Z
+  latest_payload_age_min=216.09
+  payload_count=100
+  sidecar_count=100
+  sidecar_missing_count=0
+Fly logs showed the version-22 15:26 lifecycle cycle had only reached recent scan by 15:27:25Z; no fresh upload result was visible by 17:00Z.
+```
+
+Root cause / interpretation: the recent scan was fast, but the fresh upload lane still launched one rclone process per payload and one per sidecar. A 2,000-object fresh batch could take long enough that sampled remote freshness crossed the 180-minute threshold while the app was still progressing safely. The issue was upload architecture/throughput, not disk capacity.
+
+Implemented and deployed version 23:
+
+```text
+scripts/pacifica_full_fidelity_storage.py
+  - added upload_pending_files_batch and CLI command upload-batch.
+  - selects the same DB-safe upload candidates as the per-file uploader.
+  - writes a payload --files-from list and a temporary sidecar mirror.
+  - runs bounded parallel rclone copy for payloads and sidecars.
+  - marks rows uploaded only after both batch copies succeed; failed batch rows stay unverified and get DB errors for retry.
+
+scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  - fresh lane now uses upload-batch with --transfers/--checkers.
+  - backlog upload/verify remains on the conservative old path.
+
+ops/fly/pacifica-full-fidelity/{entrypoint.sh,fly.toml}
+  - added PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_TRANSFERS=16
+  - added PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_CHECKERS=32
+```
+
+Deployment:
+
+```text
+flyctl deploy -c ops/fly/pacifica-full-fidelity/fly.toml --ha=false
+image=registry.fly.io/pacifica-full-fidelity:deployment-01KREJD02600997WH8F9H7C53Z
+machine=e2862502a76778
+version=23
+state=started
+last_updated=2026-05-12T17:06:40Z
+```
+
+Post-deploy evidence:
+
+```text
+2026-05-12T17:06:40Z lifecycle scan/upload/verify/prune start
+2026-05-12T17:07:30Z recent scan scanned=5442
+2026-05-12T17:13:22Z batch fresh upload uploaded=1869 skipped=131 failed=0
+2026-05-12T17:13:29Z reset-mismatch-errors reset=0 skipped_missing=0 skipped_recent=0
+
+Bounded local R2 freshness at 2026-05-12T17:17:14Z:
+  ok=true
+  failures=[]
+  latest_payload=channel=bbo/symbol=BTC/date=2026-05-12/hour=14/run-20260512T111943Z.jsonl.gz
+  latest_payload_modified=2026-05-12T15:06:27Z
+  latest_payload_age_min=130.8
+  payload_count=123
+  sidecar_count=123
+  sidecar_missing_count=0
+```
+
+Verification:
+
+```text
+uv run pytest tests/scripts/test_pacifica_full_fidelity_storage.py -q
+25 passed
+
+python -m py_compile scripts/pacifica_full_fidelity_storage.py scripts/run_pacifica_fly_ops_watchdogs.py
+bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh ops/fly/pacifica-full-fidelity/entrypoint.sh
+git diff --check
+# passed
+
+uv run pytest tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py -q
+36 passed
+```
+
+Caveats / next checks:
+
+- The fresh upload lane is green again, but the version-23 lifecycle was still in the slower backlog upload/verify/prune lane after `17:13:29Z` in the latest sampled logs. Check for the next `upload-verify`, `prune`, and `lifecycle complete` lines.
+- The uploaded hourly watchdog may remain stale until its next due run; the immediate local bounded checker is the current green evidence.
+- A local R2-to-research-cache refresh was started in the current Hermes session as background process `proc_815de4056c85`: `rclone copy r2:pacifica-trading-data/raw/pacifica/full_fidelity data/pacifica_full_fidelity --transfers 16 --checkers 32 --fast-list --stats 30s`. It had no stdout yet at `2026-05-12T17:27Z`; poll it before assuming local research cache dates advanced beyond the old 2026-05-07 snapshot.
+- Research artifacts are still from the old local cache snapshot (`8` dates through `2026-05-07`) until that cache refresh finishes and silver/regime/toxic/eligibility are rebuilt diagnostically.
 
 ## Latest 2026-05-12 R2 freshness follow-up
 
@@ -1205,18 +1300,16 @@ Do not manually start another competing upload/verify loop while the lifecycle p
 
 ## Remaining work
 
-1. Monitor the version-22 bounded freshness lane deployed as `pacifica-full-fidelity:deployment-01KRDYHQ7A79GFCM2RGR08NEXM`. It has started and scanned 4,752 recent files, but no post-version-22 upload/verify completion was observed by `2026-05-12T11:45Z`.
-2. Re-run the bounded R2 freshness checker after the version-22 lifecycle reaches upload completion:
-   `uv run python scripts/check_pacifica_r2_freshness.py --remote-base r2:pacifica-trading-data --r2-prefix raw/pacifica/full_fidelity --stale-after-min 180 --timeout-s 45`.
-   Current status is still `R2_REMOTE_FRESHNESS_STALE` with latest sampled payload age `444.95` minutes at `2026-05-12T11:28:54Z`.
-3. Keep alert severity fail-closed until R2 freshness is under threshold and payload/sidecar pairing remains clean. The 2026-05-12 bounded sample had `payload_count=79`, `sidecar_count=79`, `sidecar_missing_count=0`, and no listing errors.
-4. If R2 freshness remains stale after the fresh upload lane completes, inspect lifecycle/upload throughput and architecture next. Avoid competing manual SQLite writers; do not start high-limit manual upload/verify loops while the app lifecycle process is active.
-5. Use Fly status/logs, bounded R2 samples, uploaded watchdog artifacts, and the Hermes cron alert bridge `e61c2f7c5593` for follow-up. Do not retry exact Fly SSH or `rclone cat` diagnostic forms that approval policy denied; use safer bounded listings/scripts instead.
-6. Do not rerun research for edge claims yet. Reruns are OK only as plumbing diagnostics until distinct-day maturity reaches 10-14 days for early sanity, 30+ for provisional validation, and 60+ for preferred serious validation.
-7. Do not claim edge or paper-trade until the 30-day sample gate and symbol eligibility gates pass; current eligibility artifacts remain diagnostic and previously showed `0/65` eligible.
-8. Verify top-level R2 prefixes after any approved legacy purge. `app/` and `funding/` were still present in the last recorded top-level checks; `raw/` and `ops/` must remain preserved.
-9. If Diego explicitly approves destructive scope, target only remaining legacy `app/` and `funding/` prefixes. Do not touch `raw/` or `ops/`.
-10. System level-up Phases 1-10 plus the version-22 ops freshness lane are implemented. Keep future strategy work behind the registry, eligibility, economics, governor, parity, walk-forward, baseline, random-control, and concentration gates.
+1. Monitor the deployed version-23 batch fresh-upload lane (`pacifica-full-fidelity:deployment-01KREJD02600997WH8F9H7C53Z`). Immediate local bounded R2 freshness was green at `2026-05-12T17:17:14Z`, but the hourly uploaded watchdog artifact may not flip until its next due run.
+2. Check completion of the current version-23 lifecycle cycle after the `17:13:29Z` reset-mismatch line. Expected next healthy lines are backlog `upload-verify`, prune, `lifecycle complete`, and a health JSON. Do not start competing manual lifecycle writers.
+3. Poll local background process `proc_815de4056c85`. If the R2-to-local-cache refresh completes successfully, inventory `data/pacifica_full_fidelity/`; only then rerun silver/regime/toxic/eligibility as diagnostic/early-sanity artifacts.
+4. If the cache refresh remains slow or no-output, use bounded/date/channel R2 copies or improved inventory tooling instead of assuming the local cache is current.
+5. Keep alert severity fail-closed on any future stale R2 sample, sidecar mismatch, lifecycle failure, low disk, or stale watchdog artifact. Current green evidence is the local bounded checker after the v23 deploy, not yet a completed hourly watchdog cycle.
+6. Do not rerun research for edge claims. Reruns are OK only as plumbing diagnostics/early sanity until distinct-day maturity reaches 30+ days for provisional validation and 60+ for preferred serious validation.
+7. Do not claim edge or paper-trade until the 30-day sample gate and symbol eligibility gates pass. Existing local artifacts remain based on the old 8-date cache through `2026-05-07` and previously showed `0/65` eligible.
+8. Verify top-level R2 prefixes after any approved legacy purge. `app/` and `funding/` were still present in the latest non-destructive top-level check; `raw/` and `ops/` must remain preserved.
+9. Destructive legacy cleanup remains blocked unless Diego explicitly approves exact scope. If approved, target only remaining legacy `app/` and `funding/` prefixes. Do not touch `raw/` or `ops/`.
+10. System level-up Phases 1-10 plus the v23 ops freshness lane are implemented. Keep future strategy work behind the registry, eligibility, economics, governor, parity, walk-forward, baseline, random-control, and concentration gates.
 
 ## Lifecycle freshness-lane remediation — 2026-05-11 02:36 UTC
 

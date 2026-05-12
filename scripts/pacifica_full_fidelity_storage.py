@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -357,6 +359,59 @@ def _local_file_too_recent(path: Path, *, min_age_seconds: float) -> bool:
     return time.time() - path.stat().st_mtime < min_age_seconds
 
 
+def _upload_order_clause(order: str) -> str:
+    if order == "object-key":
+        return "object_key"
+    if order == "newest-first":
+        return "coalesce(modified_at, last_seen_at) desc, object_key desc"
+    if order == "oldest-first":
+        return "coalesce(modified_at, last_seen_at) asc, object_key asc"
+    raise ValueError(f"unknown upload order: {order}")
+
+
+def _upload_candidate_rows(
+    conn: sqlite3.Connection,
+    *,
+    min_upload_age_seconds: float,
+    order: str,
+    limit: int | None,
+) -> list[sqlite3.Row]:
+    order_clause = _upload_order_clause(order)
+    params: list[float] = []
+    sealed_predicate = "status='sealed'"
+    if min_upload_age_seconds > 0:
+        cutoff = time.time() - min_upload_age_seconds
+        sealed_predicate = (
+            "(status='sealed' and (modified_at is null or modified_at <= ?))"
+        )
+        params.append(cutoff)
+    query = f"""
+        select * from archive_files
+        where {sealed_predicate}
+           or (status='uploaded' and error is not null)
+        order by case
+            when status='uploaded' and error is not null then 0
+            else 1
+        end, {order_clause}
+    """
+    if limit is not None:
+        query += f" limit {int(limit)}"
+    return conn.execute(query, params).fetchall()
+
+
+def _remote_base_with_prefix(remote_base: str, r2_prefix: str) -> str:
+    prefix = r2_prefix.strip("/")
+    if not prefix:
+        return remote_base.rstrip("/")
+    return f"{remote_base.rstrip('/')}/{prefix}"
+
+
+def _expected_object_key(root: Path, local_path: Path, r2_prefix: str) -> str:
+    rel = local_path.resolve().relative_to(root.resolve())
+    prefix = r2_prefix.strip("/")
+    return f"{prefix}/{rel.as_posix()}" if prefix else rel.as_posix()
+
+
 def upload_pending_files(
     db_path: Path,
     *,
@@ -373,34 +428,12 @@ def upload_pending_files(
     """
     result = {"uploaded": 0, "skipped": 0, "failed": 0}
     with connect_state(db_path) as conn:
-        if order == "object-key":
-            order_clause = "object_key"
-        elif order == "newest-first":
-            order_clause = "coalesce(modified_at, last_seen_at) desc, object_key desc"
-        elif order == "oldest-first":
-            order_clause = "coalesce(modified_at, last_seen_at) asc, object_key asc"
-        else:
-            raise ValueError(f"unknown upload order: {order}")
-        params: list[float] = []
-        sealed_predicate = "status='sealed'"
-        if min_upload_age_seconds > 0:
-            cutoff = time.time() - min_upload_age_seconds
-            sealed_predicate = (
-                "(status='sealed' and (modified_at is null or modified_at <= ?))"
-            )
-            params.append(cutoff)
-        query = f"""
-            select * from archive_files
-            where {sealed_predicate}
-               or (status='uploaded' and error is not null)
-            order by case
-                when status='uploaded' and error is not null then 0
-                else 1
-            end, {order_clause}
-        """
-        if limit is not None:
-            query += f" limit {int(limit)}"
-        rows = conn.execute(query, params).fetchall()
+        rows = _upload_candidate_rows(
+            conn,
+            min_upload_age_seconds=min_upload_age_seconds,
+            order=order,
+            limit=limit,
+        )
         for row in rows:
             local_path = Path(row["local_path"])
             if not local_path.exists():
@@ -445,6 +478,160 @@ def upload_pending_files(
                 conn.commit()
         conn.commit()
     return result
+
+
+def upload_pending_files_batch(
+    db_path: Path,
+    *,
+    root: Path,
+    remote_base: str,
+    r2_prefix: str,
+    runner: Callable[..., str] = run_rclone,
+    limit: int | None = None,
+    min_upload_age_seconds: float = 0.0,
+    order: str = "object-key",
+    sidecar_work_dir: Path | None = None,
+    transfers: int = 16,
+    checkers: int = 32,
+) -> dict[str, int]:
+    """Upload a batch of payloads and SHA-256 sidecars with parallel rclone copy.
+
+    The per-file uploader is robust but slow because it starts rclone once per
+    payload and once per sidecar. This batch uploader keeps the same lifecycle DB
+    semantics but uses two bounded rclone copy calls: one payload copy with
+    ``--files-from`` and one copy of a temporary sidecar mirror. It never deletes
+    remote or local archive objects.
+    """
+    result = {"uploaded": 0, "skipped": 0, "failed": 0}
+    root = root.resolve()
+    owned_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if sidecar_work_dir is None:
+        owned_tmp = tempfile.TemporaryDirectory(prefix="pacifica-r2-batch-upload-")
+        work_dir = Path(owned_tmp.name)
+    else:
+        work_dir = sidecar_work_dir
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+    sidecar_root = work_dir / "sidecars"
+    payload_list = work_dir / "payload_files.txt"
+    try:
+        selected: list[tuple[sqlite3.Row, Path, Path]] = []
+        with connect_state(db_path) as conn:
+            rows = _upload_candidate_rows(
+                conn,
+                min_upload_age_seconds=min_upload_age_seconds,
+                order=order,
+                limit=limit,
+            )
+            for row in rows:
+                local_path = Path(row["local_path"])
+                if not local_path.exists():
+                    result["skipped"] += 1
+                    conn.execute(
+                        "update archive_files set status='missing', error=? where local_path=?",
+                        ("local file missing during batch upload", row["local_path"]),
+                    )
+                    conn.commit()
+                    continue
+                if _local_file_too_recent(
+                    local_path, min_age_seconds=min_upload_age_seconds
+                ):
+                    result["skipped"] += 1
+                    if not (row["status"] == "uploaded" and row["error"] is not None):
+                        _set_error(conn, row["local_path"], None)
+                    conn.commit()
+                    continue
+                try:
+                    relative_path = local_path.resolve().relative_to(root)
+                    expected_key = _expected_object_key(root, local_path, r2_prefix)
+                except ValueError:
+                    result["failed"] += 1
+                    _set_error(conn, row["local_path"], "local path outside batch root")
+                    conn.commit()
+                    continue
+                if row["object_key"] != expected_key:
+                    result["failed"] += 1
+                    _set_error(
+                        conn,
+                        row["local_path"],
+                        f"object key mismatch expected={expected_key} saved={row['object_key']}",
+                    )
+                    conn.commit()
+                    continue
+                selected.append((row, local_path, relative_path))
+
+            if not selected:
+                conn.commit()
+                return result
+
+            sidecar_root.mkdir(parents=True, exist_ok=True)
+            payload_list.write_text(
+                "".join(
+                    f"{relative_path.as_posix()}\n" for _, _, relative_path in selected
+                ),
+                encoding="utf-8",
+            )
+            for row, local_path, relative_path in selected:
+                sidecar_path = sidecar_root / f"{relative_path.as_posix()}.sha256"
+                sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+                sidecar_path.write_text(
+                    _sidecar_text(row["sha256"], row["local_path"]),
+                    encoding="utf-8",
+                )
+
+            remote_dest = _remote_base_with_prefix(remote_base, r2_prefix)
+            try:
+                runner(
+                    [
+                        "copy",
+                        "--s3-no-check-bucket",
+                        "--files-from",
+                        str(payload_list),
+                        "--transfers",
+                        str(int(transfers)),
+                        "--checkers",
+                        str(int(checkers)),
+                        str(root),
+                        remote_dest,
+                    ]
+                )
+                runner(
+                    [
+                        "copy",
+                        "--s3-no-check-bucket",
+                        "--transfers",
+                        str(int(transfers)),
+                        "--checkers",
+                        str(int(checkers)),
+                        str(sidecar_root),
+                        remote_dest,
+                    ]
+                )
+            except Exception as exc:  # noqa: BLE001 - record row errors, keep DB safe
+                message = str(exc)
+                for row, _, _ in selected:
+                    result["failed"] += 1
+                    _set_error(conn, row["local_path"], message)
+                conn.commit()
+                return result
+
+            now = time.time()
+            for row, _, _ in selected:
+                conn.execute(
+                    """
+                    update archive_files
+                    set status='uploaded', uploaded_at=?, error=null
+                    where local_path=?
+                    """,
+                    (now, row["local_path"]),
+                )
+            result["uploaded"] += len(selected)
+            conn.commit()
+            return result
+    finally:
+        if owned_tmp is not None:
+            owned_tmp.cleanup()
 
 
 def _remote_size_bytes(remote_path: str, *, runner: Callable[..., str]) -> int:
@@ -689,6 +876,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="object-key",
         help="ordering for upload candidates; use newest-first as a freshness lane during backlog catch-up",
     )
+    parser.add_argument(
+        "--transfers",
+        type=int,
+        default=16,
+        help="parallel rclone transfers for upload-batch payload/sidecar copies",
+    )
+    parser.add_argument(
+        "--checkers",
+        type=int,
+        default=32,
+        help="parallel rclone checkers for upload-batch payload/sidecar copies",
+    )
+    parser.add_argument(
+        "--sidecar-work-dir",
+        type=Path,
+        default=None,
+        help="optional work directory for upload-batch generated .sha256 sidecars",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="scan sealed local archive files into state DB")
     scan.add_argument(
@@ -724,6 +929,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "upload",
         help="upload sealed files plus .sha256 sidecars via rclone copy semantics",
+    )
+    sub.add_parser(
+        "upload-batch",
+        help="upload a bounded batch using parallel rclone copy and generated .sha256 sidecars",
     )
     sub.add_parser(
         "verify", help="verify remote size and .sha256 sidecar, then mark rows verified"
@@ -799,6 +1008,20 @@ def main() -> None:
             limit=args.upload_limit if args.upload_limit is not None else args.limit,
             min_upload_age_seconds=args.min_upload_age_seconds,
             order=args.upload_order,
+        )
+        print(json.dumps(result, sort_keys=True))
+    elif args.command == "upload-batch":
+        result = upload_pending_files_batch(
+            args.state_db,
+            root=args.root,
+            remote_base=args.remote_base,
+            r2_prefix=args.r2_prefix,
+            limit=args.upload_limit if args.upload_limit is not None else args.limit,
+            min_upload_age_seconds=args.min_upload_age_seconds,
+            order=args.upload_order,
+            sidecar_work_dir=args.sidecar_work_dir,
+            transfers=args.transfers,
+            checkers=args.checkers,
         )
         print(json.dumps(result, sort_keys=True))
     elif args.command == "verify":

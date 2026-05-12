@@ -12,6 +12,7 @@ from scripts.pacifica_full_fidelity_storage import (
     prune_verified_files,
     scan_archive_files,
     upload_pending_files,
+    upload_pending_files_batch,
     upload_then_verify,
     verify_uploaded_files,
 )
@@ -920,3 +921,126 @@ def test_upload_then_verify_uses_separate_upload_and_verify_limits(tmp_path):
         ]
     assert statuses.count("verified") == 1
     assert statuses.count("uploaded") == 2
+
+
+def test_upload_pending_files_batch_copies_payloads_and_sidecars_with_one_rclone_copy_per_kind(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    files = []
+    for symbol in ("BTC", "ETH"):
+        path = _write(
+            root
+            / "channel=book"
+            / f"symbol={symbol}"
+            / "date=2026-05-04"
+            / "hour=10"
+            / f"{symbol}.jsonl.gz",
+            f"payload-{symbol}".encode(),
+        )
+        old = time.time() - 4 * 3600
+        os.utime(path, (old, old))
+        files.append(path)
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    commands = []
+
+    def runner(args, *, input_text=None):
+        commands.append(tuple(args))
+        assert input_text is None
+        return ""
+
+    sidecars = tmp_path / "sidecars"
+    result = upload_pending_files_batch(
+        db,
+        root=root,
+        remote_base="r2:bucket",
+        r2_prefix="raw/pacifica/full_fidelity",
+        runner=runner,
+        sidecar_work_dir=sidecars,
+        limit=2,
+        min_upload_age_seconds=7200,
+        order="object-key",
+        transfers=8,
+        checkers=16,
+    )
+
+    assert result == {"uploaded": 2, "skipped": 0, "failed": 0}
+    assert commands == [
+        (
+            "copy",
+            "--s3-no-check-bucket",
+            "--files-from",
+            str(sidecars / "payload_files.txt"),
+            "--transfers",
+            "8",
+            "--checkers",
+            "16",
+            str(root),
+            "r2:bucket/raw/pacifica/full_fidelity",
+        ),
+        (
+            "copy",
+            "--s3-no-check-bucket",
+            "--transfers",
+            "8",
+            "--checkers",
+            "16",
+            str(sidecars / "sidecars"),
+            "r2:bucket/raw/pacifica/full_fidelity",
+        ),
+    ]
+    listed = (sidecars / "payload_files.txt").read_text().splitlines()
+    assert listed == [str(path.relative_to(root)) for path in files]
+    for path in files:
+        sidecar = (
+            sidecars
+            / "sidecars"
+            / path.relative_to(root).with_name(path.name + ".sha256")
+        )
+        assert sidecar.exists()
+        assert sidecar.read_text().endswith(f"  {path.name}\n")
+    with connect_state(db) as conn:
+        statuses = dict(conn.execute("select local_path, status from archive_files"))
+    assert {statuses[str(path)] for path in files} == {"uploaded"}
+
+
+def test_upload_pending_files_batch_marks_candidates_failed_when_batch_copy_fails(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    raw_file = _write(
+        root
+        / "channel=book"
+        / "symbol=BTC"
+        / "date=2026-05-04"
+        / "hour=10"
+        / "BTC.jsonl.gz",
+        b"payload",
+    )
+    old = time.time() - 4 * 3600
+    os.utime(raw_file, (old, old))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+
+    def runner(args, *, input_text=None):
+        raise RuntimeError("rclone batch failed")
+
+    result = upload_pending_files_batch(
+        db,
+        root=root,
+        remote_base="r2:bucket",
+        r2_prefix="raw/pacifica/full_fidelity",
+        runner=runner,
+        sidecar_work_dir=tmp_path / "sidecars",
+        limit=1,
+        min_upload_age_seconds=7200,
+    )
+
+    assert result == {"uploaded": 0, "skipped": 0, "failed": 1}
+    with connect_state(db) as conn:
+        saved = conn.execute(
+            "select status, error from archive_files where local_path=?",
+            (str(raw_file),),
+        ).fetchone()
+    assert tuple(saved) == ("sealed", "rclone batch failed")
