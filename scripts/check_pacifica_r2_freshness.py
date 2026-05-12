@@ -26,8 +26,14 @@ DEFAULT_SAMPLE_PREFIXES = (
 
 
 def parse_rclone_time(value: str) -> datetime | None:
+    """Parse ``rclone lsf --format t`` output as process-local time.
+
+    ``rclone lsf`` renders timestamps without an offset in the caller's local
+    timezone. Treating those strings as UTC makes non-UTC operator laptops report
+    false stale R2 freshness even when the Fly/UTC watchdog is healthy.
+    """
     try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S").astimezone(UTC)
     except ValueError:
         return None
 

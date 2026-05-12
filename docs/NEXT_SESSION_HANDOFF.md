@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-12 11:45 UTC
+Updated: 2026-05-12 15:50 UTC
 
 ## Current state
 
@@ -14,6 +14,49 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-12 R2 freshness follow-up
+
+Timestamp: `2026-05-12T15:50Z`
+
+Current read-only evidence:
+
+```text
+Fly status: started, version 22, image deployment-01KRDYHQ7A79GFCM2RGR08NEXM
+Lifecycle evidence from logs:
+  2026-05-12T13:51:22Z fresh upload uploaded=2000 failed=0 skipped=0
+  2026-05-12T15:06:28Z backlog upload uploaded=250 failed=0 skipped=0; verify verified=500 failed=0 skipped=0
+  2026-05-12T15:06:30Z lifecycle complete
+  2026-05-12T15:26:13Z next lifecycle scan/upload/verify/prune started
+Bounded local R2 freshness check after timezone parser fix:
+  checked_at=2026-05-12T15:48:37Z
+  ok=true
+  failures=[]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=12/run-20260512T111943Z.jsonl.gz
+  latest_payload_modified=2026-05-12T13:06:41Z
+  latest_payload_age_min=161.94
+  payload_count=95
+  sidecar_count=95
+  sidecar_missing_count=0
+```
+
+Important parser fix: `rclone lsf --format t` renders timestamps in the caller's local timezone without an offset. The local laptop is `EST -0500`, so treating the string as UTC made the local bounded checker falsely report ~7.5h stale when the same object was ~2.7h old in UTC. `scripts/check_pacifica_r2_freshness.py` now parses rclone timestamps as process-local time and converts to UTC before freshness math.
+
+Caveats:
+
+- The uploaded watchdog artifact at `ops/pacifica/full_fidelity/watchdogs/latest/pacifica-r2-freshness/latest_status.json` was still stale at `2026-05-12T15:23:50Z`, before the latest observed hour=12 sample was visible locally.
+- A direct Fly-side ad hoc SSH check was attempted but not completed because the shell-wrapped command was blocked; do not retry that exact command form. The local `TZ=UTC` run matched the expected Fly/UTC interpretation and returned `ok=true`.
+- Do not start competing manual lifecycle upload/verify writers. Let the scheduled lifecycle continue and let the next hourly ops watchdog confirm the recovered R2 freshness.
+
+Next exact check:
+
+```text
+uv run python scripts/check_pacifica_r2_freshness.py --remote-base r2:pacifica-trading-data --r2-prefix raw/pacifica/full_fidelity --stale-after-min 180 --timeout-s 45
+rclone copyto r2:pacifica-trading-data/ops/pacifica/full_fidelity/watchdogs/latest/pacifica-r2-freshness/latest_status.json /tmp/pacifica-r2-freshness-latest.json
+python -m json.tool /tmp/pacifica-r2-freshness-latest.json
+```
+
+Expected: local checker should remain `ok=true`; uploaded watchdog should flip to `ok=true` on its next hourly run if the 15:26 lifecycle upload path stays healthy.
 
 ## Latest 2026-05-12 bounded freshness-lane/watchdog update
 

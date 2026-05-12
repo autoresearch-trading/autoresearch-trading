@@ -1,11 +1,46 @@
 import json
+import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from scripts.check_pacifica_r2_freshness import analyze_lsf_samples, parse_lsf_listing
+import pytest
+
+from scripts.check_pacifica_r2_freshness import (
+    analyze_lsf_samples,
+    parse_lsf_listing,
+    parse_rclone_time,
+)
 
 
-def test_parse_lsf_listing_keeps_payloads_and_sidecars() -> None:
+def _set_tz(monkeypatch: pytest.MonkeyPatch, tz: str | None) -> None:
+    if not hasattr(time, "tzset"):
+        pytest.skip("process timezone changes require time.tzset")
+    if tz is None:
+        monkeypatch.delenv("TZ", raising=False)
+    else:
+        monkeypatch.setenv("TZ", tz)
+    time.tzset()
+
+
+def test_parse_rclone_time_treats_lsf_timestamp_as_local_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_tz = os.environ.get("TZ")
+    try:
+        _set_tz(monkeypatch, "Etc/GMT+5")
+
+        parsed = parse_rclone_time("2026-05-12 08:06:41")
+
+        assert parsed == datetime(2026, 5, 12, 13, 6, 41, tzinfo=UTC)
+    finally:
+        _set_tz(monkeypatch, old_tz)
+
+
+def test_parse_lsf_listing_keeps_payloads_and_sidecars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_tz(monkeypatch, "UTC")
     rows = parse_lsf_listing(
         "hour=05/run-a.jsonl.gz;123;2026-05-12 05:01:02\n"
         "hour=05/run-a.jsonl.gz.sha256;96;2026-05-12 05:02:03\n"
