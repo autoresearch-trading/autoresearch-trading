@@ -33,6 +33,9 @@ BACKLOG_UPLOAD_LIMIT="${PACIFICA_FULL_FIDELITY_BACKLOG_UPLOAD_LIMIT:-250}"
 VERIFY_LIMIT="${PACIFICA_FULL_FIDELITY_VERIFY_LIMIT:-${PACIFICA_FULL_FIDELITY_BATCH_LIMIT:-500}}"
 FULL_SCAN_INTERVAL_S="${PACIFICA_FULL_FIDELITY_FULL_SCAN_INTERVAL_S:-21600}"
 FULL_SCAN_MARKER="$LIFECYCLE_STATE_DIR/full_scan_last_run_epoch.txt"
+BACKLOG_LANE_INTERVAL_S="${PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S:-0}"
+BACKLOG_LANE_RUN_ON_MISSING_MARKER="${PACIFICA_FULL_FIDELITY_BACKLOG_LANE_RUN_ON_MISSING_MARKER:-1}"
+BACKLOG_LANE_MARKER="$LIFECYCLE_STATE_DIR/backlog_lane_last_run_epoch.txt"
 
 run_storage() {
   "${PYTHON_CMD[@]}" scripts/pacifica_full_fidelity_storage.py "$@"
@@ -66,6 +69,32 @@ full_scan_due() {
 mark_full_scan_run() {
   mkdir -p "$LIFECYCLE_STATE_DIR"
   date +%s > "$FULL_SCAN_MARKER"
+}
+
+backlog_lane_due() {
+  if ! positive_int "$BACKLOG_LANE_INTERVAL_S"; then
+    return 0
+  fi
+  if [ ! -s "$BACKLOG_LANE_MARKER" ]; then
+    if [ "$BACKLOG_LANE_RUN_ON_MISSING_MARKER" = "0" ]; then
+      mark_backlog_lane_run
+      return 1
+    fi
+    return 0
+  fi
+  local now last elapsed
+  now="$(date +%s)"
+  last="$(cat "$BACKLOG_LANE_MARKER" 2>/dev/null || echo 0)"
+  case "$last" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  elapsed=$((now - last))
+  [ "$elapsed" -ge "$BACKLOG_LANE_INTERVAL_S" ]
+}
+
+mark_backlog_lane_run() {
+  mkdir -p "$LIFECYCLE_STATE_DIR"
+  date +%s > "$BACKLOG_LANE_MARKER"
 }
 
 if positive_int "$RECENT_SCAN_HOURS"; then
@@ -106,26 +135,31 @@ else
   echo "{\"full_scan_skipped\":true,\"interval_s\":$FULL_SCAN_INTERVAL_S}"
 fi
 
-run_storage \
-  --state-db "$STATE_DB" \
-  --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
-  reset-mismatch-errors --execute
-
-run_storage \
-  --state-db "$STATE_DB" \
-  --remote-base "$REMOTE_BASE" \
-  --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
-  --upload-order "oldest-first" \
-  --upload-limit "$BACKLOG_UPLOAD_LIMIT" \
-  --verify-limit "$VERIFY_LIMIT" \
-  upload-verify
-
-if [ "${PACIFICA_R2_PRUNE_EXECUTE:-0}" = "1" ]; then
+if backlog_lane_due; then
   run_storage \
     --state-db "$STATE_DB" \
-    prune --retention-days "$RETENTION_DAYS" --execute
+    --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
+    reset-mismatch-errors --execute
+
+  run_storage \
+    --state-db "$STATE_DB" \
+    --remote-base "$REMOTE_BASE" \
+    --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
+    --upload-order "oldest-first" \
+    --upload-limit "$BACKLOG_UPLOAD_LIMIT" \
+    --verify-limit "$VERIFY_LIMIT" \
+    upload-verify
+
+  if [ "${PACIFICA_R2_PRUNE_EXECUTE:-0}" = "1" ]; then
+    run_storage \
+      --state-db "$STATE_DB" \
+      prune --retention-days "$RETENTION_DAYS" --execute
+  else
+    run_storage \
+      --state-db "$STATE_DB" \
+      prune --retention-days "$RETENTION_DAYS"
+  fi
+  mark_backlog_lane_run
 else
-  run_storage \
-    --state-db "$STATE_DB" \
-    prune --retention-days "$RETENTION_DAYS"
+  echo "{\"backlog_lane_skipped\":true,\"interval_s\":$BACKLOG_LANE_INTERVAL_S}"
 fi

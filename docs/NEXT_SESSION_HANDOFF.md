@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-12 17:27 UTC
+Updated: 2026-05-12 20:55 UTC
 
 ## Current state
 
@@ -14,6 +14,177 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-12 v24 safety-lane gating remediation
+
+Timestamp: `2026-05-12T20:55Z`
+
+After the diagnostic research refresh, R2 freshness had gone stale again even though Fly was running version 23. Root cause interpretation: v23 made the fresh upload itself fast, but the single sequential lifecycle loop could still spend hours in the slow full/backlog/verify/prune safety lane before starting the next fresh cycle.
+
+Implemented and deployed version 24:
+
+```text
+scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  - added PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S gating.
+  - added PACIFICA_FULL_FIDELITY_BACKLOG_LANE_RUN_ON_MISSING_MARKER.
+  - fresh scan/upload still runs every lifecycle cycle.
+  - slow reset/upload-verify/prune safety lane can now be skipped until due.
+
+ops/fly/pacifica-full-fidelity/entrypoint.sh and fly.toml
+  - set PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S=21600.
+  - set PACIFICA_FULL_FIDELITY_BACKLOG_LANE_RUN_ON_MISSING_MARKER=0 so the first v24 cycle resumes fresh uploads instead of immediately blocking on backlog work.
+
+tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  - regression tests for skipping the safety lane when not due and marking it when due.
+```
+
+Verification before deploy:
+
+```text
+uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py -q
+2 passed
+
+uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py -q
+38 passed
+
+bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh ops/fly/pacifica-full-fidelity/entrypoint.sh
+python -m py_compile scripts/pacifica_full_fidelity_storage.py scripts/check_pacifica_r2_freshness.py scripts/run_pacifica_fly_ops_watchdogs.py tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+git diff --check
+# passed
+```
+
+Deployment:
+
+```text
+flyctl deploy -c ops/fly/pacifica-full-fidelity/fly.toml --ha=false
+image=registry.fly.io/pacifica-full-fidelity:deployment-01KREYSBXK6GE9F0PRNAVPR9TP
+machine=e2862502a76778
+version=24
+state=started
+last_updated=2026-05-12T20:43:12Z
+```
+
+Post-deploy evidence:
+
+```text
+Fly status at 2026-05-12T20:43:37Z:
+  version=24
+  state=started
+  image=registry.fly.io/pacifica-full-fidelity:deployment-01KREYSBXK6GE9F0PRNAVPR9TP
+
+Immediate R2 freshness at 2026-05-12T20:43:39Z was still stale, as expected before the new cycle finished.
+R2 freshness after waiting for the v24 fresh lane at 2026-05-12T20:48:55Z:
+  ok=true
+  failures=[]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=17/run-20260512T170641Z.jsonl.gz
+  latest_payload_modified=2026-05-12T18:05:30Z
+  latest_payload_age_min=163.43
+  payload_count=179
+  sidecar_count=179
+  sidecar_missing_count=0
+```
+
+Caveats:
+
+- This verifies sampled R2 freshness recovered after v24; it does not prove full backlog verification/pruning is caught up.
+- A direct spot check found one historical sidecar absent at `raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-11/hour=02/run-20260511T023605Z.jsonl.gz.sha256`. The later bounded freshness sample did not include it and returned green. Treat this as a separate archive-health repair item, not evidence that current fresh upload is broken.
+- The slow safety lane is now less able to block freshness, but because it is gated to every 6h, backlog verification/pruning needs explicit monitoring.
+
+## Superseded 2026-05-12 diagnostic research refresh + renewed R2 freshness blocker
+
+Timestamp: `2026-05-12T20:40Z`
+
+Diego said `continue`; the previous R2-to-local-cache refresh process `proc_815de4056c85` had completed successfully with exit code `0` and no stdout.
+
+Diagnostic research refresh completed from the refreshed R2 cache without claiming edge:
+
+```text
+Raw local cache: data/pacifica_full_fidelity/
+  files=88,782
+  size=35.846 GiB
+  channels=8 public/raw channels plus UNKNOWN control/status rows
+  symbols=67
+  dates=13: 2026-04-30 through 2026-05-12
+
+Refreshed silver output, written to timestamped side directory:
+  data/pacifica_silver_partitioned_refresh_20260512T1738Z/
+  files=2,987
+  size=1.609 GiB
+  channels=bbo,book,candle,mark_price_candle,prices,trades
+  symbols=66
+  dates=13
+  rows by channel:
+    bbo=18,032,394
+    book=34,973,130
+    candle=2,265,103
+    mark_price_candle=32,923,547
+    prices=1,345,256
+    trades=216,365
+
+Refreshed 1-minute regime state:
+  docs/experiments/non-hft-regime-state-refresh-20260512T1738Z/
+  rows=848,863
+  symbols=66
+  dates=13
+  min_bucket=2026-04-30 21:21 UTC
+  max_bucket=2026-05-12 14:59 UTC
+
+Fixed toxic overlay probe from refreshed regime state:
+  docs/experiments/toxic-regime-overlay-refresh-20260512T1738Z/
+  verdict=INSUFFICIENT_SAMPLE_DIAGNOSTIC
+  distinct_dates=13
+  default horizons/cutoffs unchanged: horizons=[5,15,30,60], cutoffs=[0.9,0.8,0.7]
+  Do not tune cutoffs or claim edge from this diagnostic run.
+
+Pre-trade eligibility gates from refreshed regime state:
+  docs/experiments/paper-trading-eligibility-refresh-20260512T1738Z/
+  verdict=INSUFFICIENT_SAMPLE_DIAGNOSTIC
+  symbols_evaluated=66
+  eligible_symbols=0
+  gate counts:
+    sample_gate_pass=0/66
+    liquidity_gate_pass=24/66
+    spread_cost_gate_pass=62/66
+    activity_gate_pass=0/66
+    stability_gate_pass=63/66
+    concentration_gate_pass=65/66
+```
+
+Important caveats:
+
+- The refreshed outputs above are timestamped diagnostic side artifacts. They were left untracked at handoff time and include large parquet files; do not blindly commit them.
+- The canonical default `data/pacifica_silver_partitioned/` and default docs experiment directories were not swapped/overwritten during this pass. A direct swap command was blocked earlier; do not retry that exact destructive command form without explicit approval.
+- The silver refresh exposed a next-level architecture gap: full raw rescans over ~35.8 GiB / ~89.8M normalized rows are slow. Add an incremental silver/regime refresh keyed by source object manifest or `(channel,symbol,date,hour,run)` before routine daily research rebuilds.
+
+Renewed live ops blocker discovered after research refresh:
+
+```text
+Fly status at 2026-05-12T20:34Z:
+  app=pacifica-full-fidelity
+  machine=e2862502a76778
+  version=23
+  state=started
+  image=registry.fly.io/pacifica-full-fidelity:deployment-01KREJD02600997WH8F9H7C53Z
+
+Local bounded R2 freshness at 2026-05-12T20:34:23Z:
+  ok=false
+  failures=[R2_REMOTE_FRESHNESS_STALE]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=16/run-20260512T111943Z.jsonl.gz
+  latest_payload_modified=2026-05-12T17:06:24Z
+  latest_payload_age_min=208.0
+  payload_count=159
+  sidecar_count=159
+  sidecar_missing_count=0
+
+Uploaded watchdog artifact copied from R2:
+  checked_at=2026-05-12T19:08:28Z
+  ok=false
+  failures=[R2_REMOTE_FRESHNESS_STALE]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=15/run-20260512T111943Z.jsonl.gz
+  latest_payload_age_min=183.39
+```
+
+Interpretation: version 23 proved that batch fresh upload can upload a fresh batch quickly inside a lifecycle cycle, but R2 freshness still went stale later. The likely architecture issue is that the single sequential lifecycle loop runs fresh upload and then the slower full/backlog/verify/prune safety lane before it can start the next fresh cycle. The next ops fix should decouple or timebox the slow safety lane so a newest eligible fresh upload cycle can run reliably within the 180-minute threshold. Do not start competing manual lifecycle writers against the active SQLite DB.
 
 ## Latest 2026-05-12 v23 batch fresh-upload remediation
 
