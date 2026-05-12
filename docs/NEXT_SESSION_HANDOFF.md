@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-12 20:55 UTC
+Updated: 2026-05-12 21:30 UTC
 
 ## Current state
 
@@ -15,7 +15,99 @@ Canonical active runtime/archive:
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
 
-## Latest 2026-05-12 v24 safety-lane gating remediation
+## Latest 2026-05-12 v25 full-scan slow-lane gating remediation
+
+Timestamp: `2026-05-12T21:30Z`
+
+Version 24 was not sufficient: logs showed the lifecycle still ran a broad full archive scan after the fresh upload even when the backlog lane was skipped. That full scan delayed the next fresh cycle:
+
+```text
+2026-05-12T20:43:41Z recent scan scanned=5854
+2026-05-12T20:47:15Z fresh upload uploaded=2000 failed=0
+2026-05-12T21:06:34Z broad full scan scanned=93457
+2026-05-12T21:06:37Z backlog_lane_skipped interval_s=21600
+```
+
+Implemented and deployed version 25:
+
+```text
+scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  - compute BACKLOG_LANE_IS_DUE once after the fresh upload.
+  - gate the broad full scan behind the same slow safety-lane due decision.
+  - when the safety lane is not due, skip both broad full scan and reset/upload-verify/prune.
+  - fresh recent scan + newest-first upload still run every lifecycle cycle.
+
+tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  - added regression: missing full-scan marker must not trigger a broad scan when safety lane is not due.
+```
+
+Verification:
+
+```text
+uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py -q
+3 passed
+
+bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_plan_pacifica_ops_alerts.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py -q
+46 passed
+
+git diff --check
+# passed
+```
+
+Commit/push:
+
+```text
+5ebd22e fix(pacifica): gate full scan behind safety lane
+pushed to origin/main
+```
+
+Deployment:
+
+```text
+flyctl deploy . -c ops/fly/pacifica-full-fidelity/fly.toml --dockerfile ops/fly/pacifica-full-fidelity/Dockerfile --app pacifica-full-fidelity --remote-only
+image=registry.fly.io/pacifica-full-fidelity:deployment-01KRF0Z6M2B8J4XWXPVS7G97G2
+machine=e2862502a76778
+version=25
+state=started
+last_updated=2026-05-12T21:20:49Z
+```
+
+Note: running `flyctl deploy --app pacifica-full-fidelity --remote-only` from the repo root picked up/resolved the configured Dockerfile path as stale `/Users/diego/ops/fly/pacifica-full-fidelity/Dockerfile`. Use the explicit deploy command above from the repo root, or fix the Fly config path before relying on bare deploy commands.
+
+Post-deploy evidence:
+
+```text
+Fly status after deploy:
+  version=25
+  state=started
+  image=pacifica-full-fidelity:deployment-01KRF0Z6M2B8J4XWXPVS7G97G2
+
+v25 lifecycle logs:
+  2026-05-12T21:20:49Z lifecycle start
+  2026-05-12T21:21:05Z recent scan scanned=6453
+  2026-05-12T21:25:30Z fresh upload uploaded=2000 failed=0
+  2026-05-12T21:25:31Z full_scan_skipped reason=backlog_lane_not_due interval_s=21600
+  2026-05-12T21:25:31Z backlog_lane_skipped interval_s=21600
+  2026-05-12T21:25:31Z lifecycle complete
+
+Bounded local R2 freshness at 2026-05-12T21:25:46Z:
+  ok=true
+  failures=[]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=18/run-20260512T170641Z.jsonl.gz
+  latest_payload_modified=2026-05-12T19:09:14Z
+  latest_payload_age_min=136.54
+  payload_count=197
+  sidecar_count=197
+  sidecar_missing_count=0
+```
+
+Remaining watch item:
+
+- v25 proves the current lifecycle cycle no longer blocks on a broad full scan when the safety lane is not due. It still needs a later check across the next 180-minute freshness boundary to prove the repeated cadence stays green.
+- Backlog verification/pruning and the known historical missing sidecar remain separate archive-health work; do not start manual lifecycle writers while the Fly app lifecycle may be active.
+
+## Superseded 2026-05-12 v24 safety-lane gating remediation
 
 Timestamp: `2026-05-12T20:55Z`
 
