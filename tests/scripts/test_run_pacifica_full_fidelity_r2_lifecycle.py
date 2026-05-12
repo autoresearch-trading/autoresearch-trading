@@ -15,6 +15,7 @@ def _write_fake_python(bin_dir: Path) -> Path:
         'case "$*" in\n'
         "  *scan*) echo '{\"scan\":0}' ;;\n"
         '  *upload-batch*) echo \'{"uploaded":0,"failed":0}\' ;;\n'
+        '  *repair-sidecars*) echo \'{"sidecars_uploaded":0,"failed":0}\' ;;\n'
         "  *reset-mismatch-errors*) echo '{\"reset\":0}' ;;\n"
         '  *upload-verify*) echo \'{"upload":{"uploaded":0},"verify":{"verified":0}}\' ;;\n'
         '  *prune*) echo \'{"deleted":0,"dry_run":true}\' ;;\n'
@@ -74,6 +75,7 @@ def test_lifecycle_skips_safety_lane_when_backlog_interval_not_due(tmp_path):
 
     assert any("scan --skip-current-hour --recent-hours 12" in cmd for cmd in commands)
     assert any("upload-batch" in cmd for cmd in commands)
+    assert any("repair-sidecars" in cmd for cmd in commands)
     assert not any("reset-mismatch-errors" in cmd for cmd in commands)
     assert not any("upload-verify" in cmd for cmd in commands)
     assert not any("prune" in cmd for cmd in commands)
@@ -96,7 +98,9 @@ def test_lifecycle_skips_full_scan_when_safety_lane_not_due(tmp_path):
         cmd for cmd in commands if " scan" in cmd and "--recent-hours" not in cmd
     ]
     assert broad_scans == []
-    assert any("upload-batch" in cmd for cmd in commands)
+    upload_index = next(i for i, cmd in enumerate(commands) if "upload-batch" in cmd)
+    repair_index = next(i for i, cmd in enumerate(commands) if "repair-sidecars" in cmd)
+    assert upload_index < repair_index
     assert not any("upload-verify" in cmd for cmd in commands)
 
 

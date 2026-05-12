@@ -634,6 +634,117 @@ def upload_pending_files_batch(
             owned_tmp.cleanup()
 
 
+def _uploaded_sidecar_candidate_rows(
+    conn: sqlite3.Connection,
+    *,
+    order: str,
+    limit: int | None,
+) -> list[sqlite3.Row]:
+    order_clause = _upload_order_clause(order)
+    query = f"""
+        select * from archive_files
+        where status='uploaded'
+        order by {order_clause}
+    """
+    if limit is not None:
+        query += f" limit {int(limit)}"
+    return conn.execute(query).fetchall()
+
+
+def _sidecar_relative_path_from_object_key(object_key: str, r2_prefix: str) -> Path:
+    prefix = r2_prefix.strip("/")
+    key = object_key.strip("/")
+    if prefix:
+        prefix_with_sep = prefix + "/"
+        if not key.startswith(prefix_with_sep):
+            raise ValueError(f"object key outside repair prefix: {object_key}")
+        key = key[len(prefix_with_sep) :]
+    return Path(f"{key}.sha256")
+
+
+def repair_uploaded_sidecars_batch(
+    db_path: Path,
+    *,
+    root: Path,
+    remote_base: str,
+    r2_prefix: str,
+    runner: Callable[..., str] = run_rclone,
+    limit: int | None = None,
+    order: str = "newest-first",
+    sidecar_work_dir: Path | None = None,
+    transfers: int = 16,
+    checkers: int = 32,
+) -> dict[str, int]:
+    """Upload SHA-256 sidecars for already-uploaded rows without reuploading payloads.
+
+    Batch payload uploads can leave a payload visible in R2 before its sidecar is
+    present. This repair lane is intentionally idempotent: it regenerates sidecar
+    objects from the lifecycle DB checksum and copies only `.sha256` files.
+    """
+    result = {"sidecars_uploaded": 0, "skipped": 0, "failed": 0}
+    _ = root.resolve()
+    owned_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if sidecar_work_dir is None:
+        owned_tmp = tempfile.TemporaryDirectory(prefix="pacifica-r2-sidecar-repair-")
+        work_dir = Path(owned_tmp.name)
+    else:
+        work_dir = sidecar_work_dir
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+    sidecar_root = work_dir / "sidecars"
+    try:
+        selected: list[sqlite3.Row] = []
+        with connect_state(db_path) as conn:
+            rows = _uploaded_sidecar_candidate_rows(conn, order=order, limit=limit)
+            sidecar_root.mkdir(parents=True, exist_ok=True)
+            for row in rows:
+                try:
+                    sidecar_path = (
+                        sidecar_root
+                        / _sidecar_relative_path_from_object_key(
+                            row["object_key"], r2_prefix
+                        )
+                    )
+                except ValueError:
+                    result["failed"] += 1
+                    continue
+                sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+                sidecar_path.write_text(
+                    _sidecar_text(row["sha256"], row["local_path"]),
+                    encoding="utf-8",
+                )
+                selected.append(row)
+
+            if not selected:
+                return result
+
+            remote_dest = _remote_base_with_prefix(remote_base, r2_prefix)
+            try:
+                runner(
+                    [
+                        "copy",
+                        "--s3-no-check-bucket",
+                        "--transfers",
+                        str(int(transfers)),
+                        "--checkers",
+                        str(int(checkers)),
+                        str(sidecar_root),
+                        remote_dest,
+                    ]
+                )
+            except (
+                Exception
+            ):  # noqa: BLE001 - report failure without mutating DB status
+                result["failed"] += len(selected)
+                return result
+            result["sidecars_uploaded"] += len(selected)
+            return result
+    finally:
+        if owned_tmp is not None:
+            owned_tmp.cleanup()
+
+
 def _remote_size_bytes(remote_path: str, *, runner: Callable[..., str]) -> int:
     raw = runner(["size", "--json", remote_path])
     payload = json.loads(raw)
@@ -935,6 +1046,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="upload a bounded batch using parallel rclone copy and generated .sha256 sidecars",
     )
     sub.add_parser(
+        "repair-sidecars",
+        help="batch-copy .sha256 sidecars for already-uploaded rows without reuploading payloads",
+    )
+    sub.add_parser(
         "verify", help="verify remote size and .sha256 sidecar, then mark rows verified"
     )
     sub.add_parser(
@@ -1018,6 +1133,19 @@ def main() -> None:
             r2_prefix=args.r2_prefix,
             limit=args.upload_limit if args.upload_limit is not None else args.limit,
             min_upload_age_seconds=args.min_upload_age_seconds,
+            order=args.upload_order,
+            sidecar_work_dir=args.sidecar_work_dir,
+            transfers=args.transfers,
+            checkers=args.checkers,
+        )
+        print(json.dumps(result, sort_keys=True))
+    elif args.command == "repair-sidecars":
+        result = repair_uploaded_sidecars_batch(
+            args.state_db,
+            root=args.root,
+            remote_base=args.remote_base,
+            r2_prefix=args.r2_prefix,
+            limit=args.upload_limit if args.upload_limit is not None else args.limit,
             order=args.upload_order,
             sidecar_work_dir=args.sidecar_work_dir,
             transfers=args.transfers,

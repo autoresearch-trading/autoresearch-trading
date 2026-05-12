@@ -10,6 +10,7 @@ from scripts.pacifica_full_fidelity_storage import (
     mark_uploaded,
     object_key_for,
     prune_verified_files,
+    repair_uploaded_sidecars_batch,
     scan_archive_files,
     upload_pending_files,
     upload_pending_files_batch,
@@ -1003,6 +1004,90 @@ def test_upload_pending_files_batch_copies_payloads_and_sidecars_with_one_rclone
     with connect_state(db) as conn:
         statuses = dict(conn.execute("select local_path, status from archive_files"))
     assert {statuses[str(path)] for path in files} == {"uploaded"}
+
+
+def test_repair_uploaded_sidecars_batch_copies_only_sidecars_for_uploaded_rows(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    uploaded_file = _write(
+        root
+        / "channel=trades"
+        / "symbol=BTC"
+        / "date=2026-05-04"
+        / "hour=20"
+        / "uploaded.jsonl.gz",
+        b"uploaded-payload",
+    )
+    sealed_file = _write(
+        root
+        / "channel=trades"
+        / "symbol=ETH"
+        / "date=2026-05-04"
+        / "hour=20"
+        / "sealed.jsonl.gz",
+        b"sealed-payload",
+    )
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    with connect_state(db) as conn:
+        conn.execute(
+            "update archive_files set status='uploaded', uploaded_at=? where local_path=?",
+            (time.time(), str(uploaded_file)),
+        )
+        conn.commit()
+
+    commands = []
+
+    def runner(args, *, input_text=None):
+        commands.append(tuple(args))
+        assert input_text is None
+        return ""
+
+    work_dir = tmp_path / "repair-sidecars"
+    result = repair_uploaded_sidecars_batch(
+        db,
+        root=root,
+        remote_base="r2:bucket",
+        r2_prefix="raw/pacifica/full_fidelity",
+        runner=runner,
+        sidecar_work_dir=work_dir,
+        limit=10,
+        order="newest-first",
+        transfers=4,
+        checkers=8,
+    )
+
+    assert result == {"sidecars_uploaded": 1, "skipped": 0, "failed": 0}
+    assert commands == [
+        (
+            "copy",
+            "--s3-no-check-bucket",
+            "--transfers",
+            "4",
+            "--checkers",
+            "8",
+            str(work_dir / "sidecars"),
+            "r2:bucket/raw/pacifica/full_fidelity",
+        )
+    ]
+    uploaded_sidecar = (
+        work_dir
+        / "sidecars"
+        / uploaded_file.relative_to(root).with_name(uploaded_file.name + ".sha256")
+    )
+    sealed_sidecar = (
+        work_dir
+        / "sidecars"
+        / sealed_file.relative_to(root).with_name(sealed_file.name + ".sha256")
+    )
+    assert uploaded_sidecar.exists()
+    assert uploaded_sidecar.read_text().endswith("  uploaded.jsonl.gz\n")
+    assert not sealed_sidecar.exists()
+    with connect_state(db) as conn:
+        statuses = dict(conn.execute("select local_path, status from archive_files"))
+    assert statuses[str(uploaded_file)] == "uploaded"
+    assert statuses[str(sealed_file)] == "sealed"
 
 
 def test_upload_pending_files_batch_marks_candidates_failed_when_batch_copy_fails(
