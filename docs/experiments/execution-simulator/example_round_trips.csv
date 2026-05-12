@@ -1,0 +1,4 @@
+symbol,side,entry_liquidity,exit_liquidity,entry_price,exit_price,quantity,initial_notional,gross_pnl,fee_bps_total,fees_paid,slippage_paid,adverse_selection_paid,funding_paid,net_pnl,net_return_bps
+BTC,long,taker,taker,100.0,101.0,10.0,1000.0,10.0,8.0,0.8,0.4,0.0,0.0,8.8,88.0
+ETH,short,maker,maker,100.0,99.0,5.0,500.0,5.0,3.0,0.15,0.0,0.3,-0.0,4.55,91.0
+SOL,long,taker,maker,100.0,100.5,20.0,2000.0,10.0,5.5,1.1,0.0,0.0,0.0,8.9,44.5

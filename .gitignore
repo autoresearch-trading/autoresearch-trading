@@ -30,6 +30,10 @@ logs/
 tb_logs/
 reports/
 
+# Large generated diagnostic row-level CSVs (regenerate locally)
+docs/experiments/regime-governor/governor_decisions.csv
+docs/experiments/event-risk-calendar/event_risk_rows.csv
+
 # Git worktrees
 .worktrees/
 

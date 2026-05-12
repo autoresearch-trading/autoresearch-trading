@@ -1,0 +1,2 @@
+threshold_version,reduce_toxicity_score,skip_toxicity_score,max_spread_bps,min_top_depth_notional,max_mark_oracle_basis_abs_bps,forced_flow_liquidation_notional,min_bbo_updates,min_trade_notional
+pacifica_governor_v1_fixed_diagnostic,0.6,0.9,40.0,1000.0,100.0,100000.0,1.0,1.0

@@ -1,0 +1,2 @@
+taker_fee_bps,maker_fee_bps,funding_bps_per_hour,default_slippage_bps_per_side,default_adverse_selection_bps_per_side
+4.0,1.5,0.0,0.0,0.0

@@ -1,0 +1,2 @@
+train_days,test_days,purge_days,step_days,min_diagnostic_days,min_provisional_days,min_validation_grade_days,min_test_rows,max_day_concentration,max_symbol_concentration,random_control_trials,random_seed,min_random_control_beaten_rate
+14,7,1,7,10,30,60,20,0.25,0.5,100,17,0.5
