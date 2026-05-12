@@ -124,18 +124,25 @@ else
   echo "{\"fresh_upload_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_LIMIT<=0\"}"
 fi
 
-if full_scan_due; then
+BACKLOG_LANE_IS_DUE=0
+if backlog_lane_due; then
+  BACKLOG_LANE_IS_DUE=1
+fi
+
+if [ "$BACKLOG_LANE_IS_DUE" = "1" ] && full_scan_due; then
   run_storage \
     --root "$ROOT" \
     --state-db "$STATE_DB" \
     --r2-prefix "$R2_PREFIX" \
     scan --skip-current-hour
   mark_full_scan_run
-else
+elif [ "$BACKLOG_LANE_IS_DUE" = "1" ]; then
   echo "{\"full_scan_skipped\":true,\"interval_s\":$FULL_SCAN_INTERVAL_S}"
+else
+  echo "{\"full_scan_skipped\":true,\"reason\":\"backlog_lane_not_due\",\"interval_s\":$FULL_SCAN_INTERVAL_S}"
 fi
 
-if backlog_lane_due; then
+if [ "$BACKLOG_LANE_IS_DUE" = "1" ]; then
   run_storage \
     --state-db "$STATE_DB" \
     --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \

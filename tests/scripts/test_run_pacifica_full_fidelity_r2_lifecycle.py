@@ -79,6 +79,27 @@ def test_lifecycle_skips_safety_lane_when_backlog_interval_not_due(tmp_path):
     assert not any("prune" in cmd for cmd in commands)
 
 
+def test_lifecycle_skips_full_scan_when_safety_lane_not_due(tmp_path):
+    state_dir = tmp_path / ".lifecycle"
+    state_dir.mkdir()
+    (state_dir / "backlog_lane_last_run_epoch.txt").write_text("4102444800")
+
+    commands = _run_lifecycle(
+        tmp_path,
+        env_overrides={
+            "PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S": "3600",
+            "PACIFICA_FULL_FIDELITY_FULL_SCAN_INTERVAL_S": "3600",
+        },
+    )
+
+    broad_scans = [
+        cmd for cmd in commands if " scan" in cmd and "--recent-hours" not in cmd
+    ]
+    assert broad_scans == []
+    assert any("upload-batch" in cmd for cmd in commands)
+    assert not any("upload-verify" in cmd for cmd in commands)
+
+
 def test_lifecycle_runs_and_marks_safety_lane_when_backlog_interval_due(tmp_path):
     commands = _run_lifecycle(
         tmp_path,
