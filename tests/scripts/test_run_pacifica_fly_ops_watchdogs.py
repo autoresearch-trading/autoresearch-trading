@@ -8,6 +8,7 @@ from scripts.run_pacifica_fly_ops_watchdogs import (
     is_due,
     operation_status_row,
     run_command_stdout_to_file,
+    run_once,
     write_watchdog_summary,
 )
 
@@ -99,3 +100,103 @@ def test_run_command_stdout_to_file_handles_timeout_bytes_stderr(tmp_path, monke
     assert "partial stdout retained" in row["stdout_tail"]
     assert "remote stalled" in row["stderr_tail"]
     assert "timeout after 1800s" in row["stderr_tail"]
+
+
+def test_run_once_uses_line_oriented_r2_inventory_and_converts_it(
+    tmp_path, monkeypatch
+):
+    commands: list[list[str]] = []
+
+    def fake_run(operation, command, *, timeout_s):
+        commands.append(command)
+        return operation_status_row(
+            operation, returncode=0, stdout="ok", stderr="", command=command
+        )
+
+    def fake_stdout_to_file(operation, command, *, stdout_path, timeout_s):
+        commands.append(command)
+        stdout_path.write_text(
+            "b.jsonl.gz;2;2026-05-01 00:00:02\na.jsonl.gz;1;2026-05-01 00:00:01\n"
+        )
+        return operation_status_row(
+            operation,
+            returncode=0,
+            stdout="inventory written",
+            stderr="",
+            command=command,
+        )
+
+    monkeypatch.setattr("scripts.run_pacifica_fly_ops_watchdogs.run_command", fake_run)
+    monkeypatch.setattr(
+        "scripts.run_pacifica_fly_ops_watchdogs.run_command_stdout_to_file",
+        fake_stdout_to_file,
+    )
+
+    config = WatchdogConfig(
+        root=tmp_path,
+        state_dir=tmp_path / ".state",
+        remote_base="r2:bucket",
+        r2_prefix="raw/pacifica/full_fidelity",
+        api_surface_interval_s=0,
+        r2_retention_interval_s=1,
+        r2_freshness_interval_s=0,
+        upload_reports=False,
+    )
+
+    assert run_once(config) == 0
+
+    inventory_commands = [cmd for cmd in commands if cmd[:2] == ["rclone", "lsf"]]
+    assert inventory_commands == [
+        [
+            "rclone",
+            "lsf",
+            "r2:bucket/raw/pacifica/full_fidelity",
+            "--recursive",
+            "--files-only",
+            "--format",
+            "pst",
+            "--separator",
+            ";",
+        ]
+    ]
+    assert not any("lsjson" in cmd for command in commands for cmd in command)
+    assert (tmp_path / "r2_inventory.csv").exists()
+
+
+def test_run_once_runs_bounded_r2_freshness_check(tmp_path, monkeypatch):
+    commands: list[tuple[str, list[str]]] = []
+
+    def fake_run(operation, command, *, timeout_s):
+        commands.append((operation, command))
+        if operation == "r2_freshness_check":
+            out_path = Path(command[command.index("--out") + 1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps({"ok": True, "failures": []}))
+        return operation_status_row(
+            operation, returncode=0, stdout="ok", stderr="", command=command
+        )
+
+    monkeypatch.setattr("scripts.run_pacifica_fly_ops_watchdogs.run_command", fake_run)
+
+    config = WatchdogConfig(
+        root=tmp_path,
+        state_dir=tmp_path / ".state",
+        remote_base="r2:bucket",
+        r2_prefix="raw/pacifica/full_fidelity",
+        api_surface_interval_s=0,
+        r2_retention_interval_s=0,
+        r2_freshness_interval_s=1,
+        upload_reports=False,
+    )
+
+    assert run_once(config) == 0
+
+    freshness_commands = [
+        cmd for operation, cmd in commands if operation == "r2_freshness_check"
+    ]
+    assert len(freshness_commands) == 1
+    command = freshness_commands[0]
+    assert "scripts/check_pacifica_r2_freshness.py" in command
+    assert "--remote-base" in command
+    assert "r2:bucket" in command
+    assert (tmp_path / "pacifica-r2-freshness" / "latest_status.json").exists()

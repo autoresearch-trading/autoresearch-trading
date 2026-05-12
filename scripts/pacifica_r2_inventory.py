@@ -11,6 +11,12 @@ from typing import Any
 import pandas as pd
 
 
+def _sorted_inventory(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=["key", "size_bytes", "mod_time"]).sort_values(
+        "key", ignore_index=True
+    )
+
+
 def rclone_lsjson_to_inventory(payload: list[dict[str, Any]]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for item in payload:
@@ -26,9 +32,37 @@ def rclone_lsjson_to_inventory(payload: list[dict[str, Any]]) -> pd.DataFrame:
                 "mod_time": str(item.get("ModTime") or ""),
             }
         )
-    return pd.DataFrame(rows, columns=["key", "size_bytes", "mod_time"]).sort_values(
-        "key", ignore_index=True
-    )
+    return _sorted_inventory(rows)
+
+
+def rclone_lsf_to_inventory(listing: str) -> pd.DataFrame:
+    """Parse `rclone lsf --format pst --separator ';'` output into inventory rows."""
+
+    rows: list[dict[str, Any]] = []
+    for raw_line in listing.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line:
+            continue
+        parts = line.split(";", 2)
+        if len(parts) != 3:
+            raise ValueError(f"invalid rclone lsf inventory line: {raw_line!r}")
+        path, size, mod_time = parts
+        if not path:
+            continue
+        rows.append(
+            {
+                "key": path,
+                "size_bytes": int(size or 0),
+                "mod_time": mod_time,
+            }
+        )
+    return _sorted_inventory(rows)
+
+
+def _write_inventory_frame(inventory: pd.DataFrame, out_csv: Path) -> Path:
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    inventory.to_csv(out_csv, index=False, lineterminator="\n")
+    return out_csv
 
 
 def write_inventory_csv(lsjson_path: Path, out_csv: Path) -> Path:
@@ -36,9 +70,12 @@ def write_inventory_csv(lsjson_path: Path, out_csv: Path) -> Path:
     if not isinstance(payload, list):
         raise ValueError("rclone lsjson payload must be a JSON list")
     inventory = rclone_lsjson_to_inventory(payload)
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    inventory.to_csv(out_csv, index=False)
-    return out_csv
+    return _write_inventory_frame(inventory, out_csv)
+
+
+def write_inventory_csv_from_lsf(lsf_path: Path, out_csv: Path) -> Path:
+    inventory = rclone_lsf_to_inventory(lsf_path.read_text())
+    return _write_inventory_frame(inventory, out_csv)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

@@ -23,7 +23,7 @@ import sqlite3
 import subprocess
 import time
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,11 +64,28 @@ def _set_error(conn: sqlite3.Connection, local_path: str, error: str | None) -> 
     )
 
 
+def _coerce_utc(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc)
+
+
 def _is_current_hour_partition(path: Path, *, now: datetime) -> bool:
     date_part = f"date={now.strftime('%Y-%m-%d')}"
     hour_part = f"hour={now.strftime('%H')}"
     parts = set(path.parts)
     return date_part in parts and hour_part in parts
+
+
+def _is_archive_payload(path: Path) -> bool:
+    name = path.name
+    if name.endswith(".tmp") or name.endswith(".partial") or name.endswith(".lock"):
+        return False
+    if name.endswith(".sqlite") or name.endswith(".sqlite3") or name.endswith(".db"):
+        return False
+    return any(name.endswith(ext) for ext in ARCHIVE_EXTENSIONS)
 
 
 def iter_archive_files(
@@ -84,29 +101,58 @@ def iter_archive_files(
     root = root.resolve()
     if not root.exists():
         return
-    if now is None:
-        now = datetime.now(timezone.utc)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    else:
-        now = now.astimezone(timezone.utc)
+    now = _coerce_utc(now)
     files: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        name = path.name
-        if name.endswith(".tmp") or name.endswith(".partial") or name.endswith(".lock"):
-            continue
-        if (
-            name.endswith(".sqlite")
-            or name.endswith(".sqlite3")
-            or name.endswith(".db")
-        ):
-            continue
         if skip_current_hour and _is_current_hour_partition(path, now=now):
             continue
-        if any(name.endswith(ext) for ext in ARCHIVE_EXTENSIONS):
+        if _is_archive_payload(path):
             files.append(path)
+    yield from sorted(files)
+
+
+def iter_recent_archive_files(
+    root: Path,
+    *,
+    recent_hours: int,
+    skip_current_hour: bool = False,
+    now: datetime | None = None,
+) -> Iterator[Path]:
+    """Yield archive payloads from only recent date/hour partitions.
+
+    The full archive has tens of thousands of sealed chunks. For freshness-lane
+    cycles, scanning ``channel=*/symbol=*/date=.../hour=...`` for a bounded set
+    of recent UTC hours avoids rewalking and restatting historical backlog while
+    still discovering newly closed chunks that are eligible for upload.
+    """
+    root = root.resolve()
+    if not root.exists() or recent_hours <= 0:
+        return
+    now = _coerce_utc(now)
+    hours: list[datetime] = []
+    for offset in range(recent_hours + 1):
+        hour = (now - timedelta(hours=offset)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        if skip_current_hour and hour == now.replace(minute=0, second=0, microsecond=0):
+            continue
+        hours.append(hour)
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for hour in sorted(hours):
+        date_part = f"date={hour:%Y-%m-%d}"
+        hour_part = f"hour={hour:%H}"
+        pattern = f"channel=*/symbol=*/{date_part}/{hour_part}/*"
+        for path in root.glob(pattern):
+            if path in seen or not path.is_file():
+                continue
+            if skip_current_hour and _is_current_hour_partition(path, now=now):
+                continue
+            if _is_archive_payload(path):
+                seen.add(path)
+                files.append(path)
     yield from sorted(files)
 
 
@@ -136,6 +182,7 @@ def connect_state(db_path: Path) -> sqlite3.Connection:
             local_path text primary key,
             object_key text not null,
             size_bytes integer not null,
+            modified_at real,
             sha256 text not null,
             status text not null check(status in ('sealed','uploaded','verified','pruned','missing')),
             first_seen_at real not null,
@@ -147,6 +194,11 @@ def connect_state(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    existing_columns = {
+        row[1] for row in conn.execute("pragma table_info(archive_files)").fetchall()
+    }
+    if "modified_at" not in existing_columns:
+        conn.execute("alter table archive_files add column modified_at real")
     conn.execute(
         """
         create table if not exists storage_metadata (
@@ -168,21 +220,47 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def scan_archive_files(
-    root: Path, db_path: Path, *, r2_prefix: str, skip_current_hour: bool = False
+    root: Path,
+    db_path: Path,
+    *,
+    r2_prefix: str,
+    skip_current_hour: bool = False,
+    recent_hours: int | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Record sealed local archive files and return their state rows."""
     root = root.resolve()
-    now = time.time()
+    seen_at = time.time()
     rows: list[dict[str, Any]] = []
+    iterator = (
+        iter_recent_archive_files(
+            root,
+            recent_hours=recent_hours,
+            skip_current_hour=skip_current_hour,
+            now=now,
+        )
+        if recent_hours is not None
+        else iter_archive_files(root, skip_current_hour=skip_current_hour, now=now)
+    )
     with connect_state(db_path) as conn:
-        for path in iter_archive_files(root, skip_current_hour=skip_current_hour):
+        for path in iterator:
             stat = path.stat()
+            modified_at = float(stat.st_mtime)
             object_key = object_key_for(root, path, r2_prefix)
-            digest = sha256_file(path)
             existing = conn.execute(
-                "select status, size_bytes, sha256, error from archive_files where local_path=?",
+                "select status, size_bytes, modified_at, sha256, error from archive_files where local_path=?",
                 (str(path),),
             ).fetchone()
+            digest = None
+            if existing and existing["modified_at"] is not None:
+                unchanged_stat = (
+                    int(existing["size_bytes"]) == int(stat.st_size)
+                    and float(existing["modified_at"]) == modified_at
+                )
+                if unchanged_stat:
+                    digest = existing["sha256"]
+            if digest is None:
+                digest = sha256_file(path)
             status = "sealed"
             error = None
             if existing:
@@ -200,18 +278,29 @@ def scan_archive_files(
             conn.execute(
                 """
                 insert into archive_files(
-                    local_path, object_key, size_bytes, sha256, status,
+                    local_path, object_key, size_bytes, modified_at, sha256, status,
                     first_seen_at, last_seen_at, error
-                ) values (?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(local_path) do update set
                     object_key=excluded.object_key,
                     size_bytes=excluded.size_bytes,
+                    modified_at=excluded.modified_at,
                     sha256=excluded.sha256,
                     status=excluded.status,
                     last_seen_at=excluded.last_seen_at,
                     error=excluded.error
                 """,
-                (str(path), object_key, stat.st_size, digest, status, now, now, error),
+                (
+                    str(path),
+                    object_key,
+                    stat.st_size,
+                    modified_at,
+                    digest,
+                    status,
+                    seen_at,
+                    seen_at,
+                    error,
+                ),
             )
             saved = conn.execute(
                 "select * from archive_files where local_path=?", (str(path),)
@@ -275,6 +364,7 @@ def upload_pending_files(
     runner: Callable[..., str] = run_rclone,
     limit: int | None = None,
     min_upload_age_seconds: float = 0.0,
+    order: str = "object-key",
 ) -> dict[str, int]:
     """Copy sealed files and SHA-256 sidecars to R2, then mark rows uploaded.
 
@@ -283,18 +373,34 @@ def upload_pending_files(
     """
     result = {"uploaded": 0, "skipped": 0, "failed": 0}
     with connect_state(db_path) as conn:
-        query = """
+        if order == "object-key":
+            order_clause = "object_key"
+        elif order == "newest-first":
+            order_clause = "coalesce(modified_at, last_seen_at) desc, object_key desc"
+        elif order == "oldest-first":
+            order_clause = "coalesce(modified_at, last_seen_at) asc, object_key asc"
+        else:
+            raise ValueError(f"unknown upload order: {order}")
+        params: list[float] = []
+        sealed_predicate = "status='sealed'"
+        if min_upload_age_seconds > 0:
+            cutoff = time.time() - min_upload_age_seconds
+            sealed_predicate = (
+                "(status='sealed' and (modified_at is null or modified_at <= ?))"
+            )
+            params.append(cutoff)
+        query = f"""
             select * from archive_files
-            where status='sealed'
+            where {sealed_predicate}
                or (status='uploaded' and error is not null)
             order by case
                 when status='uploaded' and error is not null then 0
                 else 1
-            end, object_key
+            end, {order_clause}
         """
         if limit is not None:
             query += f" limit {int(limit)}"
-        rows = conn.execute(query).fetchall()
+        rows = conn.execute(query, params).fetchall()
         for row in rows:
             local_path = Path(row["local_path"])
             if not local_path.exists():
@@ -425,6 +531,35 @@ def verify_uploaded_files(
     return result
 
 
+def upload_then_verify(
+    db_path: Path,
+    *,
+    remote_base: str,
+    runner: Callable[..., str] = run_rclone,
+    upload_limit: int | None = None,
+    verify_limit: int | None = None,
+    min_upload_age_seconds: float = 0.0,
+    upload_order: str = "object-key",
+) -> dict[str, dict[str, int]]:
+    """Run upload and verification with independently bounded batch sizes."""
+    upload_result = upload_pending_files(
+        db_path,
+        remote_base=remote_base,
+        runner=runner,
+        limit=upload_limit,
+        min_upload_age_seconds=min_upload_age_seconds,
+        order=upload_order,
+    )
+    verify_result = verify_uploaded_files(
+        db_path,
+        remote_base=remote_base,
+        runner=runner,
+        limit=verify_limit,
+        min_verify_age_seconds=min_upload_age_seconds,
+    )
+    return {"upload": upload_result, "verify": verify_result}
+
+
 def reset_mismatch_errors_to_sealed(
     db_path: Path,
     *,
@@ -528,7 +663,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=None,
-        help="optional max rows for upload/verify batches",
+        help="optional fallback max rows for upload/verify batches",
+    )
+    parser.add_argument(
+        "--upload-limit",
+        type=int,
+        default=None,
+        help="optional max rows for upload batches; overrides --limit for upload steps",
+    )
+    parser.add_argument(
+        "--verify-limit",
+        type=int,
+        default=None,
+        help="optional max rows for verify batches; overrides --limit for verify steps",
     )
     parser.add_argument(
         "--min-upload-age-seconds",
@@ -536,12 +683,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="skip local payloads modified more recently than this many seconds before upload",
     )
+    parser.add_argument(
+        "--upload-order",
+        choices=("object-key", "newest-first", "oldest-first"),
+        default="object-key",
+        help="ordering for upload candidates; use newest-first as a freshness lane during backlog catch-up",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="scan sealed local archive files into state DB")
     scan.add_argument(
         "--skip-current-hour",
         action="store_true",
         help="skip current UTC hour partitions that the live collector may still be appending",
+    )
+    scan.add_argument(
+        "--recent-hours",
+        type=int,
+        default=None,
+        help="only scan bounded recent UTC hour partitions instead of the full archive tree",
     )
     manifest = sub.add_parser("manifest", help="write JSONL manifest from state DB")
     manifest.add_argument("--out", type=Path, required=True)
@@ -592,6 +751,7 @@ def main() -> None:
             args.state_db,
             r2_prefix=args.r2_prefix,
             skip_current_hour=args.skip_current_hour,
+            recent_hours=args.recent_hours,
         )
         print(
             json.dumps(
@@ -636,15 +796,16 @@ def main() -> None:
         result = upload_pending_files(
             args.state_db,
             remote_base=args.remote_base,
-            limit=args.limit,
+            limit=args.upload_limit if args.upload_limit is not None else args.limit,
             min_upload_age_seconds=args.min_upload_age_seconds,
+            order=args.upload_order,
         )
         print(json.dumps(result, sort_keys=True))
     elif args.command == "verify":
         result = verify_uploaded_files(
             args.state_db,
             remote_base=args.remote_base,
-            limit=args.limit,
+            limit=args.verify_limit if args.verify_limit is not None else args.limit,
             min_verify_age_seconds=args.min_upload_age_seconds,
         )
         print(json.dumps(result, sort_keys=True))
@@ -662,23 +823,19 @@ def main() -> None:
             )
         )
     elif args.command == "upload-verify":
-        upload_result = upload_pending_files(
+        result = upload_then_verify(
             args.state_db,
             remote_base=args.remote_base,
-            limit=args.limit,
+            upload_limit=(
+                args.upload_limit if args.upload_limit is not None else args.limit
+            ),
+            verify_limit=(
+                args.verify_limit if args.verify_limit is not None else args.limit
+            ),
             min_upload_age_seconds=args.min_upload_age_seconds,
+            upload_order=args.upload_order,
         )
-        verify_result = verify_uploaded_files(
-            args.state_db,
-            remote_base=args.remote_base,
-            limit=args.limit,
-            min_verify_age_seconds=args.min_upload_age_seconds,
-        )
-        print(
-            json.dumps(
-                {"upload": upload_result, "verify": verify_result}, sort_keys=True
-            )
-        )
+        print(json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -4,8 +4,10 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.pacifica_r2_inventory import (
+    rclone_lsf_to_inventory,
     rclone_lsjson_to_inventory,
     write_inventory_csv,
+    write_inventory_csv_from_lsf,
 )
 
 
@@ -55,5 +57,32 @@ def test_write_inventory_csv_writes_sorted_csv(tmp_path):
     result = write_inventory_csv(lsjson, out)
 
     assert result == out
+    df = pd.read_csv(out)
+    assert df["key"].tolist() == ["a.jsonl.gz", "b.jsonl.gz"]
+
+
+def test_rclone_lsf_to_inventory_parses_line_oriented_listing():
+    listing = "b.jsonl.gz;2;2026-05-01 00:00:02\r\na.jsonl.gz;1;2026-05-01 00:00:01\n"
+
+    inventory = rclone_lsf_to_inventory(listing)
+
+    assert inventory.to_dict("records") == [
+        {"key": "a.jsonl.gz", "size_bytes": 1, "mod_time": "2026-05-01 00:00:01"},
+        {"key": "b.jsonl.gz", "size_bytes": 2, "mod_time": "2026-05-01 00:00:02"},
+    ]
+
+
+def test_write_inventory_csv_from_lsf_writes_lf_csv(tmp_path):
+    lsf = tmp_path / "inventory.lsf"
+    out = tmp_path / "inventory.csv"
+    lsf.write_text(
+        "b.jsonl.gz;2;2026-05-01 00:00:02\r\na.jsonl.gz;1;2026-05-01 00:00:01\n"
+    )
+
+    result = write_inventory_csv_from_lsf(lsf, out)
+
+    assert result == out
+    raw = out.read_bytes()
+    assert b"\r" not in raw
     df = pd.read_csv(out)
     assert df["key"].tolist() == ["a.jsonl.gz", "b.jsonl.gz"]

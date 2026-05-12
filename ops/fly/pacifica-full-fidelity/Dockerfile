@@ -8,7 +8,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://rclone.org/install.sh | bash \
-    && pip install --no-cache-dir requests websockets
+    && pip install --no-cache-dir pandas requests websockets
 
 WORKDIR /app
 

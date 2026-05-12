@@ -21,6 +21,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.pacifica_r2_inventory import write_inventory_csv_from_lsf
+except ModuleNotFoundError:  # pragma: no cover - direct `python scripts/...` execution
+    from pacifica_r2_inventory import write_inventory_csv_from_lsf
+
 
 @dataclass(frozen=True)
 class WatchdogConfig:
@@ -31,6 +36,9 @@ class WatchdogConfig:
     reports_prefix: str = "ops/pacifica/full_fidelity"
     api_surface_interval_s: int = 86_400
     r2_retention_interval_s: int = 86_400
+    r2_freshness_interval_s: int = 3_600
+    r2_freshness_stale_after_min: float = 180.0
+    r2_freshness_sample_prefixes: str = ""
     command_timeout_s: int = 600
     upload_reports: bool = True
 
@@ -88,6 +96,29 @@ def operation_status_row(
         "stdout_tail": stdout[-4000:],
         "stderr_tail": stderr[-4000:],
     }
+
+
+def run_inventory_csv_conversion(lsf_path: Path, out_csv: Path) -> dict[str, Any]:
+    started_at = utc_now().isoformat()
+    try:
+        write_inventory_csv_from_lsf(lsf_path, out_csv)
+    except Exception as exc:  # pragma: no cover - defensive status reporting
+        return operation_status_row(
+            "r2_inventory_csv",
+            returncode=1,
+            stdout="",
+            stderr=f"{type(exc).__name__}: {exc}",
+            started_at=started_at,
+            finished_at=utc_now().isoformat(),
+        )
+    return operation_status_row(
+        "r2_inventory_csv",
+        returncode=0,
+        stdout=f"wrote {out_csv}",
+        stderr="",
+        started_at=started_at,
+        finished_at=utc_now().isoformat(),
+    )
 
 
 def run_command(
@@ -200,7 +231,9 @@ def write_watchdog_summary(
             "## Output locations",
             "",
             f"- API surface watch: `{config.root / 'pacifica-api-surface-watch'}`",
+            f"- R2 bounded freshness status: `{config.root / 'pacifica-r2-freshness'}`",
             f"- R2 retention policy reports: `{config.root / 'pacifica-r2-retention'}`",
+            f"- R2 line inventory: `{config.root / 'r2_inventory.lsf'}`",
             f"- R2 inventory CSV: `{config.root / 'r2_inventory.csv'}`",
             "",
             "Remote R2 raw deletion is not performed here. Retention reports are planning artifacts only; destructive expiry still requires compacted archive verification and explicit review.",
@@ -234,38 +267,52 @@ def run_once(config: WatchdogConfig) -> int:
         rows.append(row)
         mark_run(api_marker)
 
+    freshness_marker = config.state_dir / "r2_freshness_last_run.txt"
+    if is_due(freshness_marker, interval_s=config.r2_freshness_interval_s):
+        freshness_out = config.root / "pacifica-r2-freshness" / "latest_status.json"
+        cmd = [
+            python,
+            "scripts/check_pacifica_r2_freshness.py",
+            "--remote-base",
+            config.remote_base,
+            "--r2-prefix",
+            config.r2_prefix,
+            "--stale-after-min",
+            str(config.r2_freshness_stale_after_min),
+            "--out",
+            str(freshness_out),
+        ]
+        if config.r2_freshness_sample_prefixes.strip():
+            cmd.extend(["--sample-prefixes", config.r2_freshness_sample_prefixes])
+        row = run_command("r2_freshness_check", cmd, timeout_s=config.command_timeout_s)
+        rows.append(row)
+        mark_run(freshness_marker)
+
     retention_marker = config.state_dir / "r2_retention_last_run.txt"
     if is_due(retention_marker, interval_s=config.r2_retention_interval_s):
-        lsjson = config.root / "r2_inventory.lsjson"
+        lsf_inventory = config.root / "r2_inventory.lsf"
         inventory_csv = config.root / "r2_inventory.csv"
         retention_out = config.root / "pacifica-r2-retention"
         remote_path = f"{config.remote_base}/{config.r2_prefix}"
         cmd_inventory = [
             "rclone",
-            "lsjson",
+            "lsf",
             remote_path,
             "--recursive",
             "--files-only",
+            "--format",
+            "pst",
+            "--separator",
+            ";",
         ]
         inventory_row = run_command_stdout_to_file(
-            "r2_inventory_lsjson",
+            "r2_inventory_lsf",
             cmd_inventory,
-            stdout_path=lsjson,
+            stdout_path=lsf_inventory,
             timeout_s=config.command_timeout_s,
         )
         if inventory_row["ok"]:
-            convert_row = run_command(
-                "r2_inventory_csv",
-                [
-                    python,
-                    "scripts/pacifica_r2_inventory.py",
-                    "--lsjson",
-                    str(lsjson),
-                    "--out-csv",
-                    str(inventory_csv),
-                ],
-                timeout_s=config.command_timeout_s,
-            )
+            convert_row = run_inventory_csv_conversion(lsf_inventory, inventory_csv)
             rows.append(convert_row)
             if convert_row["ok"]:
                 rows.append(
@@ -333,6 +380,15 @@ def config_from_env() -> WatchdogConfig:
         ),
         r2_retention_interval_s=int(
             os.environ.get("PACIFICA_R2_RETENTION_PLAN_INTERVAL_S", "86400")
+        ),
+        r2_freshness_interval_s=int(
+            os.environ.get("PACIFICA_R2_FRESHNESS_CHECK_INTERVAL_S", "3600")
+        ),
+        r2_freshness_stale_after_min=float(
+            os.environ.get("PACIFICA_R2_FRESHNESS_STALE_AFTER_MIN", "180")
+        ),
+        r2_freshness_sample_prefixes=os.environ.get(
+            "PACIFICA_R2_FRESHNESS_SAMPLE_PREFIXES", ""
         ),
         command_timeout_s=int(os.environ.get("PACIFICA_OPS_COMMAND_TIMEOUT_S", "1800")),
         upload_reports=os.environ.get("PACIFICA_OPS_UPLOAD_REPORTS", "1") == "1",

@@ -12,6 +12,7 @@ from scripts.pacifica_full_fidelity_storage import (
     prune_verified_files,
     scan_archive_files,
     upload_pending_files,
+    upload_then_verify,
     verify_uploaded_files,
 )
 
@@ -173,7 +174,7 @@ class FakeRcloneRunner:
         raise AssertionError(f"unexpected rclone command: {args}")
 
 
-def test_upload_pending_files_skips_recently_modified_chunks(tmp_path):
+def test_upload_pending_files_ignores_recently_modified_sealed_chunks(tmp_path):
     root = tmp_path / "raw"
     db = tmp_path / "state.sqlite"
     recent_file = _write(
@@ -197,7 +198,7 @@ def test_upload_pending_files_skips_recently_modified_chunks(tmp_path):
         min_upload_age_seconds=3600,
     )
 
-    assert result == {"uploaded": 0, "skipped": 1, "failed": 0}
+    assert result == {"uploaded": 0, "skipped": 0, "failed": 0}
     assert runner.commands == []
     with sqlite3.connect(db) as conn:
         saved = conn.execute(
@@ -440,6 +441,189 @@ def test_upload_pending_files_prioritizes_errored_uploaded_rows_before_new_seale
     }
     assert by_name[errored_uploaded_file.name] == ("uploaded", None)
     assert by_name[sealed_file.name] == ("sealed", None)
+
+
+def test_upload_pending_files_can_prioritize_newest_sealed_chunks_for_freshness_lane(
+    tmp_path,
+):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    old_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=ZZZ"
+        / "date=2026-05-01"
+        / "hour=01"
+        / "old.jsonl.gz",
+        b"old",
+    )
+    new_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=AAA"
+        / "date=2026-05-03"
+        / "hour=22"
+        / "new.jsonl.gz",
+        b"new",
+    )
+    older = time.time() - 3 * 24 * 3600
+    newer = time.time() - 3 * 3600
+    os.utime(old_file, (older, older))
+    os.utime(new_file, (newer, newer))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    runner = FakeRcloneRunner()
+
+    result = upload_pending_files(
+        db,
+        remote_base="r2:bucket",
+        runner=runner,
+        limit=1,
+        order="newest-first",
+        min_upload_age_seconds=7200,
+    )
+
+    assert result == {"uploaded": 1, "skipped": 0, "failed": 0}
+    copy_commands = [cmd for cmd, _ in runner.commands if cmd[0] == "copyto"]
+    assert copy_commands[0][2] == str(new_file)
+    with connect_state(db) as conn:
+        statuses = dict(conn.execute("select local_path, status from archive_files"))
+    assert statuses[str(new_file)] == "uploaded"
+    assert statuses[str(old_file)] == "sealed"
+
+
+def test_scan_archive_files_reuses_checksum_for_unchanged_files(tmp_path, monkeypatch):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    path = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-03"
+        / "hour=22"
+        / "chunk.jsonl.gz",
+        b"stable",
+    )
+    first_rows = scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+
+    import scripts.pacifica_full_fidelity_storage as storage
+
+    def fail_if_rehashed(_path):
+        raise AssertionError("unchanged files should not be rehashed")
+
+    monkeypatch.setattr(storage, "sha256_file", fail_if_rehashed)
+    second_rows = scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+
+    assert second_rows[0]["sha256"] == first_rows[0]["sha256"]
+    assert second_rows[0]["size_bytes"] == len(b"stable")
+    assert second_rows[0]["status"] == "sealed"
+
+
+def test_scan_archive_files_can_scan_only_recent_hour_partitions(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    now = datetime(2026, 5, 4, 12, 30, tzinfo=timezone.utc)
+    old_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-03"
+        / "hour=06"
+        / "old.jsonl.gz",
+        b"old",
+    )
+    recent_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-04"
+        / "hour=10"
+        / "recent.jsonl.gz",
+        b"recent",
+    )
+    current_hour_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-04"
+        / "hour=12"
+        / "current.jsonl.gz",
+        b"current",
+    )
+    for path in (old_file, recent_file, current_hour_file):
+        mtime = now.timestamp() - 3 * 3600
+        os.utime(path, (mtime, mtime))
+
+    rows = scan_archive_files(
+        root,
+        db,
+        r2_prefix="raw/pacifica/full_fidelity",
+        skip_current_hour=True,
+        recent_hours=4,
+        now=now,
+    )
+
+    assert [Path(row["local_path"]).name for row in rows] == ["recent.jsonl.gz"]
+    with connect_state(db) as conn:
+        saved_names = [
+            Path(row[0]).name
+            for row in conn.execute(
+                "select local_path from archive_files order by local_path"
+            )
+        ]
+    assert saved_names == ["recent.jsonl.gz"]
+
+
+def test_upload_pending_files_does_not_spend_limit_on_too_recent_sealed_rows(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    old_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-04"
+        / "hour=06"
+        / "eligible.jsonl.gz",
+        b"eligible",
+    )
+    too_recent_file = _write(
+        root
+        / "channel=bbo"
+        / "symbol=BTC"
+        / "date=2026-05-04"
+        / "hour=11"
+        / "too-recent.jsonl.gz",
+        b"too-recent",
+    )
+    old_mtime = time.time() - 4 * 3600
+    new_mtime = time.time()
+    os.utime(old_file, (old_mtime, old_mtime))
+    os.utime(too_recent_file, (new_mtime, new_mtime))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    runner = FakeRcloneRunner()
+
+    result = upload_pending_files(
+        db,
+        remote_base="r2:bucket",
+        runner=runner,
+        limit=1,
+        order="newest-first",
+        min_upload_age_seconds=7200,
+    )
+
+    assert result == {"uploaded": 1, "skipped": 0, "failed": 0}
+    copy_commands = [cmd for cmd, _ in runner.commands if cmd[0] == "copyto"]
+    assert copy_commands == [
+        (
+            "copyto",
+            "--s3-no-check-bucket",
+            str(old_file),
+            "r2:bucket/raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-04/hour=06/eligible.jsonl.gz",
+        )
+    ]
+    with connect_state(db) as conn:
+        statuses = dict(conn.execute("select local_path, status from archive_files"))
+    assert statuses[str(old_file)] == "uploaded"
+    assert statuses[str(too_recent_file)] == "sealed"
 
 
 def test_reset_mismatch_errors_to_sealed_repairs_only_stable_uploaded_mismatch_rows(
@@ -687,3 +871,52 @@ def test_verify_uploaded_files_refuses_mismatched_remote_size(tmp_path):
         ).fetchone()
     assert saved[0] == "uploaded"
     assert "size mismatch" in saved[1]
+
+
+def test_upload_then_verify_uses_separate_upload_and_verify_limits(tmp_path):
+    root = tmp_path / "raw"
+    db = tmp_path / "state.sqlite"
+    files = []
+    for idx in range(3):
+        path = _write(
+            root
+            / "channel=bbo"
+            / f"symbol=S{idx}"
+            / "date=2026-05-03"
+            / "hour=22"
+            / f"chunk-{idx}.jsonl.gz",
+            f"payload-{idx}".encode(),
+        )
+        files.append(path)
+        old = time.time() - (idx + 3) * 3600
+        os.utime(path, (old, old))
+    scan_archive_files(root, db, r2_prefix="raw/pacifica/full_fidelity")
+    runner = FakeRcloneRunner()
+
+    result = upload_then_verify(
+        db,
+        remote_base="r2:bucket",
+        runner=runner,
+        upload_limit=3,
+        verify_limit=1,
+        min_upload_age_seconds=7200,
+        upload_order="newest-first",
+    )
+
+    assert result == {
+        "upload": {"uploaded": 3, "skipped": 0, "failed": 0},
+        "verify": {"verified": 1, "failed": 0, "skipped": 0},
+    }
+    copy_commands = [cmd for cmd, _ in runner.commands if cmd[0] == "copyto"]
+    size_commands = [cmd for cmd, _ in runner.commands if cmd[0] == "size"]
+    assert len(copy_commands) == 3
+    assert len(size_commands) == 1
+    with connect_state(db) as conn:
+        statuses = [
+            row[0]
+            for row in conn.execute(
+                "select status from archive_files order by object_key"
+            ).fetchall()
+        ]
+    assert statuses.count("verified") == 1
+    assert statuses.count("uploaded") == 2
