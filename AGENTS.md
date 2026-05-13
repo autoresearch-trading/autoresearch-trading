@@ -109,6 +109,14 @@ Walk-forward validation harness:
 - thresholds are fixed; do not tune thresholds on the current sample.
 - no alpha claims: PASS verdicts are not permission to paper/live trade.
 
+Trade-activity lineage audit:
+
+- `scripts/audit_pacifica_trade_activity_lineage.py`
+- report: `docs/experiments/trade-activity-lineage/README.md`
+- diagnostic-only trace from raw trades to silver trades to regime `trade_count`/`trade_notional` to eligibility activity metrics.
+- use this before interpreting zero activity gates; it can distinguish sparse trade minutes, stale silver/regime artifacts, and true raw/silver/regime lineage breaks.
+- no alpha claims: PASS only means the audited plumbing is internally consistent.
+
 ## Interpretation discipline
 
 The full-fidelity archive is still young. Treat early reports as plumbing diagnostics until day/sample gates pass.
@@ -130,7 +138,7 @@ Follow `docs/NEXT_SESSION_HANDOFF.md` if it differs from this list. Otherwise:
 2. Refresh silver from raw archive.
 3. Rebuild the 1-minute non-HFT regime-state table across all live symbols.
 4. Rerun the fixed toxic-regime overlay probe without changing thresholds.
-5. Add explicit paper-trading eligibility gates before any strategy can trade all symbols.
+5. Rerun paper-trading eligibility gates and the trade-activity lineage audit before interpreting activity failures.
 6. Build sparse strategy/backtest/paper logger only after economics gates and baselines are specified.
 
 ## Useful inspection commands

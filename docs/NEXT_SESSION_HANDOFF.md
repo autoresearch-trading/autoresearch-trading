@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-13 21:40 UTC
+Updated: 2026-05-13 22:18 UTC
 
 ## Current state
 
@@ -14,6 +14,100 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-13 trade-activity lineage audit
+
+Timestamp: `2026-05-13T22:18Z`
+
+Implemented a TDD-tested diagnostic audit for the current zero-activity eligibility concern. This is plumbing validation only; it is not a strategy, alpha claim, or paper-trading permission.
+
+Added:
+
+```text
+scripts/audit_pacifica_trade_activity_lineage.py
+  - traces raw `channel=trades` JSONL.GZ -> silver `channel=trades` parquet -> regime `trade_count`/`trade_notional` -> eligibility activity metrics.
+  - default target selection audits BTC/ETH/SOL plus the first symbols from eligibility, capped by `--max-symbols`.
+  - writes `docs/experiments/trade-activity-lineage/README.md`, `symbol_summary.csv`, and `date_summary.csv`.
+  - fails closed on missing required regime columns and non-empty silver trade files missing required columns.
+  - reports raw/silver row and notional deltas, silver/regime trade-count and notional deltas, active trade bucket share, all-row vs active-row trade-notional medians, and diagnostic notes.
+
+tests/scripts/test_audit_pacifica_trade_activity_lineage.py
+  - RED/GREEN coverage for sparse-trade zero-median explanation, silver/regime mismatch failure, report artifact language, direct script execution, and missing-regime-column fail-closed behavior.
+
+AGENTS.md
+  - active pipeline now lists the trade-activity lineage audit.
+```
+
+Current local diagnostic run:
+
+```text
+uv run python scripts/audit_pacifica_trade_activity_lineage.py --max-symbols 10
+verdict: LINEAGE_AUDIT_FAIL_DIAGNOSTIC
+symbols_audited: 10
+wrote report: docs/experiments/trade-activity-lineage/README.md
+
+Audited symbols:
+  BTC, ETH, SOL, WLFI, kPEPE, CRV, PUMP, XRP, 2Z, AVAX
+
+Failure counters:
+  raw/silver mismatches: 10 symbols
+  silver/regime trade-count mismatches: 0 symbols
+  sparse-trade zero-median explanations: 0 symbols (strict raw->silver->regime pass required)
+  unexplained zero medians: 0 symbols
+```
+
+Interpretation:
+
+```text
+1. The current eligibility `median_trade_notional_per_min=0` is consistent with sparse trade minutes across all existing regime rows for audited symbols: active trade bucket share was only about 7-10%. The all-row median can be zero even when active trade minutes exist.
+2. Silver -> regime trade aggregation lined up for audited symbols (`silver_regime_trade_count_delta=0`). That means the current regime table is not dropping current silver trade rows for those symbols.
+3. Raw -> silver mismatches are still present because the local raw cache now contains trades beyond the current silver/regime/eligibility artifacts, and some overlapping early-date raw rows are not represented in current silver. Because raw -> silver is not clean, the audit intentionally does not mark zero medians as fully explained. Treat current eligibility as stale until silver/regime/eligibility are refreshed from the latest raw archive and the audit is rerun.
+```
+
+Next commands after ops freshness is confirmed:
+
+```bash
+# Follow the side-by-side flow in docs/ops/pacifica-incremental-refresh/README.md.
+# Do not overwrite canonical silver/regime artifacts until candidate verification is green and manually reviewed.
+RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
+MANIFEST_DIR=data/ops/pacifica-source-manifest
+CANDIDATE_SILVER=data/pacifica_silver_partitioned_candidate_${RUN_TS}
+CANDIDATE_REGIME=data/ops/pacifica-regime-candidate-${RUN_TS}
+VERIFY_DIR=docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification
+mkdir -p "$MANIFEST_DIR"
+
+uv run python scripts/build_pacifica_source_manifest.py \
+  --raw-dir data/pacifica_full_fidelity \
+  --out "$MANIFEST_DIR/source_manifest_${RUN_TS}.csv" \
+  --previous "$MANIFEST_DIR/source_manifest_previous.csv" \
+  --verify-sha \
+  --count-rows \
+  --plan-out "$MANIFEST_DIR/incremental_plan_${RUN_TS}.csv"
+
+uv run python scripts/build_pacifica_full_fidelity_silver.py \
+  --layout incremental \
+  --raw-dir data/pacifica_full_fidelity \
+  --out-dir "$CANDIDATE_SILVER" \
+  --source-manifest "$MANIFEST_DIR/source_manifest_${RUN_TS}.csv" \
+  --previous-source-manifest "$MANIFEST_DIR/source_manifest_previous.csv"
+
+uv run python scripts/build_non_hft_regime_state.py \
+  --silver-dir "$CANDIDATE_SILVER" \
+  --out-dir "$CANDIDATE_REGIME" \
+  --bucket 1min
+
+uv run python scripts/verify_pacifica_side_by_side_refresh.py \
+  --canonical-silver-dir data/pacifica_silver_partitioned \
+  --candidate-silver-dir "$CANDIDATE_SILVER" \
+  --canonical-regime-dir docs/experiments/non-hft-regime-state \
+  --candidate-regime-dir "$CANDIDATE_REGIME" \
+  --out-dir "$VERIFY_DIR"
+
+# After verified promotion / refreshed canonical eligibility, rerun:
+uv run python scripts/audit_pacifica_trade_activity_lineage.py --max-symbols 10
+```
+
+Do not weaken the activity gate based on this diagnostic. First refresh silver/regime/eligibility, then use the lineage audit to decide whether the activity metric should stay as an all-row median, move to an active-minute metric, or become a two-part gate.
 
 ## Latest 2026-05-13 live ops remediation — R2 freshness + watchdog race
 
