@@ -116,6 +116,10 @@ Focused regression:
   uv run pytest tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_check_pacifica_r2_archive_health.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_plan_pacifica_ops_alerts.py -q
   23 passed
   git diff --check passed
+
+Commit/push:
+  806d84e feat(pacifica): harden R2 archive health report
+  pushed to origin/main
 ```
 
 Remaining caveat: this does not replace the lifecycle DB health counters. The report proves the bounded sampled R2 prefixes have payload/sidecar/gzip health and freshness at report time; a future full-bucket inventory still needs to complete cleanly before claiming archive-wide pairing/orphan coverage.
