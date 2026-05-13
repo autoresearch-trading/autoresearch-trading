@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-13 19:14 UTC
+Updated: 2026-05-13 21:40 UTC
 
 ## Current state
 
@@ -14,6 +14,153 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-13 live ops remediation — R2 freshness + watchdog race
+
+Timestamp: `2026-05-13T21:40Z`
+
+Highest live blocker handled: bounded R2 freshness was green after the v28 slow-safety cycle, but a Fly-side watchdog later failed while overlapping the lifecycle upload/sidecar-repair window, and a post-deploy local check exposed the payload freshness SLO still had a narrow stale gap.
+
+Live evidence before fixes:
+
+```text
+Fly status before changes:
+  app=pacifica-full-fidelity
+  machine=e2862502a76778
+  version=28
+  state=started
+  image=pacifica-full-fidelity:deployment-01KRGTS1E1VQQ537ZGDQJ34V48
+
+Fly health/log evidence before v29/v30:
+  2026-05-13T20:20:51Z ops watchdog reported failures
+  watchdog latest_status at 2026-05-13T20:20:44Z:
+    ok=false
+    operation=r2_freshness_check returncode=2
+    failures=[R2_SIDECAR_MISSING]
+    latest_payload_age_min=133.91
+    sidecar_missing_count=4
+  Local rerun at 2026-05-13T20:41:20Z:
+    ok=true, failures=[], latest_payload_age_min=155.79, sidecar_missing_count=0
+
+After deploying the retry-only watchdog fix, the R2 freshness SLO still crossed stale at 2026-05-13T21:07:14Z:
+  ok=false
+  failures=[R2_REMOTE_FRESHNESS_STALE]
+  latest_payload=channel=bbo/symbol=BTC/date=2026-05-13/hour=17/run-20260513T141137Z.jsonl.gz
+  latest_payload_age_min=181.69
+  sidecar_missing_count=0
+```
+
+Root cause interpretation:
+
+```text
+1. The watchdog can run while the lifecycle fresh lane has copied payloads but before `repair-sidecars` finishes. That is a transient sidecar-lag race, not archive corruption.
+2. `PACIFICA_FULL_FIDELITY_MIN_UPLOAD_AGE_SECONDS=7200` was too tight for a 180-minute R2 payload freshness SLO because hourly chunks close several minutes after the hour and the lifecycle loop also scans/uploads/sleeps. A just-closed hour could miss one cycle and leave sampled payload mtime just past 180 minutes.
+```
+
+Implemented and pushed:
+
+```text
+e7a3443 fix(pacifica): retry transient R2 sidecar lag
+  scripts/run_pacifica_fly_ops_watchdogs.py
+    - retries only when bounded freshness fails solely with R2_SIDECAR_MISSING,
+      latest payload is still fresh, sidecar_missing_count > 0, and listing_errors is empty.
+    - does not retry stale/mixed/listing-error/non-numeric/missing-count failures.
+    - default retry: one attempt after 300s; env overrides:
+      PACIFICA_R2_FRESHNESS_SIDECAR_RETRY_ATTEMPTS
+      PACIFICA_R2_FRESHNESS_SIDECAR_RETRY_DELAY_S
+  tests/scripts/test_run_pacifica_fly_ops_watchdogs.py
+    - regression for transient sidecar-lag retry.
+    - negative regression that stale/mixed/listing-error/non-numeric/missing-count cases are not masked.
+
+d48950e fix(pacifica): restore R2 freshness margin
+  scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  ops/fly/pacifica-full-fidelity/entrypoint.sh
+  ops/fly/pacifica-full-fidelity/fly.toml
+    - lowers PACIFICA_FULL_FIDELITY_MIN_UPLOAD_AGE_SECONDS from 7200 to 5400.
+    - keeps `--skip-current-hour` scanning; still requires 90 minutes since file mtime before upload.
+  tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+    - enforces lifecycle default, Fly runtime env, and entrypoint fallback all use 5400.
+```
+
+Verification:
+
+```text
+RED:
+  uv run pytest tests/scripts/test_run_pacifica_fly_ops_watchdogs.py::test_run_once_retries_transient_sidecar_lag_before_failing_watchdog -q
+  failed with missing WatchdogConfig retry fields.
+
+GREEN for v29:
+  python -m py_compile scripts/run_pacifica_fly_ops_watchdogs.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py
+  uv run pytest tests/scripts/test_run_pacifica_fly_ops_watchdogs.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_plan_pacifica_ops_alerts.py -q
+  20 passed
+
+RED for v30:
+  uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py::test_lifecycle_default_min_upload_age_has_freshness_margin tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py::test_fly_runtime_min_upload_age_has_freshness_margin -q
+  failed because runtime/default min upload age was still 7200.
+
+GREEN for v30:
+  bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh ops/fly/pacifica-full-fidelity/entrypoint.sh
+  python -m py_compile tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py tests/scripts/test_plan_pacifica_ops_alerts.py -q
+  53 passed
+
+Independent reviews:
+  - v29 watchdog retry review passed; no security concerns or logic errors.
+  - v30 min-upload-age review passed; no destructive raw/R2 behavior added and skip-current-hour + 90-minute mtime age was considered safe.
+```
+
+Deployments:
+
+```text
+v29 deploy:
+  image=registry.fly.io/pacifica-full-fidelity:deployment-01KRHHW7B3HPH1M3K1CNH4HEHB
+  machine=e2862502a76778
+  version=29
+  state=started
+  last_updated=2026-05-13T20:55:06Z
+
+v30 deploy:
+  image=registry.fly.io/pacifica-full-fidelity:deployment-01KRHKTRDN862V3YA274ZNE27J
+  machine=e2862502a76778
+  version=30
+  state=started
+  last_updated=2026-05-13T21:29:17Z
+```
+
+Post-v30 evidence:
+
+```text
+Local bounded R2 freshness at 2026-05-13T21:34:50Z:
+  ok=true
+  failures=[]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-13/hour=18/run-20260513T141137Z.jsonl.gz
+  latest_payload_modified=2026-05-13T19:07:16Z
+  latest_payload_age_min=147.58
+  payload_count=206
+  sidecar_count=206
+  sidecar_missing_count=0
+
+Remote Fly-side watchdog artifact copied from R2 at 2026-05-13T21:36Z:
+  checked_at=2026-05-13T21:35:58Z
+  ok=true
+  operation=r2_freshness_check returncode=0
+  stderr_tail=retry_after_transient_sidecar_lag: attempt=1 delay_s=300
+  latest_payload_age_min=147.53
+  sidecar_missing_count=0
+
+Fly status at 2026-05-13T21:36Z:
+  version=30
+  state=started
+  image=pacifica-full-fidelity:deployment-01KRHKTRDN862V3YA274ZNE27J
+```
+
+Remaining watch items:
+
+- v30 is green immediately after sidecar repair and the watchdog retry worked, but watch one more normal lifecycle/watchdog hour to confirm the 5400s upload age keeps bounded R2 freshness under 180 minutes without repeated retries.
+- The uploaded/unverified backlog remains large (`unverified_gb` about 50.07 in the latest Fly health log). Slow safety-lane verify/prune did run earlier, but archive health is not fully recovered until verify/prune throughput stays positive across safety cycles and full/broader inventory checks are green.
+- Do not treat the committed bounded R2 report as full-bucket proof. Full recursive live R2 listing from the laptop still timed out at 600s in this session.
+- Direct Fly SSH should still not be retried in the denied form. Prefer Fly status/logs, Fly health output, R2 watchdog artifacts, and bounded/local R2 samples.
+- Local working tree still had unrelated generated docs under `docs/ops/pacifica-api-surface-watch/` and `docs/ops/pacifica-r2-archive-health/` dirty before this handoff update; do not include them in lifecycle commits unless intentionally refreshing those reports.
 
 ## Latest 2026-05-13 walk-forward validation hardening
 
