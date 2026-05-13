@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-13 00:05 UTC
+Updated: 2026-05-13 12:35 UTC
 
 ## Current state
 
@@ -15,7 +15,116 @@ Canonical active runtime/archive:
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
 
-## Latest 2026-05-13 v26 sidecar repair fresh-lane remediation
+## Latest 2026-05-13 v27 post-safety fresh catch-up remediation
+
+Timestamp: `2026-05-13T12:35Z`
+
+Version 26 fixed missing `.sha256` sidecars in the frequent fresh lane, but R2 freshness still went stale after the next slow safety lane. Live bounded check at `2026-05-13T12:20:09Z` failed:
+
+```text
+ok=false
+failure=R2_REMOTE_FRESHNESS_STALE
+latest_payload=channel=bbo/symbol=BTC/date=2026-05-13/hour=07/run-20260513T000011Z.jsonl.gz
+latest_payload_modified=2026-05-13T08:05:17Z
+latest_payload_age_min=254.88
+sidecar_missing_count=0
+```
+
+Root cause evidence:
+
+```text
+v26 Fly logs:
+2026-05-13T10:37:14Z lifecycle start
+2026-05-13T10:38:47Z recent scan scanned=5517
+2026-05-13T10:46:38Z fresh upload uploaded=2000 failed=0
+2026-05-13T10:48:26Z sidecar repair sidecars_uploaded=2000 failed=0
+2026-05-13T11:09:55Z broad full scan scanned=99304
+2026-05-13T12:04:24Z upload-verify uploaded=250 verified=500 failed=0
+2026-05-13T12:04:54Z lifecycle complete
+2026-05-13T12:10:38Z local health output completed
+```
+
+Interpretation: the slow safety lane was correctly gated to every 6h, but when it did run it still blocked the next fresh upload for ~1h16m, then the entrypoint ran a multi-minute local health check and slept. With `PACIFICA_FULL_FIDELITY_MIN_UPLOAD_AGE_SECONDS=7200`, that is enough to push sampled R2 object freshness past the 180-minute SLO even though uploads and sidecar repair had no errors.
+
+Implemented:
+
+```text
+scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  - factored recent scan + fresh upload-batch + repair-sidecars into run_fresh_lane().
+  - normal lifecycle still starts with the fresh lane.
+  - if the slow safety lane runs, it now marks the safety marker and then runs a second post-safety fresh catch-up before returning to entrypoint health-check/sleep.
+  - no remote/local deletion behavior changed.
+  - no concurrent lifecycle writers added; the catch-up runs sequentially in the same lifecycle process and SQLite connection pattern.
+
+tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  - regression: safety-lane cycles must run a second recent scan/upload-batch/repair-sidecars after prune and before returning.
+```
+
+Verification:
+
+```text
+RED:
+  uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py::test_lifecycle_runs_post_safety_fresh_catchup_before_returning -q
+  failed: expected 2 fresh scans, got 1
+
+GREEN/focused:
+  bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  python -m py_compile tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_plan_pacifica_ops_alerts.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py -q
+  48 passed
+  git diff --check passed
+
+Post-commit hook reran formatting; post-commit verification repeated and stayed green:
+  48 passed
+```
+
+Commit/push:
+
+```text
+5f1e260 fix(pacifica): refresh after slow safety lane
+pushed to origin/main
+```
+
+Deployment:
+
+```text
+flyctl deploy . -c ops/fly/pacifica-full-fidelity/fly.toml --dockerfile ops/fly/pacifica-full-fidelity/Dockerfile --app pacifica-full-fidelity --remote-only
+image=registry.fly.io/pacifica-full-fidelity:deployment-01KRGMPSPBMFZ8QC7G3282SQW6
+machine=e2862502a76778
+version=27
+state=started
+last_updated=2026-05-13T12:25:10Z
+```
+
+Post-deploy evidence:
+
+```text
+v27 first lifecycle cycle:
+2026-05-13T12:25:10Z lifecycle start
+2026-05-13T12:27:01Z recent scan scanned=5489
+2026-05-13T12:30:48Z fresh upload uploaded=2000 failed=0
+2026-05-13T12:32:39Z sidecar repair sidecars_uploaded=2000 failed=0
+2026-05-13T12:32:39Z full_scan_skipped reason=backlog_lane_not_due
+2026-05-13T12:32:39Z backlog_lane_skipped interval_s=21600
+2026-05-13T12:32:39Z lifecycle complete
+
+Bounded local R2 freshness at 2026-05-13T12:33:16Z:
+  ok=true
+  failures=[]
+  latest_payload=channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=09/run-20260513T000011Z.jsonl.gz
+  latest_payload_modified=2026-05-13T10:03:53Z
+  latest_payload_age_min=149.40
+  payload_count=159
+  sidecar_count=159
+  sidecar_missing_count=0
+```
+
+Remaining watch item:
+
+- v27 proves normal fresh uploads recover the bounded R2 checker and has a regression test for post-safety catch-up. The next real slow safety lane is not expected until roughly 6h after the last marker (`~2026-05-13T18:04Z` from observed v26 safety completion). After that cycle, verify logs show `post_safety_fresh_catchup=true`, a second recent scan/upload/repair, and bounded R2 freshness still under 180 minutes.
+- Fly SSH diagnostics were blocked/denied in this session; do not retry the denied SSH form. Continue using Fly status/logs, bounded R2 samples, uploaded watchdog reports, and local repo tests unless explicit approval is given.
+
+## Superseded 2026-05-13 v26 sidecar repair fresh-lane remediation
 
 Timestamp: `2026-05-13T00:05Z`
 
