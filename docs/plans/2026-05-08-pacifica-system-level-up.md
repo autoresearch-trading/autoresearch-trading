@@ -89,26 +89,24 @@ Acceptance tests:
 
 ## Phase 3: No-trade regime governor
 
-Status: implemented 2026-05-08.
+Status: implemented 2026-05-08; v2 diagnostic-only state set implemented 2026-05-13.
 
-**Objective:** Convert regime-state diagnostics into explicit live/paper-trading decisions.
+**Objective:** Convert regime-state diagnostics into explicit diagnostic-only no-trade decisions. This is a governor/risk layer, not a strategy.
 
 **Files:**
 - Create: `scripts/build_pacifica_regime_governor.py`
 - Create: `tests/scripts/test_build_pacifica_regime_governor.py`
 - Output: `docs/experiments/regime-governor/README.md`
 
-States:
-- `TRADABLE_DIAGNOSTIC`
-- `REDUCE_SIZE_DIAGNOSTIC`
-- `SKIP_TOXIC_REGIME`
-- `SKIP_WIDE_SPREAD`
-- `SKIP_THIN_DEPTH`
+Current v2 states:
 - `SKIP_STALE_DATA`
-- `SKIP_MARK_DISLOCATION`
-- `SKIP_FORCED_FLOW_AFTERSHOCK`
+- `SKIP_WIDE_SPREAD`
+- `SKIP_LOW_DEPTH`
+- `SKIP_TOXIC_REGIME`
+- `SKIP_MARK_ORACLE_DISLOCATION`
+- `TRADABLE_DIAGNOSTIC`
 
-Rules must be fixed and documented before serious validation windows accrue.
+`TRADABLE_DIAGNOSTIC` means only "not blocked by this diagnostic governor"; it is not a trade signal, alpha claim, or permission to paper/live trade. Rules must be fixed and documented before serious validation windows accrue.
 
 ## Phase 4: Online/offline parity harness
 
@@ -135,7 +133,7 @@ Acceptance tests:
 
 ## Phase 5: Walk-forward validation harness
 
-Status: implemented 2026-05-08.
+Status: implemented 2026-05-08; fail-closed/OOS-only hardening added 2026-05-13.
 
 **Objective:** Standardize chronological validation for every future idea.
 
@@ -152,7 +150,7 @@ Verdicts:
 - `VALIDATION_GRADE_PASS`
 - `VALIDATION_GRADE_FAIL`
 
-Must include purged chronological windows, concentration gates, and random same-frequency controls.
+Must include purged chronological windows, OOS-only verdict maturity, random same-frequency controls sampled from OOS rows, dumb baseline scorecards, day/symbol/hour concentration gates, invalid-input accounting, and fail-closed CLI semantics. Thresholds are fixed; do not tune on the current sample, and do not frame any diagnostic report as alpha evidence.
 
 ## Phase 6: Symbol lifecycle promotion/demotion
 

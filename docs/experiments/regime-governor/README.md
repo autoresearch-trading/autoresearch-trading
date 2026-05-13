@@ -2,55 +2,71 @@
 
 Verdict: `DIAGNOSTIC_GOVERNOR_RULES_ONLY`
 
-This report converts non-HFT Pacifica regime-state rows into fixed diagnostic
-rules for skipping, reducing size, or allowing diagnostic-only trading states.
-It does not authorize paper trading, does not create a strategy, and does not
-change the current archive maturity verdict. The fixed diagnostic rules below
-must remain fixed while enough fresh days accrue for validation.
+This report converts non-HFT Pacifica regime-state rows into fixed diagnostic-only
+skip states plus `TRADABLE_DIAGNOSTIC`. It does not authorize paper trading, does
+not create a strategy, and does not change the current archive maturity verdict.
+The fixed diagnostic rules below must remain fixed while enough fresh days accrue
+for validation.
+
+`TRADABLE_DIAGNOSTIC` means only that this diagnostic governor did not block the
+row. It is not a trade signal, not alpha evidence, and not permission to paper or
+live trade.
+
+## Latest regime-state schema requirements
+
+The governor fails closed unless every input row has these required columns:
+
+| required_column |
+| --- |
+| avg_spread_bps |
+| bbo_updates |
+| bucket_start_ms |
+| mark_oracle_basis_abs_bps |
+| price_updates |
+| symbol |
+| top_depth_notional |
+| toxicity_score |
+| trade_count |
+| trade_notional |
+
+Missing columns raise. Null key columns raise. NaN/non-numeric safety metrics are
+coerced to conservative values that trigger `SKIP_*` states rather than
+`TRADABLE_DIAGNOSTIC`. Invalid/non-finite thresholds raise before classification.
 
 ## Fixed diagnostic rules
 
-Threshold version: `pacifica_governor_v1_fixed_diagnostic`
+Threshold version: `pacifica_governor_v2_fixed_diagnostic`
 
-| threshold_version | reduce_toxicity_score | skip_toxicity_score | max_spread_bps | min_top_depth_notional | max_mark_oracle_basis_abs_bps | forced_flow_liquidation_notional | min_bbo_updates | min_trade_notional |
+| threshold_version | skip_toxicity_score | max_spread_bps | min_top_depth_notional | max_mark_oracle_basis_abs_bps | min_bbo_updates | min_trade_count | min_trade_notional | min_price_updates |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| pacifica_governor_v1_fixed_diagnostic | 0.6000 | 0.9000 | 40 | 1000 | 100 | 100000 | 1 | 1 |
+| pacifica_governor_v2_fixed_diagnostic | 0.9000 | 40 | 1000 | 100 | 1 | 1 | 1 | 1 |
 
 Decision precedence:
 
-1. `SKIP_STALE_DATA`
-2. `SKIP_FORCED_FLOW_AFTERSHOCK`
-3. `SKIP_MARK_DISLOCATION`
-4. `SKIP_TOXIC_REGIME`
-5. `SKIP_WIDE_SPREAD`
-6. `SKIP_THIN_DEPTH`
-7. `REDUCE_SIZE_DIAGNOSTIC`
-8. `TRADABLE_DIAGNOSTIC`
+1. `SKIP_STALE_DATA` — stale/missing BBO, trade, or price feed activity.
+2. `SKIP_WIDE_SPREAD` — average spread is at or above the fixed maximum.
+3. `SKIP_LOW_DEPTH` — top-of-book depth is below the fixed minimum.
+4. `SKIP_TOXIC_REGIME` — toxicity score is at or above the fixed skip threshold.
+5. `SKIP_MARK_ORACLE_DISLOCATION` — mark/oracle basis is at or above the fixed maximum.
+6. `TRADABLE_DIAGNOSTIC` — diagnostic-only state; not a trade signal.
 
 ## Decision summary
 
 | governor_decision | rows | skip_rows | row_share | skip_rate |
 | --- | --- | --- | --- | --- |
-| TRADABLE_DIAGNOSTIC | 3383 | 0 | 0.0065 | 0 |
-| REDUCE_SIZE_DIAGNOSTIC | 8344 | 0 | 0.0160 | 0 |
-| SKIP_TOXIC_REGIME | 1 | 1 | 0.0000 | 1 |
-| SKIP_WIDE_SPREAD | 187 | 187 | 0.0004 | 1 |
-| SKIP_THIN_DEPTH | 1017 | 1017 | 0.0020 | 1 |
-| SKIP_STALE_DATA | 506826 | 506826 | 0.9748 | 1 |
-| SKIP_MARK_DISLOCATION | 145 | 145 | 0.0003 | 1 |
-| SKIP_FORCED_FLOW_AFTERSHOCK | 0 | 0 | 0 | 0 |
+| SKIP_STALE_DATA | 506956 | 506956 | 0.9751 | 1 |
+| SKIP_WIDE_SPREAD | 203 | 203 | 0.0004 | 1 |
+| SKIP_LOW_DEPTH | 1017 | 1017 | 0.0020 | 1 |
+| SKIP_TOXIC_REGIME | 0 | 0 | 0 | 0 |
+| SKIP_MARK_ORACLE_DISLOCATION | 0 | 0 | 0 | 0 |
+| TRADABLE_DIAGNOSTIC | 11727 | 0 | 0.0226 | 0 |
 
 ## Interpretation discipline
 
-- `TRADABLE_DIAGNOSTIC` means the row passed this diagnostic governor only; it is not a trade signal.
-- `REDUCE_SIZE_DIAGNOSTIC` is a future sizing constraint, not permission to trade.
+- `TRADABLE_DIAGNOSTIC` means only "not blocked by this diagnostic governor"; it is not a trade signal.
 - All `SKIP_*` rows should be excluded from future strategy adapters unless a later pre-registered experiment explicitly tests otherwise.
 - These thresholds are intentionally fixed and should not be tuned on the current young archive.
-
-## Next system-upgrade phase
-
-Build online/offline feature parity checks before using live microbatch features
-for decisions.
+- A future paper-trading adapter still needs explicit symbol eligibility, cost/slippage, sample-size, stability, concentration, and post-cost validation gates.
 
 ## Large local artifact
 

@@ -34,6 +34,7 @@ class WalkForwardConfig:
     min_test_rows: int = 20
     max_day_concentration: float = 0.25
     max_symbol_concentration: float = 0.50
+    max_hour_concentration: float = 0.50
     random_control_trials: int = 100
     random_seed: int = 17
     min_random_control_beaten_rate: float = 0.50
@@ -49,6 +50,7 @@ class WalkForwardResult:
     summary: dict[str, Any]
     windows: pd.DataFrame
     window_scorecard: pd.DataFrame
+    baseline_scorecard: pd.DataFrame
     random_controls: pd.DataFrame
 
 
@@ -91,6 +93,18 @@ def _read_frame(path: Path) -> pd.DataFrame:
     raise ValueError(f"unsupported input extension: {path.suffix}")
 
 
+def _baseline_columns(frame: pd.DataFrame) -> list[str]:
+    columns: list[str] = []
+    if "baseline_return_bps" in frame.columns:
+        columns.append("baseline_return_bps")
+    for column in frame.columns:
+        if column == "baseline_return_bps":
+            continue
+        if column.endswith("_baseline_return_bps"):
+            columns.append(str(column))
+    return columns
+
+
 def _parse_eligible(value: Any) -> bool | None:
     if pd.isna(value):
         return False
@@ -115,15 +129,27 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"validation input missing required columns: {missing}")
     out = frame.copy()
+    baseline_columns = _baseline_columns(out)
 
     timestamp = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
     strategy = pd.to_numeric(out["strategy_return_bps"], errors="coerce")
-    baseline = pd.to_numeric(out["baseline_return_bps"], errors="coerce")
+    parsed_baselines = {
+        column: pd.to_numeric(out[column], errors="coerce")
+        for column in baseline_columns
+    }
+    baseline = parsed_baselines["baseline_return_bps"]
     symbol_raw = out["symbol"]
     symbol_missing = symbol_raw.isna() | (symbol_raw.astype(str).str.strip() == "")
     timestamp_invalid = timestamp.isna()
     strategy_invalid = strategy.isna() | ~strategy.map(math.isfinite)
     baseline_invalid = baseline.isna() | ~baseline.map(math.isfinite)
+    optional_baseline_invalid = pd.Series(False, index=out.index)
+    for column, values in parsed_baselines.items():
+        if column == "baseline_return_bps":
+            continue
+        optional_baseline_invalid = (
+            optional_baseline_invalid | values.isna() | ~values.map(math.isfinite)
+        )
 
     eligible_invalid = pd.Series(False, index=out.index)
     filtered_ineligible = 0
@@ -139,20 +165,27 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
         timestamp_invalid
         | strategy_invalid
         | baseline_invalid
+        | optional_baseline_invalid
         | symbol_missing
         | eligible_invalid
     )
     out["timestamp"] = timestamp
     out["strategy_return_bps"] = strategy
-    out["baseline_return_bps"] = baseline
+    for column, values in parsed_baselines.items():
+        out[column] = values
     out["symbol"] = symbol_raw.astype("string").str.strip()
     out = out[~invalid_mask & eligible_true].copy()
     out["date"] = out["timestamp"].dt.strftime("%Y-%m-%d")
+    out["hour"] = out["timestamp"].dt.hour.astype(int)
     out = out.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    out.attrs["baseline_columns"] = baseline_columns
     out.attrs["invalid_timestamp_rows"] = int(timestamp_invalid.sum())
     out.attrs["invalid_symbol_rows"] = int(symbol_missing.sum())
     out.attrs["invalid_strategy_return_rows"] = int(strategy_invalid.sum())
     out.attrs["invalid_baseline_return_rows"] = int(baseline_invalid.sum())
+    out.attrs["invalid_optional_baseline_return_rows"] = int(
+        optional_baseline_invalid.sum()
+    )
     out.attrs["invalid_eligible_rows"] = int(eligible_invalid.sum())
     out.attrs["invalid_required_rows"] = int(invalid_mask.sum())
     out.attrs["filtered_ineligible_rows"] = filtered_ineligible
@@ -183,6 +216,7 @@ def _validate_config(config: WalkForwardConfig) -> None:
     for name, value in {
         "max_day_concentration": config.max_day_concentration,
         "max_symbol_concentration": config.max_symbol_concentration,
+        "max_hour_concentration": config.max_hour_concentration,
         "min_random_control_beaten_rate": config.min_random_control_beaten_rate,
     }.items():
         if not math.isfinite(value) or value < 0 or value > 1:
@@ -337,6 +371,7 @@ def _score_windows(data: pd.DataFrame, windows: pd.DataFrame) -> pd.DataFrame:
                 "max_drawdown_bps": _max_drawdown_bps(returns),
                 "max_day_concentration": _max_concentration(test, "date"),
                 "max_symbol_concentration": _max_concentration(test, "symbol"),
+                "max_hour_concentration": _max_concentration(test, "hour"),
             }
         )
     return pd.DataFrame(rows)
@@ -386,11 +421,61 @@ def _random_controls(
     return pd.DataFrame(rows)
 
 
+def _baseline_scorecard(data: pd.DataFrame, windows: pd.DataFrame) -> pd.DataFrame:
+    columns = list(data.attrs.get("baseline_columns", _baseline_columns(data)))
+    if not columns:
+        return pd.DataFrame(
+            columns=[
+                "baseline_column",
+                "oos_rows",
+                "strategy_pnl_bps",
+                "baseline_pnl_bps",
+                "excess_vs_baseline_bps",
+                "baseline_sortino",
+                "baseline_max_drawdown_bps",
+            ]
+        )
+    oos = _oos_test_rows(data, windows)
+    if oos.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "baseline_column": column,
+                    "oos_rows": 0,
+                    "strategy_pnl_bps": 0.0,
+                    "baseline_pnl_bps": 0.0,
+                    "excess_vs_baseline_bps": 0.0,
+                    "baseline_sortino": math.nan,
+                    "baseline_max_drawdown_bps": math.nan,
+                }
+                for column in columns
+            ]
+        )
+    strategy_total = float(oos["strategy_return_bps"].sum())
+    rows: list[dict[str, Any]] = []
+    for column in columns:
+        baseline_returns = oos[column]
+        baseline_total = float(baseline_returns.sum())
+        rows.append(
+            {
+                "baseline_column": column,
+                "oos_rows": int(len(oos)),
+                "strategy_pnl_bps": strategy_total,
+                "baseline_pnl_bps": baseline_total,
+                "excess_vs_baseline_bps": strategy_total - baseline_total,
+                "baseline_sortino": _sortino(baseline_returns),
+                "baseline_max_drawdown_bps": _max_drawdown_bps(baseline_returns),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _summary_from_scores(
     data: pd.DataFrame,
     windows: pd.DataFrame,
     scores: pd.DataFrame,
     controls: pd.DataFrame,
+    baseline_scorecard: pd.DataFrame,
 ) -> dict[str, Any]:
     total_net = float(scores["net_pnl_bps"].sum()) if not scores.empty else 0.0
     total_baseline = (
@@ -400,16 +485,26 @@ def _summary_from_scores(
     if not controls.empty:
         beaten_rate = float((total_net > controls["net_pnl_bps"]).mean())
     oos = _oos_test_rows(data, windows)
+    baseline_columns = list(data.attrs.get("baseline_columns", _baseline_columns(data)))
+    min_excess_vs_any_baseline = math.nan
+    worst_baseline_column = ""
+    if not baseline_scorecard.empty:
+        min_idx = baseline_scorecard["excess_vs_baseline_bps"].idxmin()
+        min_row = baseline_scorecard.loc[min_idx]
+        min_excess_vs_any_baseline = float(min_row["excess_vs_baseline_bps"])
+        worst_baseline_column = str(min_row["baseline_column"])
     summary = {
         "observations": int(len(data)),
         "distinct_days": int(data["date"].nunique()) if not data.empty else 0,
         "distinct_symbols": int(data["symbol"].nunique()) if not data.empty else 0,
         "max_day_concentration": _max_concentration(data, "date"),
         "max_symbol_concentration": _max_concentration(data, "symbol"),
+        "max_hour_concentration": _max_concentration(data, "hour"),
         "distinct_oos_days": int(oos["date"].nunique()) if not oos.empty else 0,
         "distinct_oos_symbols": int(oos["symbol"].nunique()) if not oos.empty else 0,
         "max_oos_day_concentration": _max_concentration(oos, "date"),
         "max_oos_symbol_concentration": _max_concentration(oos, "symbol"),
+        "max_oos_hour_concentration": _max_concentration(oos, "hour"),
         "max_window_day_concentration": (
             float(scores["max_day_concentration"].max())
             if not scores.empty
@@ -420,6 +515,11 @@ def _summary_from_scores(
             if not scores.empty
             else math.nan
         ),
+        "max_window_hour_concentration": (
+            float(scores["max_hour_concentration"].max())
+            if not scores.empty
+            else math.nan
+        ),
         "validation_windows": int(len(windows)),
         "scored_windows": int(len(scores)),
         "total_test_rows": int(scores["test_rows"].sum()) if not scores.empty else 0,
@@ -427,6 +527,10 @@ def _summary_from_scores(
         "net_pnl_bps": total_net,
         "baseline_pnl_bps": total_baseline,
         "excess_vs_baseline_bps": total_net - total_baseline,
+        "baseline_count": int(len(baseline_columns)),
+        "baseline_columns": ";".join(baseline_columns),
+        "worst_baseline_column": worst_baseline_column,
+        "min_excess_vs_any_baseline_bps": min_excess_vs_any_baseline,
         "sortino": _sortino(scores["net_pnl_bps"]) if not scores.empty else math.nan,
         "max_drawdown_bps": (
             _max_drawdown_bps(scores["net_pnl_bps"]) if not scores.empty else math.nan
@@ -439,6 +543,7 @@ def _summary_from_scores(
         "invalid_symbol_rows",
         "invalid_strategy_return_rows",
         "invalid_baseline_return_rows",
+        "invalid_optional_baseline_return_rows",
         "invalid_eligible_rows",
         "invalid_required_rows",
         "filtered_ineligible_rows",
@@ -453,20 +558,12 @@ def _verdict(
     failures: list[str] = []
     if summary["invalid_required_rows"] > 0:
         failures.append("invalid_required_fields")
-    if summary["distinct_days"] < config.min_diagnostic_days:
-        failures.append("insufficient_distinct_days")
+    if summary["distinct_oos_days"] < config.min_diagnostic_days:
+        failures.append("insufficient_oos_distinct_days")
+    if summary["unique_oos_rows"] == 0:
+        failures.append("no_oos_validation_rows")
     if summary["observations"] == 0:
         failures.append("no_validation_rows")
-    if (
-        math.isfinite(summary["max_day_concentration"])
-        and summary["max_day_concentration"] > config.max_day_concentration
-    ):
-        failures.append("day_concentration_too_high")
-    if (
-        math.isfinite(summary["max_symbol_concentration"])
-        and summary["max_symbol_concentration"] > config.max_symbol_concentration
-    ):
-        failures.append("symbol_concentration_too_high")
     if (
         math.isfinite(summary["max_oos_day_concentration"])
         and summary["max_oos_day_concentration"] > config.max_day_concentration
@@ -478,10 +575,20 @@ def _verdict(
     ):
         failures.append("oos_symbol_concentration_too_high")
     if (
+        math.isfinite(summary["max_oos_hour_concentration"])
+        and summary["max_oos_hour_concentration"] > config.max_hour_concentration
+    ):
+        failures.append("oos_hour_concentration_too_high")
+    if (
         math.isfinite(summary["max_window_symbol_concentration"])
         and summary["max_window_symbol_concentration"] > config.max_symbol_concentration
     ):
         failures.append("window_symbol_concentration_too_high")
+    if (
+        math.isfinite(summary["max_window_hour_concentration"])
+        and summary["max_window_hour_concentration"] > config.max_hour_concentration
+    ):
+        failures.append("window_hour_concentration_too_high")
     minimum_days_for_window_day_gate = math.ceil(1.0 / config.max_day_concentration)
     if (
         config.test_days >= minimum_days_for_window_day_gate
@@ -499,13 +606,14 @@ def _verdict(
 
     sample_failures = {
         "invalid_required_fields",
-        "insufficient_distinct_days",
+        "insufficient_oos_distinct_days",
+        "no_oos_validation_rows",
         "no_validation_rows",
-        "day_concentration_too_high",
-        "symbol_concentration_too_high",
         "oos_day_concentration_too_high",
         "oos_symbol_concentration_too_high",
+        "oos_hour_concentration_too_high",
         "window_symbol_concentration_too_high",
+        "window_hour_concentration_too_high",
         "window_day_concentration_too_high",
         "no_purged_validation_windows",
         "insufficient_test_rows",
@@ -524,6 +632,11 @@ def _verdict(
         or summary["excess_vs_baseline_bps"] <= 0
     ):
         failures.append("baseline_not_beaten")
+    if (
+        not math.isfinite(summary["min_excess_vs_any_baseline_bps"])
+        or summary["min_excess_vs_any_baseline_bps"] <= 0
+    ):
+        failures.append("dumb_baseline_not_beaten")
     if summary["random_control_trials"] > 0 and (
         not math.isfinite(summary["random_controls_beaten_rate"])
         or summary["random_controls_beaten_rate"]
@@ -531,14 +644,8 @@ def _verdict(
     ):
         failures.append("random_controls_not_beaten")
 
-    validation_grade = (
-        summary["distinct_days"] >= config.min_validation_grade_days
-        and summary["distinct_oos_days"] >= config.min_validation_grade_days
-    )
-    provisional = (
-        summary["distinct_days"] >= config.min_provisional_days
-        and summary["distinct_oos_days"] >= config.min_provisional_days
-    )
+    validation_grade = summary["distinct_oos_days"] >= config.min_validation_grade_days
+    provisional = summary["distinct_oos_days"] >= config.min_provisional_days
 
     if failures:
         return (
@@ -562,7 +669,8 @@ def evaluate_walk_forward_validation(
     oos = _oos_test_rows(data, windows)
     rows_to_sample = int(scores["test_rows"].sum()) if not scores.empty else 0
     controls = _random_controls(oos, rows_to_sample=rows_to_sample, config=config)
-    summary = _summary_from_scores(data, windows, scores, controls)
+    baseline_scorecard = _baseline_scorecard(data, windows)
+    summary = _summary_from_scores(data, windows, scores, controls, baseline_scorecard)
     verdict, failures = _verdict(summary, config)
     return WalkForwardResult(
         verdict=verdict,
@@ -570,6 +678,7 @@ def evaluate_walk_forward_validation(
         summary=summary,
         windows=windows,
         window_scorecard=scores,
+        baseline_scorecard=baseline_scorecard,
         random_controls=controls,
     )
 
@@ -592,6 +701,7 @@ def write_walk_forward_report(
 
     result.windows.to_csv(out_dir / "windows.csv", index=False)
     result.window_scorecard.to_csv(out_dir / "window_scorecard.csv", index=False)
+    result.baseline_scorecard.to_csv(out_dir / "baseline_scorecard.csv", index=False)
     result.random_controls.to_csv(out_dir / "random_controls.csv", index=False)
     _summary_table(result.summary).to_csv(out_dir / "summary.csv", index=False)
     pd.DataFrame([asdict(config)]).to_csv(out_dir / "config.csv", index=False)
@@ -602,14 +712,16 @@ Verdict: `{result.verdict}`
 
 Failure reasons: `{';'.join(result.failure_reasons) if result.failure_reasons else 'none'}`
 
-This is a strategy-neutral, non-HFT validation harness. It uses purged chronological windows and random same-frequency controls before any future strategy result can be discussed as evidence. Do not treat this as an edge claim unless sample maturity, concentration, economics, baseline, and control gates all pass.
+This is a strategy-neutral, non-HFT diagnostic validation harness. It uses purged chronological windows, OOS-only verdict maturity, random same-frequency controls, dumb baseline scorecards, day/symbol/hour concentration gates, invalid-input accounting, and fail-closed CLI semantics. No alpha claims: a PASS verdict is only permission to keep investigating a pre-registered strategy result, not evidence to trade live.
 
 ## Interpretation discipline
 
 - `INSUFFICIENT_SAMPLE_DIAGNOSTIC`: plumbing/sample diagnostic only.
-- `EARLY_SANITY_ONLY`: at least {config.min_diagnostic_days} distinct days, but below provisional maturity.
-- `PROVISIONAL_PASS` / `PROVISIONAL_FAIL`: at least {config.min_provisional_days} distinct days.
-- `VALIDATION_GRADE_PASS` / `VALIDATION_GRADE_FAIL`: at least {config.min_validation_grade_days} distinct days.
+- `EARLY_SANITY_ONLY`: OOS-only verdict with at least {config.min_diagnostic_days} distinct OOS days, but below provisional maturity.
+- `PROVISIONAL_PASS` / `PROVISIONAL_FAIL`: OOS-only verdict with at least {config.min_provisional_days} distinct OOS days.
+- `VALIDATION_GRADE_PASS` / `VALIDATION_GRADE_FAIL`: OOS-only verdict with at least {config.min_validation_grade_days} distinct OOS days.
+
+Thresholds are fixed in this harness and must not be tuned on the current sample.
 
 ## Summary
 
@@ -623,6 +735,10 @@ This is a strategy-neutral, non-HFT validation harness. It uses purged chronolog
 
 {dataframe_to_markdown_table(result.window_scorecard, max_rows=20)}
 
+## Dumb baseline scorecard
+
+{dataframe_to_markdown_table(result.baseline_scorecard, max_rows=20)}
+
 ## Random same-frequency controls
 
 {dataframe_to_markdown_table(result.random_controls, max_rows=20)}
@@ -633,6 +749,7 @@ This is a strategy-neutral, non-HFT validation harness. It uses purged chronolog
 - `config.csv`
 - `windows.csv`
 - `window_scorecard.csv`
+- `baseline_scorecard.csv`
 - `random_controls.csv`
 """
     (out_dir / "README.md").write_text(readme)

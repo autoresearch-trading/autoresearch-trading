@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-13 15:12 UTC
+Updated: 2026-05-13 19:14 UTC
 
 ## Current state
 
@@ -14,6 +14,207 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-13 walk-forward validation hardening
+
+Timestamp: `2026-05-13T18:59Z`
+
+Implemented the requested fail-closed, strategy-neutral walk-forward validation layer for future materialized Pacifica strategy-return streams. This is diagnostic infrastructure only; it makes no alpha claims and does not allow paper/live trading.
+
+Updated code/report:
+
+```text
+scripts/run_pacifica_walk_forward_validation.py
+  - builds chronological train / purge / OOS-test windows; `step_days < test_days` is rejected to avoid overlapping OOS windows.
+  - verdict maturity is OOS-only: diagnostic/provisional/validation-grade labels use distinct OOS days, not full input/archive days.
+  - random same-frequency controls are mandatory for pass-eligible verdicts and are sampled from the OOS population.
+  - dumb baseline scorecard supports primary `baseline_return_bps` plus additional `*_baseline_return_bps` columns; verdicts fail unless the strategy beats every supplied baseline OOS.
+  - day/symbol/hour concentration gates are tracked at OOS and per-window levels.
+  - invalid timestamps, symbols, strategy returns, primary baseline returns, optional baseline returns, and malformed eligible flags are counted and fail closed.
+  - `--allow-fail-diagnostic` only permits clean insufficient-sample diagnostics; it still exits nonzero on invalid fields or real provisional/validation failures.
+
+docs/experiments/walk-forward-validation/README.md
+  - diagnostic README explicitly says: no alpha claims, no threshold tuning on current sample, and PASS is not trade permission.
+```
+
+Current bootstrap diagnostic report:
+
+```text
+uv run python scripts/run_pacifica_walk_forward_validation.py --bootstrap-if-missing --allow-fail-diagnostic
+verdict=INSUFFICIENT_SAMPLE_DIAGNOSTIC
+failure_reasons=insufficient_oos_distinct_days;no_oos_validation_rows;no_purged_validation_windows
+```
+
+TDD / verification:
+
+```text
+RED:
+  uv run pytest tests/scripts/test_run_pacifica_walk_forward_validation.py -q
+  failed on OOS-only maturity, hour concentration, dumb baseline scorecard, optional-baseline invalid accounting, and missing diagnostic README artifact assertions.
+
+GREEN / current verification:
+  python -m py_compile scripts/run_pacifica_walk_forward_validation.py tests/scripts/test_run_pacifica_walk_forward_validation.py
+  uv run pytest tests/scripts/test_run_pacifica_walk_forward_validation.py -q
+  16 passed
+
+Focused changed-test sweep:
+  python -m py_compile scripts/build_pacifica_source_manifest.py scripts/build_pacifica_full_fidelity_silver.py scripts/build_non_hft_regime_state.py scripts/verify_pacifica_side_by_side_refresh.py scripts/build_pacifica_regime_governor.py scripts/run_pacifica_walk_forward_validation.py tests/scripts/test_build_pacifica_source_manifest.py tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_verify_pacifica_side_by_side_refresh.py tests/scripts/test_build_pacifica_regime_governor.py tests/scripts/test_run_pacifica_walk_forward_validation.py
+  uv run pytest tests/scripts/test_build_pacifica_source_manifest.py tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_verify_pacifica_side_by_side_refresh.py tests/scripts/test_build_pacifica_regime_governor.py tests/scripts/test_run_pacifica_walk_forward_validation.py -q
+  75 passed
+
+Read-only canonical verifier self-check:
+  uv run python scripts/verify_pacifica_side_by_side_refresh.py --canonical-silver-dir data/pacifica_silver_partitioned --candidate-silver-dir data/pacifica_silver_partitioned --canonical-regime-dir docs/experiments/non-hft-regime-state --candidate-regime-dir docs/experiments/non-hft-regime-state --out-dir data/ops/pacifica-incremental-refresh-selfcheck-20260513T190145Z
+  ok=True, failures=[]
+
+Full scripts-suite attempt:
+  uv run pytest tests/scripts -q
+  timed out at 600s after 80%+ progress with no failure output.
+
+Independent review:
+  - staged walk-forward code/test diff reviewed by a fresh subagent.
+  - passed=true, security_concerns=[], logic_errors=[].
+```
+
+## Latest 2026-05-13 diagnostic regime governor v2
+
+Timestamp: `2026-05-13T17:58Z`
+
+Implemented a TDD-tested diagnostic-only no-trade governor over the latest local non-HFT regime-state schema. This layer is not a strategy and does not make trade signals.
+
+Updated code/report:
+
+```text
+scripts/build_pacifica_regime_governor.py
+  - fixed state set is now exactly:
+    SKIP_STALE_DATA
+    SKIP_WIDE_SPREAD
+    SKIP_LOW_DEPTH
+    SKIP_TOXIC_REGIME
+    SKIP_MARK_ORACLE_DISLOCATION
+    TRADABLE_DIAGNOSTIC
+  - `TRADABLE_DIAGNOSTIC` means only "not blocked by this diagnostic governor"; it is not a trade signal, alpha claim, or permission to paper/live trade.
+  - required latest-schema columns are:
+    symbol, bucket_start_ms, bbo_updates, trade_count, trade_notional,
+    price_updates, avg_spread_bps, top_depth_notional, toxicity_score,
+    mark_oracle_basis_abs_bps.
+  - fails closed on missing required columns, null keys, NaN/non-numeric safety metrics, stale BBO/trade/price feeds, and invalid/non-finite thresholds.
+
+docs/experiments/regime-governor/README.md
+docs/experiments/regime-governor/decision_summary.csv
+docs/experiments/regime-governor/thresholds.csv
+```
+
+Current diagnostic report from `docs/experiments/non-hft-regime-state/regime_state.parquet`:
+
+```text
+rows=519903
+threshold_version=pacifica_governor_v2_fixed_diagnostic
+SKIP_STALE_DATA=506956
+SKIP_WIDE_SPREAD=203
+SKIP_LOW_DEPTH=1017
+SKIP_TOXIC_REGIME=0
+SKIP_MARK_ORACLE_DISLOCATION=0
+TRADABLE_DIAGNOSTIC=11727
+```
+
+TDD / verification:
+
+```text
+RED:
+  uv run pytest tests/scripts/test_build_pacifica_regime_governor.py -q
+  failed with 23 failures against the old v1 labels/thresholds/schema handling.
+
+GREEN:
+  uv run pytest tests/scripts/test_build_pacifica_regime_governor.py -q
+  23 passed
+
+Report generation:
+  uv run python scripts/build_pacifica_regime_governor.py --state docs/experiments/non-hft-regime-state/regime_state.parquet --out-dir docs/experiments/regime-governor
+  verdict=DIAGNOSTIC_GOVERNOR_RULES_ONLY
+  rows=519903
+
+Pre-commit verification at `2026-05-13T18:31Z`:
+  - `git diff --cached --check` passed.
+  - focused py_compile + pytest for source-manifest/silver/regime/verifier/governor passed: `59 passed`.
+  - read-only canonical verifier self-check passed: `ok=True`, `failures=[]`.
+  - full `uv run pytest tests/scripts -q` was attempted with a 600s cap; it timed out after 80%+ progress with no failure output, so focused changed-test verification is the trusted signal for this commit.
+  - independent pre-commit review passed with no security concerns and no logic errors.
+```
+
+## Latest 2026-05-13 source-object manifest + incremental side-by-side refresh
+
+Timestamp: `2026-05-13T16:17:04Z`
+
+Implemented a TDD-tested source-object manifest and incremental candidate refresh path for the Pacifica research pipeline. The new manifest key is:
+
+```text
+channel=<channel>/symbol=<symbol>/date=<date>/hour=<hour>/run=<run>
+```
+
+New/updated code:
+
+```text
+scripts/build_pacifica_source_manifest.py
+  - builds local raw source-object manifests from `data/pacifica_full_fidelity/**/*.jsonl.gz`.
+  - marks chunks processable only when a valid `.jsonl.gz.sha256` sidecar exists.
+  - optional row counting and payload SHA verification.
+  - diffs previous/current manifests and emits only new/changed sealed source objects.
+  - incremental silver requires planned rows with verified SHA and readable gzip row checks.
+
+scripts/build_pacifica_full_fidelity_silver.py
+  - new `--layout incremental` mode.
+  - writes deterministic per-source-object candidate parquet chunks under `channel=/symbol=/date=/hour=/run=/part.parquet`.
+  - can seed a side-by-side candidate from canonical silver via `--base-silver-dir` only when the base uses partitioned/source-object layout; flat `<channel>.parquet` base seeds are refused fail-closed to avoid duplicate/stale affected rows.
+  - writes `source_manifest.csv`, `incremental_plan.csv`, and candidate `quality_summary.csv` in the candidate out-dir.
+
+scripts/build_non_hft_regime_state.py
+  - now reads recursive hour/run silver chunk layouts.
+  - new `--source-plan` mode processes only affected symbol/date partitions and writes `regime_state_delta.parquet`, not canonical `regime_state.parquet`.
+
+scripts/verify_pacifica_side_by_side_refresh.py
+  - compares canonical vs candidate silver/regime outputs.
+  - checks row counts, symbol/date/channel coverage, missing/null keys, duplicate-key regressions, and report diffs.
+  - fails closed on candidate regressions, missing required key columns, null keys, or duplicate-key regressions above canonical baseline.
+```
+
+Docs/runbook:
+
+```text
+docs/ops/pacifica-incremental-refresh/README.md
+```
+
+TDD / verification:
+
+```text
+RED:
+  uv run pytest tests/scripts/test_build_pacifica_source_manifest.py -q
+  failed with missing `scripts.build_pacifica_source_manifest`.
+
+RED:
+  uv run pytest tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_verify_pacifica_side_by_side_refresh.py -q
+  failed with missing incremental silver/regime/verifier functions.
+
+GREEN / fail-closed hardening:
+  python -m py_compile scripts/build_pacifica_source_manifest.py scripts/build_pacifica_full_fidelity_silver.py scripts/build_non_hft_regime_state.py scripts/verify_pacifica_side_by_side_refresh.py scripts/build_pacifica_regime_governor.py tests/scripts/test_build_pacifica_source_manifest.py tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_verify_pacifica_side_by_side_refresh.py tests/scripts/test_build_pacifica_regime_governor.py
+  uv run pytest tests/scripts/test_build_pacifica_source_manifest.py tests/scripts/test_build_pacifica_full_fidelity_silver.py tests/scripts/test_build_non_hft_regime_state.py tests/scripts/test_verify_pacifica_side_by_side_refresh.py tests/scripts/test_build_pacifica_regime_governor.py -q
+  59 passed
+
+Hardening added after independent review:
+  - side-by-side verifier now fails on missing required key columns in non-empty candidate silver/regime tables.
+  - incremental silver now refuses flat `<channel>.parquet` base seeds because affected rows cannot be safely removed before source-object chunks are added.
+  - both CLIs now run correctly as `uv run python scripts/...` from the repo root.
+  - read-only canonical self-check succeeded against current local canonical silver/regime outputs:
+    `data/ops/pacifica-incremental-refresh-selfcheck-20260513T181133Z`, ok=True, failures=[].
+
+Side-by-side smoke fixture:
+  processed_source_objects=1
+  planned_source_objects=1
+  delta_rows=1
+  verification_ok=True
+  verification_failures=[]
+```
+
+Promotion rule: do not overwrite canonical `data/pacifica_silver_partitioned/` or canonical non-HFT regime-state outputs until a candidate side-by-side refresh has a green verifier report and Diego explicitly approves promotion. Candidate data/manifests under `data/` remain gitignored and should not be committed.
 
 ## Latest 2026-05-13 R2 archive-health parser/report upgrade
 
@@ -55,27 +256,30 @@ docs/ops/pacifica-r2-archive-health/gzip_integrity_audit.csv
 
 Committed report run scope: bounded live sample, not full-bucket proof. The committed CSV was built from line-oriented listings for six high-signal prefixes over today/yesterday: `bbo/BTC`, `book/ETH`, `trades/BTC`, `mark_price_candle/ICP`, `prices/BTC`, and `candle/BTC`. Full recursive live listing attempts were intentionally not used after they exceeded the foreground cap / remained too slow; partial files under `data/ops/pacifica-r2-archive-health/*.partial_*` are gitignored local diagnostics only and must not be interpreted as evidence.
 
-Bounded live report result at `2026-05-13T15:11:32Z`:
+Bounded live report result at `2026-05-13T15:19:05Z`:
 
 ```text
-ok=True
-failures=[]
-payload_objects=272
+ok=False
+failures=['R2_GZIP_SAMPLE_VERIFICATION_FAILED', 'R2_SIDECAR_MISSING']
+payload_objects=276
 sidecar_objects=272
-missing_sidecars=0
+missing_sidecars=4
 orphan_sidecars=0
 active_current_hour_payload_objects=0
-latest_payload=raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz
-latest_payload_mod_time=2026-05-13T12:24:52+00:00
-latest_payload_age_min=166.45
+latest_payload=raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run-20260513T122511Z.jsonl.gz
+latest_payload_mod_time=2026-05-13T13:03:10+00:00
+latest_payload_age_min=135.73
 stale_after_min=180.0
+latest_payload_freshness_ok=True
 distinct_channels=6
 distinct_dates=2
 distinct_symbols=3
-remote_gzip_sample_ok=8/8
-remote_gzip_sample_bad=0
+remote_gzip_sample_ok=5/8
+remote_gzip_sample_bad=3
 write_or_delete_executed=False
 ```
+
+Interpretation: bounded freshness is green, but the newest sampled `run-20260513T122511Z` payloads exposed sidecar lag. This should be rechecked after the fresh sidecar-repair lane runs; it is not evidence that R2 payload bytes are corrupt, because the failures are sidecar-missing verifier failures rather than bad gzip bytes.
 
 Use for future full inventory without truncation:
 
@@ -1338,36 +1542,43 @@ Diego approved working on the full system level-up track. Added:
 - `scripts/build_pacifica_paper_ledger.py` + `tests/scripts/test_build_pacifica_paper_ledger.py` — strategy-neutral paper-ledger spine with fills, positions, fees, funding, realized PnL, equity curve, drawdown, and ineligible-symbol refusal when diagnostic override is disabled.
 - `docs/experiments/paper-ledger/README.md`, `fills.csv`, `positions.csv`, `equity_curve.csv`, `summary.csv`.
 
-## System level-up Phase 3 — no-trade regime governor — 2026-05-08
+## System level-up Phase 3 — no-trade regime governor — 2026-05-08; superseded by v2 on 2026-05-13
 
 Added:
 
 - `scripts/build_pacifica_regime_governor.py` + `tests/scripts/test_build_pacifica_regime_governor.py`.
 - `docs/experiments/regime-governor/README.md`, `governor_decisions.csv`, `decision_summary.csv`, `thresholds.csv`.
 
-Current generated governor summary over the 519,903-row regime table:
+Historical note: the original 2026-05-08 v1 governor included size-reduction and forced-flow labels. It is superseded by the 2026-05-13 v2 diagnostic-only state set documented near the top of this handoff:
 
 ```text
-TRADABLE_DIAGNOSTIC              3,383 rows
-REDUCE_SIZE_DIAGNOSTIC           8,344 rows
-SKIP_TOXIC_REGIME                    1 row
-SKIP_WIDE_SPREAD                   187 rows
-SKIP_THIN_DEPTH                  1,017 rows
-SKIP_STALE_DATA                506,826 rows
-SKIP_MARK_DISLOCATION              145 rows
-SKIP_FORCED_FLOW_AFTERSHOCK          0 rows
+SKIP_STALE_DATA
+SKIP_WIDE_SPREAD
+SKIP_LOW_DEPTH
+SKIP_TOXIC_REGIME
+SKIP_MARK_ORACLE_DISLOCATION
+TRADABLE_DIAGNOSTIC
 ```
 
-Audit note: an independent review flagged potential fail-open behavior. Fixed before handoff by requiring all safety columns, filling NaN safety metrics with conservative skip-triggering values, making missing BBO or trade activity fail closed to `SKIP_STALE_DATA`, and forcing zero-count fixed states into the summary.
+Current v2 generated governor summary over the 519,903-row regime table:
+
+```text
+SKIP_STALE_DATA                506,956 rows
+SKIP_WIDE_SPREAD                   203 rows
+SKIP_LOW_DEPTH                   1,017 rows
+SKIP_TOXIC_REGIME                    0 rows
+SKIP_MARK_ORACLE_DISLOCATION         0 rows
+TRADABLE_DIAGNOSTIC             11,727 rows
+```
+
+Audit note: independent review flagged potential fail-open behavior. The v2 governor requires all latest-schema safety columns, rejects null keys, fills NaN/non-numeric safety metrics with conservative skip-triggering values, makes stale BBO/trade/price feeds fail closed to `SKIP_STALE_DATA`, validates thresholds before classification, and keeps `TRADABLE_DIAGNOSTIC` explicitly diagnostic-only.
 
 Verification:
 
 ```text
-uv run pytest tests/scripts/test_build_pacifica_regime_governor.py tests/scripts/test_simulate_pacifica_execution.py tests/scripts/test_build_pacifica_paper_ledger.py -q
-19 passed
-python -m py_compile scripts/build_pacifica_regime_governor.py scripts/simulate_pacifica_execution.py scripts/build_pacifica_paper_ledger.py
-passed
-git diff --check
+uv run pytest tests/scripts/test_build_pacifica_regime_governor.py -q
+23 passed
+python -m py_compile scripts/build_pacifica_regime_governor.py tests/scripts/test_build_pacifica_regime_governor.py
 passed
 ```
 
@@ -1375,6 +1586,7 @@ Interpretation:
 
 - These artifacts are accounting/validation/governor infrastructure only.
 - They do not authorize live trading.
+- `TRADABLE_DIAGNOSTIC` is not a trade signal.
 - They do not change the current `INSUFFICIENT_SAMPLE_DIAGNOSTIC` maturity verdict.
 - Next implementation phase is online/offline feature parity before any live microbatch feature drives decisions.
 

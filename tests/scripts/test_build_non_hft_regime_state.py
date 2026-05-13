@@ -4,9 +4,11 @@ import pandas as pd
 import pytest
 
 from scripts.build_non_hft_regime_state import (
+    affected_symbol_dates_from_source_plan,
     build_regime_state,
     compute_toxicity_score,
     read_silver_table,
+    write_incremental_regime_state,
     write_regime_state,
 )
 
@@ -276,3 +278,176 @@ def test_write_regime_state_creates_parquet_csv_and_report(tmp_path: Path) -> No
     assert "Current handoff" in report
     assert "Do not assume all collected symbols should be traded" in report
     assert len(state) == 1
+
+
+def test_read_silver_table_recurses_hour_run_source_object_layout(
+    tmp_path: Path,
+) -> None:
+    silver = tmp_path / "silver"
+    part = (
+        silver
+        / "channel=trades"
+        / "symbol=BTC"
+        / "date=2026-05-12"
+        / "hour=14"
+        / "run=run-20260512T111943Z"
+        / "part.parquet"
+    )
+    part.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 1_700_000_000_000,
+                "symbol": "BTC",
+                "signed_qty": 1.0,
+                "qty": 1.0,
+                "notional": 100.0,
+                "trade_class": "normal",
+                "source_key": "channel=trades/symbol=BTC/date=2026-05-12/hour=14/run=run-20260512T111943Z",
+            }
+        ]
+    ).to_parquet(part, index=False)
+
+    table = read_silver_table(silver, "trades")
+
+    assert len(table) == 1
+    assert table.loc[0, "source_key"].endswith("run-20260512T111943Z")
+
+
+def test_read_silver_table_merges_flat_and_incremental_chunks(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    silver.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 1_700_000_000_000,
+                "symbol": "BTC",
+                "signed_qty": 1.0,
+                "qty": 1.0,
+                "notional": 100.0,
+                "trade_class": "normal",
+            }
+        ]
+    ).to_parquet(silver / "trades.parquet", index=False)
+    nested = (
+        silver
+        / "channel=trades"
+        / "symbol=ETH"
+        / "date=2023-11-14"
+        / "hour=22"
+        / "run=run-new"
+        / "part.parquet"
+    )
+    nested.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 1_700_000_060_000,
+                "symbol": "ETH",
+                "signed_qty": 1.0,
+                "qty": 1.0,
+                "notional": 100.0,
+                "trade_class": "normal",
+            }
+        ]
+    ).to_parquet(nested, index=False)
+
+    table = read_silver_table(silver, "trades")
+
+    assert set(table["symbol"]) == {"BTC", "ETH"}
+
+
+def test_build_regime_state_can_limit_work_to_changed_source_plan_symbol_dates(
+    tmp_path: Path,
+) -> None:
+    silver = tmp_path / "silver"
+    for symbol, date, ts in [
+        ("BTC", "2023-11-14", 1_700_000_000_000),
+        ("ETH", "2023-11-15", 1_700_086_400_000),
+    ]:
+        part = (
+            silver
+            / "channel=trades"
+            / f"symbol={symbol}"
+            / f"date={date}"
+            / "hour=00"
+            / "run=run"
+            / "part.parquet"
+        )
+        part.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            [
+                {
+                    "event_ts_ms": ts,
+                    "symbol": symbol,
+                    "signed_qty": 1.0,
+                    "qty": 1.0,
+                    "notional": 100.0,
+                    "trade_class": "normal",
+                }
+            ]
+        ).to_parquet(part, index=False)
+    plan = pd.DataFrame(
+        [
+            {
+                "source_key": "channel=trades/symbol=BTC/date=2023-11-14/hour=00/run=run",
+                "symbol": "BTC",
+                "date": "2023-11-14",
+                "change_status": "new",
+                "status": "sealed",
+            }
+        ]
+    )
+
+    assert affected_symbol_dates_from_source_plan(plan) == {("BTC", "2023-11-14")}
+    state = build_regime_state(silver, bucket="1min", source_plan=plan)
+
+    assert set(state["symbol"]) == {"BTC"}
+
+
+def test_write_incremental_regime_state_writes_delta_without_canonical_overwrite(
+    tmp_path: Path,
+) -> None:
+    silver = tmp_path / "silver"
+    part = (
+        silver
+        / "channel=trades"
+        / "symbol=BTC"
+        / "date=2023-11-14"
+        / "hour=00"
+        / "run=run"
+        / "part.parquet"
+    )
+    part.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "event_ts_ms": 1_700_000_000_000,
+                "symbol": "BTC",
+                "signed_qty": 1.0,
+                "qty": 1.0,
+                "notional": 100.0,
+                "trade_class": "normal",
+            }
+        ]
+    ).to_parquet(part, index=False)
+    plan = pd.DataFrame(
+        [
+            {
+                "source_key": "channel=trades/symbol=BTC/date=2023-11-14/hour=00/run=run",
+                "symbol": "BTC",
+                "date": "2023-11-14",
+                "change_status": "new",
+                "status": "sealed",
+            }
+        ]
+    )
+
+    out = tmp_path / "candidate_regime"
+    state = write_incremental_regime_state(silver, out, source_plan=plan, bucket="1min")
+
+    assert len(state) == 1
+    assert (out / "regime_state_delta.parquet").exists()
+    assert (out / "regime_state_delta_preview.csv").exists()
+    assert (out / "incremental_regime_report.md").exists()
+    assert not (out / "regime_state.parquet").exists()

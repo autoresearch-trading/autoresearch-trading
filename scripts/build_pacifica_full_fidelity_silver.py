@@ -11,12 +11,24 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import shutil
+import sys
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.build_pacifica_source_manifest import (
+    build_source_manifest,
+    plan_changed_sealed_source_objects,
+    read_source_manifest,
+)
 
 DEFAULT_RAW_DIR = Path("data/pacifica_full_fidelity")
 DEFAULT_OUT_DIR = Path("data/pacifica_silver_partitioned")
@@ -247,15 +259,19 @@ def iter_raw_records(
         )
         if channel not in wanted:
             continue
-        try:
-            with gzip.open(path, "rt", encoding="utf-8") as fh:
-                for line in fh:
-                    if line.strip():
-                        yield json.loads(line)
-        except (EOFError, gzip.BadGzipFile):
-            # The live collector may still be appending the newest gzip member.
-            # Skip incomplete active files; they will be picked up on a later build.
-            continue
+        yield from iter_raw_records_from_path(path)
+
+
+def iter_raw_records_from_path(path: Path) -> Iterable[JsonObject]:
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    yield json.loads(line)
+    except (EOFError, gzip.BadGzipFile):
+        # The live collector may still be appending the newest gzip member.
+        # Skip incomplete active files; they will be picked up on a later build.
+        return
 
 
 def normalize_records(
@@ -418,6 +434,233 @@ def write_partitioned_silver_tables(
     return written
 
 
+def _safe_partition_value(value: Any) -> str:
+    return str(value).replace("/", "_").replace("\\", "_")
+
+
+def _source_chunk_silver_path(out_dir: Path, manifest_row: pd.Series) -> Path:
+    return (
+        out_dir
+        / f"channel={_safe_partition_value(manifest_row['channel'])}"
+        / f"symbol={_safe_partition_value(manifest_row['symbol'])}"
+        / f"date={_safe_partition_value(manifest_row['date'])}"
+        / f"hour={_safe_partition_value(manifest_row['hour'])}"
+        / f"run={_safe_partition_value(manifest_row['run'])}"
+        / "part.parquet"
+    )
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _validated_source_path(raw_dir: Path, source_path: str) -> Path:
+    rel = Path(source_path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(f"source_path outside raw_dir: {source_path}")
+    candidate = (raw_dir / rel).resolve()
+    raw_root = raw_dir.resolve()
+    if not candidate.is_relative_to(raw_root):
+        raise ValueError(f"source_path outside raw_dir: {source_path}")
+    return candidate
+
+
+def _verified_sealed_rows(frame: pd.DataFrame) -> pd.Series:
+    if frame.empty:
+        return pd.Series([], dtype=bool)
+    required = {"status", "sha_verified", "gzip_readable"}
+    if not required.issubset(frame.columns):
+        return pd.Series([False] * len(frame), index=frame.index)
+    return (
+        frame["status"].astype(str).eq("sealed")
+        & frame["sha_verified"].map(_truthy)
+        & frame["gzip_readable"].map(_truthy)
+    )
+
+
+def _flat_silver_seed_files(
+    base_silver_dir: Path, channels: Sequence[str]
+) -> list[Path]:
+    """Return selected flat v1 channel parquet files that cannot seed incremental refreshes."""
+    return [
+        base_silver_dir / f"{channel}.parquet"
+        for channel in channels
+        if (base_silver_dir / f"{channel}.parquet").exists()
+    ]
+
+
+def _remove_candidate_partitions(out_dir: Path, plan: pd.DataFrame) -> None:
+    if plan.empty:
+        return
+    for _, row in plan[["channel", "symbol", "date"]].drop_duplicates().iterrows():
+        path = (
+            out_dir
+            / f"channel={_safe_partition_value(row['channel'])}"
+            / f"symbol={_safe_partition_value(row['symbol'])}"
+            / f"date={_safe_partition_value(row['date'])}"
+        )
+        if path.exists():
+            shutil.rmtree(path)
+
+
+def _expand_to_affected_verified_partitions(
+    current_manifest: pd.DataFrame, plan: pd.DataFrame
+) -> pd.DataFrame:
+    if plan.empty:
+        return plan
+    affected = {
+        (str(row["channel"]), str(row["symbol"]), str(row["date"]))
+        for _, row in plan.iterrows()
+    }
+    verified = current_manifest[_verified_sealed_rows(current_manifest)].copy()
+    expanded = verified[
+        verified.apply(
+            lambda row: (str(row["channel"]), str(row["symbol"]), str(row["date"]))
+            in affected,
+            axis=1,
+        )
+    ].copy()
+    return expanded.sort_values("source_key").reset_index(drop=True)
+
+
+def _write_source_chunk_silver(
+    raw_dir: Path,
+    out_dir: Path,
+    manifest_row: pd.Series,
+    *,
+    channels: Sequence[str],
+) -> int:
+    channel = str(manifest_row["channel"])
+    if channel not in set(channels) or channel not in NORMALIZERS:
+        return 0
+    source_path = _validated_source_path(raw_dir, str(manifest_row["source_path"]))
+    rows: list[JsonObject] = []
+    for record in iter_raw_records_from_path(source_path):
+        record_channel = str(record.get("channel") or channel)
+        if record_channel != channel:
+            continue
+        row = NORMALIZERS[channel](record)
+        row["source_key"] = str(manifest_row["source_key"])
+        row["source_path"] = str(manifest_row["source_path"])
+        row["source_sha256"] = str(manifest_row.get("sha256", ""))
+        rows.append(row)
+    out_path = _source_chunk_silver_path(out_dir, manifest_row)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        if out_path.exists():
+            out_path.unlink()
+        return 0
+    tmp_path = out_path.with_name("part.tmp.parquet")
+    pd.DataFrame(rows).sort_values(
+        ["symbol", "event_ts_ms", "recv_ms"], na_position="last"
+    ).to_parquet(tmp_path, index=False)
+    tmp_path.replace(out_path)
+    return len(rows)
+
+
+def write_incremental_silver_tables(
+    raw_dir: Path,
+    out_dir: Path,
+    *,
+    current_manifest: pd.DataFrame | None = None,
+    previous_manifest: pd.DataFrame | None = None,
+    previous_manifest_path: Path | None = None,
+    channels: Sequence[str] | None = None,
+    base_silver_dir: Path | None = None,
+    allow_canonical_out_dir: bool = False,
+) -> dict[str, Any]:
+    """Write only new/changed sealed source chunks into a side-by-side silver dir.
+
+    The output path is deterministic per source object
+    (channel/symbol/date/hour/run/part.parquet), so changed chunks replace their
+    own candidate output without touching canonical silver.  Missing-sidecar or
+    otherwise unsealed chunks are excluded from the plan.
+    """
+    raw_dir = raw_dir.resolve()
+    selected = tuple(channels or DEFAULT_CHANNELS)
+    if out_dir.resolve() == DEFAULT_OUT_DIR.resolve() and not allow_canonical_out_dir:
+        raise ValueError(
+            "incremental silver requires an explicit side-by-side candidate out_dir; "
+            f"refusing canonical default {DEFAULT_OUT_DIR}"
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if base_silver_dir is not None and base_silver_dir.exists():
+        flat_seed_files = _flat_silver_seed_files(base_silver_dir, selected)
+        if flat_seed_files:
+            rel = ", ".join(path.name for path in flat_seed_files)
+            raise ValueError(
+                "flat canonical seed is unsafe for incremental silver refresh; "
+                f"refusing selected flat channel files: {rel}"
+            )
+        # Optional side-by-side seed. Existing candidate files are left in place
+        # so reruns can remain incremental; canonical base is never mutated.
+        for child in base_silver_dir.iterdir():
+            dest = out_dir / child.name
+            if dest.exists():
+                continue
+            if child.is_dir():
+                shutil.copytree(child, dest)
+            else:
+                shutil.copy2(child, dest)
+    if current_manifest is None:
+        current_manifest = build_source_manifest(
+            raw_dir, channels=selected, verify_sha=True, count_rows=True
+        )
+    if previous_manifest is None and previous_manifest_path is not None:
+        previous_manifest = read_source_manifest(previous_manifest_path)
+    plan = plan_changed_sealed_source_objects(previous_manifest, current_manifest)
+    if not plan.empty and not _verified_sealed_rows(plan).all():
+        raise ValueError(
+            "incremental silver requires verified sealed source rows: "
+            "build the manifest with --verify-sha --count-rows"
+        )
+    write_plan = plan
+    if base_silver_dir is not None:
+        _remove_candidate_partitions(out_dir, plan)
+        write_plan = _expand_to_affected_verified_partitions(current_manifest, plan)
+    written_by_channel = {channel: 0 for channel in selected}
+    processed = 0
+    for _, row in write_plan.iterrows():
+        channel = str(row["channel"])
+        if channel not in written_by_channel:
+            continue
+        rows_written = _write_source_chunk_silver(
+            raw_dir, out_dir, row, channels=selected
+        )
+        written_by_channel[channel] += rows_written
+        processed += 1
+    current_manifest.to_csv(
+        out_dir / "source_manifest.csv", index=False, lineterminator="\n"
+    )
+    plan.to_csv(out_dir / "incremental_plan.csv", index=False, lineterminator="\n")
+    quality = pd.DataFrame(
+        [
+            {
+                "channel": channel,
+                "rows": rows,
+                "processed_source_objects": (
+                    int((write_plan["channel"].astype(str) == channel).sum())
+                    if not write_plan.empty
+                    else 0
+                ),
+            }
+            for channel, rows in sorted(written_by_channel.items())
+        ]
+    )
+    quality.to_csv(out_dir / "quality_summary.csv", index=False, lineterminator="\n")
+    return {
+        "processed_source_objects": processed,
+        "planned_source_objects": int(len(plan)),
+        "written_rows_by_channel": written_by_channel,
+        "manifest_rows": int(len(current_manifest)),
+        "out_dir": str(out_dir),
+    }
+
+
 def write_silver_tables(
     raw_dir: Path, out_dir: Path, *, channels: Sequence[str] | None = None
 ) -> dict[str, int]:
@@ -450,11 +693,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channels", default=",".join(DEFAULT_CHANNELS))
     parser.add_argument(
         "--layout",
-        choices=("partitioned", "flat"),
+        choices=("partitioned", "flat", "incremental"),
         default="partitioned",
-        help="Output layout. partitioned is scalable; flat preserves v1 behavior.",
+        help="Output layout. incremental writes only new/changed sealed source chunks into a side-by-side dir.",
     )
     parser.add_argument("--chunk-size", type=int, default=250_000)
+    parser.add_argument(
+        "--source-manifest",
+        type=Path,
+        help="Current source-object manifest CSV for incremental layout. Built from --raw-dir if omitted.",
+    )
+    parser.add_argument(
+        "--previous-source-manifest",
+        type=Path,
+        help="Previous source-object manifest CSV used to plan new/changed sealed chunks.",
+    )
+    parser.add_argument(
+        "--base-silver-dir",
+        type=Path,
+        help="Optional canonical silver dir to copy into the side-by-side candidate before incremental writes.",
+    )
     return parser
 
 
@@ -463,12 +721,29 @@ def main() -> None:
     channels = tuple(part.strip() for part in args.channels.split(",") if part.strip())
     if args.layout == "flat":
         written = write_silver_tables(args.raw_dir, args.out_dir, channels=channels)
+        for channel, rows in sorted(written.items()):
+            print(f"{channel}: {rows} rows")
+    elif args.layout == "incremental":
+        current_manifest = (
+            read_source_manifest(args.source_manifest) if args.source_manifest else None
+        )
+        result = write_incremental_silver_tables(
+            args.raw_dir,
+            args.out_dir,
+            current_manifest=current_manifest,
+            previous_manifest_path=args.previous_source_manifest,
+            channels=channels,
+            base_silver_dir=args.base_silver_dir,
+        )
+        for channel, rows in sorted(result["written_rows_by_channel"].items()):
+            print(f"{channel}: {rows} incremental rows")
+        print(f"processed_source_objects: {result['processed_source_objects']}")
     else:
         written = write_partitioned_silver_tables(
             args.raw_dir, args.out_dir, channels=channels, chunk_size=args.chunk_size
         )
-    for channel, rows in sorted(written.items()):
-        print(f"{channel}: {rows} rows")
+        for channel, rows in sorted(written.items()):
+            print(f"{channel}: {rows} rows")
     print(f"wrote silver tables to {args.out_dir}")
 
 

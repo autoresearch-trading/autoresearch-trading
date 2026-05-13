@@ -8,7 +8,9 @@ HFT trigger and intentionally aggregates away sub-second event timing.
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -29,17 +31,107 @@ def bucket_ms(bucket: str) -> int:
     raise ValueError(f"Unsupported bucket: {bucket}")
 
 
-def read_silver_table(silver_dir: Path, channel: str) -> pd.DataFrame:
-    """Read either v1 flat silver parquet or scalable partitioned channel layout."""
+def _partition_value(path: Path, name: str) -> str | None:
+    prefix = f"{name}="
+    for part in path.parts:
+        if part.startswith(prefix):
+            return part.split("=", 1)[1]
+    return None
+
+
+def _event_date_from_ms(value: Any) -> str | None:
+    try:
+        if pd.isna(value):
+            return None
+        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def affected_symbol_dates_from_source_plan(
+    source_plan: pd.DataFrame | None,
+) -> set[tuple[str, str]] | None:
+    if source_plan is None:
+        return None
+    if source_plan.empty:
+        return set()
+    if not {"symbol", "date"}.issubset(source_plan.columns):
+        return set()
+    plan = source_plan.copy()
+    if "status" in plan.columns:
+        plan = plan[plan["status"].astype(str).eq("sealed")]
+    if "change_status" in plan.columns:
+        plan = plan[plan["change_status"].astype(str).isin(["new", "changed"])]
+    return {
+        (str(row["symbol"]), str(row["date"]))
+        for _, row in plan.iterrows()
+        if pd.notna(row.get("symbol")) and pd.notna(row.get("date"))
+    }
+
+
+def _filter_frame_by_symbol_dates(
+    frame: pd.DataFrame, symbol_dates: set[tuple[str, str]] | None
+) -> pd.DataFrame:
+    if symbol_dates is None or frame.empty or "symbol" not in frame.columns:
+        return frame
+    if not symbol_dates:
+        return frame.iloc[0:0].copy()
+    dates = (
+        frame["event_ts_ms"].map(_event_date_from_ms)
+        if "event_ts_ms" in frame
+        else None
+    )
+    if dates is None:
+        return frame.iloc[0:0].copy()
+    mask = [
+        (str(symbol), str(date)) in symbol_dates
+        for symbol, date in zip(frame["symbol"], dates, strict=False)
+    ]
+    return frame.loc[mask].copy()
+
+
+def _partitioned_silver_parts(
+    silver_dir: Path,
+    channel: str,
+    symbol_dates: set[tuple[str, str]] | None,
+) -> list[Path]:
+    channel_dir = silver_dir / f"channel={channel}"
+    if not channel_dir.exists():
+        return []
+    parts = sorted(
+        set(channel_dir.glob("symbol=*/date=*/*.parquet"))
+        | set(channel_dir.glob("symbol=*/date=*/**/*.parquet"))
+    )
+    if symbol_dates is None:
+        return parts
+    filtered: list[Path] = []
+    for part in parts:
+        symbol = _partition_value(part, "symbol")
+        date = _partition_value(part, "date")
+        if symbol is not None and date is not None and (symbol, date) in symbol_dates:
+            filtered.append(part)
+    return filtered
+
+
+def read_silver_table(
+    silver_dir: Path,
+    channel: str,
+    *,
+    symbol_dates: set[tuple[str, str]] | None = None,
+) -> pd.DataFrame:
+    """Read v1 flat silver parquet and/or partitioned source-object layouts."""
+    frames: list[pd.DataFrame] = []
     flat_path = silver_dir / f"{channel}.parquet"
     if flat_path.exists():
-        return pd.read_parquet(flat_path)
-    parts = sorted(
-        (silver_dir / f"channel={channel}").glob("symbol=*/date=*/*.parquet")
-    )
-    if not parts:
+        frames.append(
+            _filter_frame_by_symbol_dates(pd.read_parquet(flat_path), symbol_dates)
+        )
+    parts = _partitioned_silver_parts(silver_dir, channel, symbol_dates)
+    frames.extend(pd.read_parquet(part) for part in parts)
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
         return pd.DataFrame()
-    return pd.concat((pd.read_parquet(part) for part in parts), ignore_index=True)
+    return pd.concat(frames, ignore_index=True)
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -58,8 +150,12 @@ def _add_bucket(df: pd.DataFrame, bucket: str) -> pd.DataFrame:
     return out
 
 
-def _bbo_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    bbo = _add_bucket(read_silver_table(silver_dir, "bbo"), bucket)
+def _bbo_features(
+    silver_dir: Path, bucket: str, symbol_dates: set[tuple[str, str]] | None = None
+) -> pd.DataFrame:
+    bbo = _add_bucket(
+        read_silver_table(silver_dir, "bbo", symbol_dates=symbol_dates), bucket
+    )
     if bbo.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     grouped = bbo.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
@@ -85,8 +181,12 @@ def _bbo_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
     return grouped
 
 
-def _trade_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    trades = _add_bucket(read_silver_table(silver_dir, "trades"), bucket)
+def _trade_features(
+    silver_dir: Path, bucket: str, symbol_dates: set[tuple[str, str]] | None = None
+) -> pd.DataFrame:
+    trades = _add_bucket(
+        read_silver_table(silver_dir, "trades", symbol_dates=symbol_dates), bucket
+    )
     if trades.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     trade_class = (
@@ -119,8 +219,12 @@ def _trade_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
     return grouped
 
 
-def _price_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    prices = _add_bucket(read_silver_table(silver_dir, "prices"), bucket)
+def _price_features(
+    silver_dir: Path, bucket: str, symbol_dates: set[tuple[str, str]] | None = None
+) -> pd.DataFrame:
+    prices = _add_bucket(
+        read_silver_table(silver_dir, "prices", symbol_dates=symbol_dates), bucket
+    )
     if prices.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     grouped = prices.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
@@ -135,8 +239,12 @@ def _price_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
     return grouped
 
 
-def _book_features(silver_dir: Path, bucket: str) -> pd.DataFrame:
-    book = _add_bucket(read_silver_table(silver_dir, "book"), bucket)
+def _book_features(
+    silver_dir: Path, bucket: str, symbol_dates: set[tuple[str, str]] | None = None
+) -> pd.DataFrame:
+    book = _add_bucket(
+        read_silver_table(silver_dir, "book", symbol_dates=symbol_dates), bucket
+    )
     if book.empty:
         return pd.DataFrame(columns=["symbol", "bucket_start_ms"])
     return book.groupby(["symbol", "bucket_start_ms"], as_index=False).agg(
@@ -188,13 +296,19 @@ def compute_toxicity_score(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_regime_state(silver_dir: Path, *, bucket: str = "1min") -> pd.DataFrame:
+def build_regime_state(
+    silver_dir: Path,
+    *,
+    bucket: str = "1min",
+    source_plan: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    symbol_dates = affected_symbol_dates_from_source_plan(source_plan)
     state = _merge_features(
         [
-            _bbo_features(silver_dir, bucket),
-            _trade_features(silver_dir, bucket),
-            _price_features(silver_dir, bucket),
-            _book_features(silver_dir, bucket),
+            _bbo_features(silver_dir, bucket, symbol_dates),
+            _trade_features(silver_dir, bucket, symbol_dates),
+            _price_features(silver_dir, bucket, symbol_dates),
+            _book_features(silver_dir, bucket, symbol_dates),
         ]
     )
     if state.empty:
@@ -281,6 +395,47 @@ def write_regime_state(
     return state
 
 
+def _incremental_regime_summary(
+    state: pd.DataFrame, bucket: str, source_plan: pd.DataFrame
+) -> str:
+    affected = affected_symbol_dates_from_source_plan(source_plan) or set()
+    lines = [
+        "# Incremental Non-HFT Pacifica Regime State Delta",
+        "",
+        "This is a side-by-side delta built only from symbol/date partitions touched by new or changed sealed source objects.",
+        "It intentionally writes `regime_state_delta.parquet` instead of overwriting canonical `regime_state.parquet`.",
+        "",
+        f"Bucket: `{bucket}`",
+        f"Delta rows: {len(state)}",
+        f"Affected symbol/date partitions: {len(affected)}",
+        "",
+        "Canonical promotion remains blocked until side-by-side verification checks row counts, symbol/date/channel coverage, duplicate/null keys, and report diffs.",
+        "",
+    ]
+    if not source_plan.empty:
+        lines.extend(["## Source-object plan", "", source_plan.to_csv(index=False), ""])
+    return "\n".join(lines)
+
+
+def write_incremental_regime_state(
+    silver_dir: Path,
+    out_dir: Path,
+    *,
+    source_plan: pd.DataFrame,
+    bucket: str = "1min",
+) -> pd.DataFrame:
+    """Write a regime-state delta for changed source-object symbol/date partitions."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    state = build_regime_state(silver_dir, bucket=bucket, source_plan=source_plan)
+    state.to_parquet(out_dir / "regime_state_delta.parquet", index=False)
+    state.head(200).to_csv(out_dir / "regime_state_delta_preview.csv", index=False)
+    source_plan.to_csv(out_dir / "incremental_source_plan.csv", index=False)
+    (out_dir / "incremental_regime_report.md").write_text(
+        _incremental_regime_summary(state, bucket, source_plan), encoding="utf-8"
+    )
+    return state
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--silver-dir", type=Path, default=DEFAULT_SILVER_DIR)
@@ -288,13 +443,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bucket", default="1min", help="Slow decision bucket, e.g. 30s, 1min, 5min"
     )
+    parser.add_argument(
+        "--source-plan",
+        type=Path,
+        help="Optional incremental_plan.csv from silver refresh. Writes delta artifacts instead of canonical regime_state.parquet.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    state = write_regime_state(args.silver_dir, args.out_dir, bucket=args.bucket)
-    print(f"wrote {len(state)} regime-state rows to {args.out_dir}")
+    if args.source_plan:
+        source_plan = pd.read_csv(args.source_plan, dtype={"hour": "string"})
+        state = write_incremental_regime_state(
+            args.silver_dir, args.out_dir, source_plan=source_plan, bucket=args.bucket
+        )
+        print(
+            f"wrote {len(state)} incremental regime-state delta rows to {args.out_dir}"
+        )
+    else:
+        state = write_regime_state(args.silver_dir, args.out_dir, bucket=args.bucket)
+        print(f"wrote {len(state)} regime-state rows to {args.out_dir}")
 
 
 if __name__ == "__main__":

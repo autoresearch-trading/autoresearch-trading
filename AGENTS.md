@@ -1,6 +1,6 @@
 # Repository Guidelines — Hermes / Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-01
+Updated: 2026-05-13
 
 ## Canonical fresh-session order
 
@@ -72,19 +72,42 @@ Raw collector:
 
 Silver builder:
 
+- `scripts/build_pacifica_source_manifest.py`
+- manifest: `data/ops/pacifica-source-manifest/source_manifest*.csv` (gitignored generated state)
 - `scripts/build_pacifica_full_fidelity_silver.py`
 - output: `data/pacifica_silver_partitioned/`
+- incremental side-by-side candidate mode: `--layout incremental` with source manifests; do not target canonical output until side-by-side verification passes.
+- docs: `docs/ops/pacifica-incremental-refresh/README.md`
 
 Regime-state builder:
 
 - `scripts/build_non_hft_regime_state.py`
 - report: `docs/experiments/non-hft-regime-state/README.md`
+- incremental delta mode: `--source-plan <incremental_plan.csv>` writes `regime_state_delta.parquet` instead of canonical `regime_state.parquet`.
+- side-by-side verifier: `scripts/verify_pacifica_side_by_side_refresh.py`
+
+Diagnostic regime governor:
+
+- `scripts/build_pacifica_regime_governor.py`
+- report: `docs/experiments/regime-governor/README.md`
+- fixed diagnostic-only states: `SKIP_STALE_DATA`, `SKIP_WIDE_SPREAD`, `SKIP_LOW_DEPTH`, `SKIP_TOXIC_REGIME`, `SKIP_MARK_ORACLE_DISLOCATION`, `TRADABLE_DIAGNOSTIC`.
+- `TRADABLE_DIAGNOSTIC` means only "not blocked by this diagnostic governor"; it is not a trade signal, alpha claim, or permission to paper/live trade.
+- the governor must fail closed on missing required regime columns, null keys, NaN/non-numeric safety metrics, stale feeds, and invalid thresholds.
 
 Toxic-regime overlay probe:
 
 - `scripts/non_hft_toxic_overlay_probe.py`
 - report: `docs/experiments/toxic-regime-overlay/README.md`
 - current status should remain diagnostic until enough fresh days accrue.
+
+Walk-forward validation harness:
+
+- `scripts/run_pacifica_walk_forward_validation.py`
+- report: `docs/experiments/walk-forward-validation/README.md`
+- strategy-neutral diagnostic harness for future materialized strategy-return streams.
+- uses chronological purged windows, OOS-only verdict maturity, random same-frequency controls, dumb baseline scorecards, day/symbol/hour concentration gates, invalid-input accounting, and fail-closed CLI semantics.
+- thresholds are fixed; do not tune thresholds on the current sample.
+- no alpha claims: PASS verdicts are not permission to paper/live trade.
 
 ## Interpretation discipline
 

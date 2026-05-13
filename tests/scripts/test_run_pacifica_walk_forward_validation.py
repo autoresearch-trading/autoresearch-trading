@@ -15,7 +15,7 @@ def _validation_rows(days: int = 32, rows_per_day: int = 2) -> pd.DataFrame:
     start = pd.Timestamp("2026-01-01T00:00:00Z")
     for day in range(days):
         for slot in range(rows_per_day):
-            ts = start + pd.Timedelta(days=day, minutes=slot)
+            ts = start + pd.Timedelta(days=day, hours=slot)
             rows.append(
                 {
                     "timestamp": ts,
@@ -55,7 +55,7 @@ def test_evaluate_walk_forward_validation_fails_young_archive_as_diagnostic() ->
     )
 
     assert result.verdict == "INSUFFICIENT_SAMPLE_DIAGNOSTIC"
-    assert "insufficient_distinct_days" in result.failure_reasons
+    assert "insufficient_oos_distinct_days" in result.failure_reasons
     assert result.summary["distinct_days"] == 8
     assert result.summary["validation_windows"] == 0
 
@@ -80,7 +80,7 @@ def test_evaluate_walk_forward_validation_requires_concentration_and_baseline_ed
     )
 
     assert concentration_result.verdict == "INSUFFICIENT_SAMPLE_DIAGNOSTIC"
-    assert "insufficient_distinct_days" in concentration_result.failure_reasons
+    assert "insufficient_oos_distinct_days" in concentration_result.failure_reasons
 
     frame = _validation_rows(days=35, rows_per_day=2)
     frame["strategy_return_bps"] = -1.0
@@ -148,6 +148,107 @@ def test_sixty_plus_day_good_result_is_validation_grade_pass() -> None:
     assert result.verdict == "VALIDATION_GRADE_PASS"
     assert result.summary["distinct_days"] == 75
     assert result.summary["distinct_oos_days"] >= 60
+
+
+def test_verdict_maturity_uses_oos_days_not_full_archive_days() -> None:
+    frame = _validation_rows(days=75, rows_per_day=2)
+
+    result = evaluate_walk_forward_validation(
+        frame,
+        config=WalkForwardConfig(
+            min_diagnostic_days=20,
+            min_provisional_days=30,
+            min_validation_grade_days=60,
+            train_days=60,
+            test_days=2,
+            purge_days=1,
+            step_days=2,
+            random_control_trials=3,
+        ),
+    )
+
+    assert result.summary["distinct_days"] == 75
+    assert result.summary["distinct_oos_days"] < 20
+    assert result.verdict == "INSUFFICIENT_SAMPLE_DIAGNOSTIC"
+    assert "insufficient_oos_distinct_days" in result.failure_reasons
+
+
+def test_hour_concentration_blocks_otherwise_good_result() -> None:
+    frame = _validation_rows(days=75, rows_per_day=4)
+    # Same UTC hour every day: this should not be allowed to masquerade as a
+    # validation-grade result even when day/symbol concentration and PnL look good.
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True).dt.floor("D")
+
+    result = evaluate_walk_forward_validation(
+        frame,
+        config=WalkForwardConfig(
+            min_diagnostic_days=10,
+            min_provisional_days=30,
+            min_validation_grade_days=60,
+            train_days=10,
+            test_days=5,
+            purge_days=1,
+            step_days=5,
+            random_control_trials=3,
+            max_hour_concentration=0.35,
+        ),
+    )
+
+    assert result.verdict == "INSUFFICIENT_SAMPLE_DIAGNOSTIC"
+    assert "oos_hour_concentration_too_high" in result.failure_reasons
+    assert result.summary["max_oos_hour_concentration"] == 1.0
+
+
+def test_dumb_baseline_scorecard_requires_beating_all_supplied_baselines() -> None:
+    frame = _validation_rows(days=40, rows_per_day=2)
+    frame["zero_baseline_return_bps"] = 0.0
+    frame["always_long_baseline_return_bps"] = 5.0
+
+    result = evaluate_walk_forward_validation(
+        frame,
+        config=WalkForwardConfig(
+            min_diagnostic_days=10,
+            min_provisional_days=30,
+            train_days=5,
+            test_days=2,
+            purge_days=1,
+            step_days=2,
+            random_control_trials=3,
+        ),
+    )
+
+    assert result.verdict == "PROVISIONAL_FAIL"
+    assert "dumb_baseline_not_beaten" in result.failure_reasons
+    assert (
+        result.summary["baseline_columns"]
+        == "baseline_return_bps;zero_baseline_return_bps;always_long_baseline_return_bps"
+    )
+    assert result.summary["worst_baseline_column"] == "always_long_baseline_return_bps"
+    assert result.summary["min_excess_vs_any_baseline_bps"] < 0
+
+
+def test_invalid_optional_baseline_is_counted_and_fails_closed() -> None:
+    frame = _validation_rows(days=40, rows_per_day=2)
+    frame["zero_baseline_return_bps"] = 0.0
+    frame["zero_baseline_return_bps"] = frame["zero_baseline_return_bps"].astype(object)
+    frame.loc[0, "zero_baseline_return_bps"] = "bad-baseline"
+
+    result = evaluate_walk_forward_validation(
+        frame,
+        config=WalkForwardConfig(
+            min_diagnostic_days=10,
+            min_provisional_days=30,
+            train_days=5,
+            test_days=2,
+            purge_days=1,
+            step_days=2,
+            random_control_trials=3,
+        ),
+    )
+
+    assert result.verdict == "INSUFFICIENT_SAMPLE_DIAGNOSTIC"
+    assert "invalid_required_fields" in result.failure_reasons
+    assert result.summary["invalid_optional_baseline_return_rows"] == 1
 
 
 def test_validation_cannot_pass_without_random_controls_or_purge_gap() -> None:
@@ -268,7 +369,8 @@ def test_window_day_concentration_blocks_default_validation_grade_pass() -> None
         for slot in range(rows_per_day):
             rows.append(
                 {
-                    "timestamp": start + pd.Timedelta(days=day, minutes=slot),
+                    "timestamp": start
+                    + pd.Timedelta(days=day, hours=slot % 24, minutes=slot // 24),
                     "symbol": "BTC" if slot % 2 == 0 else "ETH",
                     "strategy_return_bps": 4.0,
                     "baseline_return_bps": 0.0,
@@ -338,8 +440,10 @@ def test_write_walk_forward_report_creates_readme_and_csvs(tmp_path: Path) -> No
     assert (out_dir / "windows.csv").exists()
     assert (out_dir / "window_scorecard.csv").exists()
     assert (out_dir / "random_controls.csv").exists()
+    assert (out_dir / "baseline_scorecard.csv").exists()
     report = (out_dir / "README.md").read_text()
     assert "Pacifica Walk-Forward Validation" in report
     assert "purged chronological windows" in report
     assert "random same-frequency controls" in report
-    assert "Do not treat this as an edge claim" in report
+    assert "OOS-only verdict" in report
+    assert "No alpha claims" in report
