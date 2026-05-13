@@ -9,6 +9,7 @@ from scripts.run_pacifica_fly_ops_watchdogs import (
     operation_status_row,
     run_command_stdout_to_file,
     run_once,
+    should_retry_transient_sidecar_lag,
     write_watchdog_summary,
 )
 
@@ -200,3 +201,121 @@ def test_run_once_runs_bounded_r2_freshness_check(tmp_path, monkeypatch):
     assert "--remote-base" in command
     assert "r2:bucket" in command
     assert (tmp_path / "pacifica-r2-freshness" / "latest_status.json").exists()
+
+
+def test_run_once_retries_transient_sidecar_lag_before_failing_watchdog(
+    tmp_path, monkeypatch
+):
+    commands: list[tuple[str, list[str]]] = []
+    responses = [
+        {
+            "ok": False,
+            "failures": ["R2_SIDECAR_MISSING"],
+            "latest_payload_age_min": 130.0,
+            "sidecar_missing_count": 4,
+            "listing_errors": [],
+        },
+        {
+            "ok": True,
+            "failures": [],
+            "latest_payload_age_min": 136.0,
+            "sidecar_missing_count": 0,
+            "listing_errors": [],
+        },
+    ]
+
+    def fake_run(operation, command, *, timeout_s):
+        commands.append((operation, command))
+        if operation == "r2_freshness_check":
+            status = responses.pop(0)
+            out_path = Path(command[command.index("--out") + 1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(status))
+            return operation_status_row(
+                operation,
+                returncode=0 if status["ok"] else 2,
+                stdout=json.dumps(status),
+                stderr="",
+                command=command,
+            )
+        return operation_status_row(
+            operation, returncode=0, stdout="ok", stderr="", command=command
+        )
+
+    monkeypatch.setattr("scripts.run_pacifica_fly_ops_watchdogs.run_command", fake_run)
+
+    config = WatchdogConfig(
+        root=tmp_path,
+        state_dir=tmp_path / ".state",
+        remote_base="r2:bucket",
+        r2_prefix="raw/pacifica/full_fidelity",
+        api_surface_interval_s=0,
+        r2_retention_interval_s=0,
+        r2_freshness_interval_s=1,
+        r2_freshness_sidecar_retry_attempts=1,
+        r2_freshness_sidecar_retry_delay_s=0,
+        upload_reports=False,
+    )
+
+    assert run_once(config) == 0
+
+    freshness_commands = [
+        cmd for operation, cmd in commands if operation == "r2_freshness_check"
+    ]
+    assert len(freshness_commands) == 2
+    status = json.loads((tmp_path / "watchdogs" / "latest_status.json").read_text())
+    assert status["ok"] is True
+    assert status["operations"][0]["ok"] is True
+    assert "retry" in status["operations"][0]["stderr_tail"]
+
+
+def test_transient_sidecar_retry_does_not_mask_real_freshness_failures(tmp_path):
+    def row_for(status: dict[str, object]) -> dict[str, object]:
+        out_path = tmp_path / "freshness.json"
+        out_path.write_text(json.dumps(status))
+        return operation_status_row(
+            "r2_freshness_check",
+            returncode=2,
+            stdout=json.dumps(status),
+            stderr="",
+            command=["python", "check", "--out", str(out_path)],
+        )
+
+    non_retryable_statuses = [
+        {
+            "failures": ["R2_REMOTE_FRESHNESS_STALE"],
+            "latest_payload_age_min": 181.0,
+            "sidecar_missing_count": 0,
+            "listing_errors": [],
+        },
+        {
+            "failures": ["R2_SIDECAR_MISSING", "R2_REMOTE_FRESHNESS_STALE"],
+            "latest_payload_age_min": 181.0,
+            "sidecar_missing_count": 4,
+            "listing_errors": [],
+        },
+        {
+            "failures": ["R2_SIDECAR_MISSING"],
+            "latest_payload_age_min": 130.0,
+            "sidecar_missing_count": 4,
+            "listing_errors": [{"sample_prefix": "bad"}],
+        },
+        {
+            "failures": ["R2_SIDECAR_MISSING"],
+            "latest_payload_age_min": None,
+            "sidecar_missing_count": 4,
+            "listing_errors": [],
+        },
+        {
+            "failures": ["R2_SIDECAR_MISSING"],
+            "latest_payload_age_min": 130.0,
+            "sidecar_missing_count": 0,
+            "listing_errors": [],
+        },
+    ]
+
+    for status in non_retryable_statuses:
+        assert (
+            should_retry_transient_sidecar_lag(row_for(status), stale_after_min=180.0)
+            is False
+        )
