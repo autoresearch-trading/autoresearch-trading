@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-12 21:30 UTC
+Updated: 2026-05-13 00:05 UTC
 
 ## Current state
 
@@ -15,7 +15,98 @@ Canonical active runtime/archive:
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
 
-## Latest 2026-05-12 v25 full-scan slow-lane gating remediation
+## Latest 2026-05-13 v26 sidecar repair fresh-lane remediation
+
+Timestamp: `2026-05-13T00:05Z`
+
+Version 25 fixed the broad full-scan/safety-lane blocker, but archive-health still had a separate sidecar risk: a payload could be marked/uploaded while a sibling `.sha256` sidecar was absent, and the old repair path only reset later mismatch errors during the slow safety lane. Implemented and deployed version 26 so the frequent fresh lane also repairs sidecars for already-uploaded rows without reuploading payloads.
+
+Implemented:
+
+```text
+scripts/pacifica_full_fidelity_storage.py
+  - added repair_uploaded_sidecars_batch(...).
+  - added CLI subcommand: repair-sidecars.
+  - regenerates `.sha256` sidecars from lifecycle DB checksums for rows with status='uploaded'.
+  - copies only sidecar files via one bounded parallel `rclone copy`.
+  - does not delete R2 objects, does not reupload payloads, and does not mark rows verified.
+
+scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  - runs repair-sidecars immediately after the frequent fresh upload lane.
+  - defaults PACIFICA_FULL_FIDELITY_SIDECAR_REPAIR_LIMIT to the fresh upload limit.
+  - keeps broad full scan / reset / upload-verify / prune gated behind the slow safety-lane due decision.
+
+tests/scripts/test_pacifica_full_fidelity_storage.py
+  - regression: repair_uploaded_sidecars_batch copies only sidecars for uploaded rows and leaves sealed rows alone.
+
+tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  - regression: fresh cycle runs repair-sidecars even when the safety lane is skipped.
+  - regression: repair-sidecars runs after upload-batch.
+```
+
+Verification:
+
+```text
+RED check before implementation:
+  uv run pytest tests/scripts/test_pacifica_full_fidelity_storage.py::test_repair_uploaded_sidecars_batch_copies_only_sidecars_for_uploaded_rows ...
+  failed with ImportError: cannot import name 'repair_uploaded_sidecars_batch'
+
+Post-implementation focused checks:
+  bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  python -m py_compile scripts/pacifica_full_fidelity_storage.py tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py
+  uv run pytest tests/scripts/test_pacifica_full_fidelity_storage.py tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_plan_pacifica_ops_alerts.py tests/scripts/test_run_pacifica_fly_ops_watchdogs.py -q
+  47 passed
+  git diff --check
+  passed
+
+Post-commit hook reformatted files, then post-commit verification was rerun:
+  47 passed
+  git diff --check passed
+```
+
+Commit/push:
+
+```text
+c3a8701 fix(pacifica): repair uploaded sidecars in fresh lane
+pushed to origin/main
+```
+
+Deployment:
+
+```text
+flyctl deploy . -c ops/fly/pacifica-full-fidelity/fly.toml --dockerfile ops/fly/pacifica-full-fidelity/Dockerfile --app pacifica-full-fidelity --remote-only
+image=registry.fly.io/pacifica-full-fidelity:deployment-01KRFA2Y96NYVVDDQ7B4HD1C4W
+machine=e2862502a76778
+version=26
+state=started
+last_updated=2026-05-13T00:00:10Z
+```
+
+Immediate post-deploy evidence:
+
+```text
+Fly status at 2026-05-13T00:00:43Z:
+  version=26
+  state=started
+  image=pacifica-full-fidelity:deployment-01KRFA2Y96NYVVDDQ7B4HD1C4W
+
+Bounded local R2 freshness at 2026-05-13T00:00:46Z:
+  ok=true
+  failures=[]
+  latest_payload=channel=book/symbol=ETH/date=2026-05-12/hour=21/run-20260512T204313Z.jsonl.gz
+  latest_payload_modified=2026-05-12T21:20:36Z
+  latest_payload_age_min=160.18
+  payload_count=105
+  sidecar_count=105
+  sidecar_missing_count=0
+```
+
+Remaining watch item:
+
+- v26 is green immediately after deploy, but the latest sampled payload was still only ~160 minutes old against a 180-minute threshold. One-shot cron job `eb48017f12b6` is scheduled for ~2026-05-13T00:28Z to re-run the bounded checker across the boundary; do not treat the immediate green check alone as final proof.
+- Backlog verification/pruning is still separate from fresh payload/sidecar repair. Do not start manual lifecycle writers while the Fly app lifecycle may be active; use bounded read-only checks first.
+
+## Superseded 2026-05-12 v25 full-scan slow-lane gating remediation
 
 Timestamp: `2026-05-12T21:30Z`
 
