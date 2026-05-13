@@ -1,9 +1,12 @@
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "run_pacifica_full_fidelity_r2_lifecycle.sh"
+FLY_TOML = REPO_ROOT / "ops" / "fly" / "pacifica-full-fidelity" / "fly.toml"
+ENTRYPOINT = REPO_ROOT / "ops" / "fly" / "pacifica-full-fidelity" / "entrypoint.sh"
 
 
 def _write_fake_python(bin_dir: Path) -> Path:
@@ -139,3 +142,25 @@ def test_lifecycle_runs_post_safety_fresh_catchup_before_returning(tmp_path):
     assert len(sidecar_repairs) == 2
     assert fresh_scans[0] < fresh_uploads[0] < sidecar_repairs[0] < prune_index
     assert prune_index < fresh_scans[1] < fresh_uploads[1] < sidecar_repairs[1]
+
+
+def test_lifecycle_default_min_upload_age_has_freshness_margin(tmp_path):
+    commands = _run_lifecycle(tmp_path, env_overrides={})
+
+    upload_commands = [
+        cmd for cmd in commands if "upload-batch" in cmd or "upload-verify" in cmd
+    ]
+    assert upload_commands
+    assert all("--min-upload-age-seconds 5400" in cmd for cmd in upload_commands)
+
+
+def test_fly_runtime_min_upload_age_has_freshness_margin():
+    fly_config = tomllib.loads(FLY_TOML.read_text(encoding="utf-8"))
+
+    assert fly_config["env"]["PACIFICA_FULL_FIDELITY_MIN_UPLOAD_AGE_SECONDS"] == "5400"
+
+
+def test_fly_entrypoint_min_upload_age_default_matches_runtime_margin():
+    entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
+
+    assert "PACIFICA_FULL_FIDELITY_MIN_UPLOAD_AGE_SECONDS:=5400" in entrypoint
