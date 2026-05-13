@@ -101,48 +101,52 @@ mark_backlog_lane_run() {
   date +%s > "$BACKLOG_LANE_MARKER"
 }
 
-if positive_int "$RECENT_SCAN_HOURS"; then
-  run_storage \
-    --root "$ROOT" \
-    --state-db "$STATE_DB" \
-    --r2-prefix "$R2_PREFIX" \
-    scan --skip-current-hour --recent-hours "$RECENT_SCAN_HOURS"
-else
-  echo "{\"recent_scan_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_RECENT_SCAN_HOURS<=0\"}"
-fi
+run_fresh_lane() {
+  if positive_int "$RECENT_SCAN_HOURS"; then
+    run_storage \
+      --root "$ROOT" \
+      --state-db "$STATE_DB" \
+      --r2-prefix "$R2_PREFIX" \
+      scan --skip-current-hour --recent-hours "$RECENT_SCAN_HOURS"
+  else
+    echo "{\"recent_scan_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_RECENT_SCAN_HOURS<=0\"}"
+  fi
 
-if positive_int "$FRESH_UPLOAD_LIMIT"; then
-  run_storage \
-    --root "$ROOT" \
-    --state-db "$STATE_DB" \
-    --r2-prefix "$R2_PREFIX" \
-    --remote-base "$REMOTE_BASE" \
-    --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
-    --upload-order "$UPLOAD_ORDER" \
-    --upload-limit "$FRESH_UPLOAD_LIMIT" \
-    --transfers "$FRESH_UPLOAD_TRANSFERS" \
-    --checkers "$FRESH_UPLOAD_CHECKERS" \
-    --sidecar-work-dir "$FRESH_UPLOAD_SIDECAR_WORK_DIR" \
-    upload-batch
-else
-  echo "{\"fresh_upload_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_LIMIT<=0\"}"
-fi
+  if positive_int "$FRESH_UPLOAD_LIMIT"; then
+    run_storage \
+      --root "$ROOT" \
+      --state-db "$STATE_DB" \
+      --r2-prefix "$R2_PREFIX" \
+      --remote-base "$REMOTE_BASE" \
+      --min-upload-age-seconds "$MIN_UPLOAD_AGE_SECONDS" \
+      --upload-order "$UPLOAD_ORDER" \
+      --upload-limit "$FRESH_UPLOAD_LIMIT" \
+      --transfers "$FRESH_UPLOAD_TRANSFERS" \
+      --checkers "$FRESH_UPLOAD_CHECKERS" \
+      --sidecar-work-dir "$FRESH_UPLOAD_SIDECAR_WORK_DIR" \
+      upload-batch
+  else
+    echo "{\"fresh_upload_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_LIMIT<=0\"}"
+  fi
 
-if positive_int "$SIDECAR_REPAIR_LIMIT"; then
-  run_storage \
-    --root "$ROOT" \
-    --state-db "$STATE_DB" \
-    --r2-prefix "$R2_PREFIX" \
-    --remote-base "$REMOTE_BASE" \
-    --upload-order "$UPLOAD_ORDER" \
-    --upload-limit "$SIDECAR_REPAIR_LIMIT" \
-    --transfers "$SIDECAR_REPAIR_TRANSFERS" \
-    --checkers "$SIDECAR_REPAIR_CHECKERS" \
-    --sidecar-work-dir "$SIDECAR_REPAIR_WORK_DIR" \
-    repair-sidecars
-else
-  echo "{\"sidecar_repair_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_SIDECAR_REPAIR_LIMIT<=0\"}"
-fi
+  if positive_int "$SIDECAR_REPAIR_LIMIT"; then
+    run_storage \
+      --root "$ROOT" \
+      --state-db "$STATE_DB" \
+      --r2-prefix "$R2_PREFIX" \
+      --remote-base "$REMOTE_BASE" \
+      --upload-order "$UPLOAD_ORDER" \
+      --upload-limit "$SIDECAR_REPAIR_LIMIT" \
+      --transfers "$SIDECAR_REPAIR_TRANSFERS" \
+      --checkers "$SIDECAR_REPAIR_CHECKERS" \
+      --sidecar-work-dir "$SIDECAR_REPAIR_WORK_DIR" \
+      repair-sidecars
+  else
+    echo "{\"sidecar_repair_skipped\":true,\"reason\":\"PACIFICA_FULL_FIDELITY_SIDECAR_REPAIR_LIMIT<=0\"}"
+  fi
+}
+
+run_fresh_lane
 
 BACKLOG_LANE_IS_DUE=0
 if backlog_lane_due; then
@@ -187,6 +191,8 @@ if [ "$BACKLOG_LANE_IS_DUE" = "1" ]; then
       prune --retention-days "$RETENTION_DAYS"
   fi
   mark_backlog_lane_run
+  echo "{\"post_safety_fresh_catchup\":true}"
+  run_fresh_lane
 else
   echo "{\"backlog_lane_skipped\":true,\"interval_s\":$BACKLOG_LANE_INTERVAL_S}"
 fi

@@ -117,3 +117,25 @@ def test_lifecycle_runs_and_marks_safety_lane_when_backlog_interval_due(tmp_path
     marker = tmp_path / ".lifecycle" / "backlog_lane_last_run_epoch.txt"
     assert marker.exists()
     assert marker.read_text().strip().isdigit()
+
+
+def test_lifecycle_runs_post_safety_fresh_catchup_before_returning(tmp_path):
+    commands = _run_lifecycle(
+        tmp_path,
+        env_overrides={"PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S": "3600"},
+    )
+
+    fresh_scans = [
+        i
+        for i, cmd in enumerate(commands)
+        if "scan --skip-current-hour --recent-hours 12" in cmd
+    ]
+    fresh_uploads = [i for i, cmd in enumerate(commands) if "upload-batch" in cmd]
+    sidecar_repairs = [i for i, cmd in enumerate(commands) if "repair-sidecars" in cmd]
+    prune_index = next(i for i, cmd in enumerate(commands) if "prune" in cmd)
+
+    assert len(fresh_scans) == 2
+    assert len(fresh_uploads) == 2
+    assert len(sidecar_repairs) == 2
+    assert fresh_scans[0] < fresh_uploads[0] < sidecar_repairs[0] < prune_index
+    assert prune_index < fresh_scans[1] < fresh_uploads[1] < sidecar_repairs[1]
