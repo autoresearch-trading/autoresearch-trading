@@ -4,10 +4,12 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.pacifica_r2_inventory import (
+    iter_rclone_lsf_inventory_rows,
     rclone_lsf_to_inventory,
     rclone_lsjson_to_inventory,
     write_inventory_csv,
     write_inventory_csv_from_lsf,
+    write_inventory_csv_from_lsf_stream,
 )
 
 
@@ -86,3 +88,53 @@ def test_write_inventory_csv_from_lsf_writes_lf_csv(tmp_path):
     assert b"\r" not in raw
     df = pd.read_csv(out)
     assert df["key"].tolist() == ["a.jsonl.gz", "b.jsonl.gz"]
+
+
+def test_iter_rclone_lsf_inventory_rows_prefixes_keys_line_by_line():
+    lines = iter(
+        [
+            "channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run.jsonl.gz;10;2026-05-13 12:00:00\r\n",
+            "channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run.jsonl.gz.sha256;64;2026-05-13 12:00:01\n",
+        ]
+    )
+
+    rows = list(
+        iter_rclone_lsf_inventory_rows(lines, key_prefix="raw/pacifica/full_fidelity/")
+    )
+
+    assert rows == [
+        {
+            "key": "raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run.jsonl.gz",
+            "size_bytes": 10,
+            "mod_time": "2026-05-13 12:00:00",
+        },
+        {
+            "key": "raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run.jsonl.gz.sha256",
+            "size_bytes": 64,
+            "mod_time": "2026-05-13 12:00:01",
+        },
+    ]
+
+
+def test_write_inventory_csv_from_lsf_stream_writes_prefixed_lf_csv(tmp_path):
+    lsf = tmp_path / "inventory.lsf"
+    out = tmp_path / "inventory.csv"
+    lsf.write_text(
+        "channel=book/symbol=ETH/date=2026-05-13/hour=11/run.jsonl.gz;20;2026-05-13 11:59:00\r\n"
+    )
+
+    result = write_inventory_csv_from_lsf_stream(
+        lsf, out, key_prefix="raw/pacifica/full_fidelity"
+    )
+
+    assert result == out
+    raw = out.read_bytes()
+    assert b"\r" not in raw
+    df = pd.read_csv(out)
+    assert df.to_dict("records") == [
+        {
+            "key": "raw/pacifica/full_fidelity/channel=book/symbol=ETH/date=2026-05-13/hour=11/run.jsonl.gz",
+            "size_bytes": 20,
+            "mod_time": "2026-05-13 11:59:00",
+        }
+    ]

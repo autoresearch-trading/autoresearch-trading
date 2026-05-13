@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pandas as pd
 from scripts.check_pacifica_r2_archive_health import (
     analyze_r2_archive_inventory,
     parse_raw_object_key,
+    verify_gzip_payload_bytes,
     write_r2_archive_health_report,
 )
 
@@ -106,6 +108,60 @@ def test_analyze_r2_archive_inventory_finds_pairing_and_active_hour_issues() -> 
     )
 
 
+def test_analyze_r2_archive_inventory_reports_freshness_and_coverage() -> None:
+    now = datetime(2026, 5, 2, 14, 30, tzinfo=UTC)
+
+    result = analyze_r2_archive_inventory(_inventory(), now=now, stale_after_min=20.0)
+
+    assert result["latest_payload_age_min"] == 25.0
+    assert result["latest_payload_freshness_ok"] is False
+    assert "R2_REMOTE_FRESHNESS_STALE" in result["failures"]
+    assert result["distinct_channels"] == 3
+    assert result["distinct_dates"] == 2
+    assert result["distinct_symbols"] == 3
+
+    coverage = result["channel_date_symbol_coverage"]
+    assert set(coverage.columns) >= {
+        "channel",
+        "date",
+        "symbol",
+        "payload_objects",
+        "payload_bytes",
+        "latest_mod_time",
+    }
+    assert (
+        coverage[
+            (coverage["channel"] == "bbo")
+            & (coverage["date"] == "2026-05-02")
+            & (coverage["symbol"] == "BTC")
+        ]["payload_objects"].iloc[0]
+        == 1
+    )
+
+
+def test_verify_gzip_payload_bytes_checks_sha256_and_decompression() -> None:
+    payload = gzip.compress(b'{"ok": true}\n{"ok": false}\n')
+    digest = hashlib.sha256(payload).hexdigest()
+
+    ok = verify_gzip_payload_bytes(
+        "raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-02/hour=13/run-good.jsonl.gz",
+        payload,
+        f"{digest}  run-good.jsonl.gz\n",
+    )
+    assert ok["status"] == "ok"
+    assert ok["rows_read"] == 2
+    assert ok["sha256_matches_sidecar"] is True
+
+    mismatch = verify_gzip_payload_bytes("bad-hash.jsonl.gz", payload, "0" * 64)
+    assert mismatch["status"] == "sha256_mismatch"
+    assert mismatch["rows_read"] == 2
+    assert mismatch["sha256_matches_sidecar"] is False
+
+    bad_gzip = verify_gzip_payload_bytes("bad-gzip.jsonl.gz", b"not-gzip", None)
+    assert bad_gzip["status"] == "bad_gzip"
+    assert bad_gzip["rows_read"] == 0
+
+
 def test_write_r2_archive_health_report_is_read_only_and_writes_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -121,12 +177,19 @@ def test_write_r2_archive_health_report_is_read_only_and_writes_artifacts(
     assert result["orphan_sidecar_count"] == 1
     assert (out_dir / "README.md").exists()
     assert (out_dir / "prefix_summary.csv").exists()
+    assert (out_dir / "channel_coverage.csv").exists()
+    assert (out_dir / "date_coverage.csv").exists()
+    assert (out_dir / "channel_date_symbol_coverage.csv").exists()
     assert (out_dir / "missing_sidecars.csv").exists()
     assert (out_dir / "orphan_sidecars.csv").exists()
     assert (out_dir / "active_hour_objects.csv").exists()
     assert (out_dir / "latest_remote_objects.csv").exists()
+    assert (out_dir / "remote_gzip_sample_verification.csv").exists()
     readme = (out_dir / "README.md").read_text()
     assert "No R2 writes or deletes were executed" in readme
+    assert "Inventory CSV:" in readme
+    assert "Latest payload age minutes: 25.0" in readme
+    assert "Channel/date/symbol coverage" in readme
     assert "Missing payload sidecars: 2" in readme
     assert "Active current-hour payload objects: 1" in readme
 

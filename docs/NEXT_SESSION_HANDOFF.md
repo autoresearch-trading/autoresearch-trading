@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-13 14:30 UTC
+Updated: 2026-05-13 15:12 UTC
 
 ## Current state
 
@@ -14,6 +14,111 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-13 R2 archive-health parser/report upgrade
+
+Timestamp: `2026-05-13T15:12Z`
+
+Implemented and committed a safer R2 archive-health report path for raw payload/sidecar diagnostics:
+
+```text
+scripts/pacifica_r2_inventory.py
+  - added line-oriented `rclone lsf --format pst --separator ';'` parser helpers.
+  - added streaming `write_inventory_csv_from_lsf_stream(...)` so large listings can be written line-by-line instead of captured/truncated through tool stdout.
+  - CLI now accepts `--lsf`, `--stream-lsf`, and `--key-prefix raw/pacifica/full_fidelity` in addition to old `--lsjson`.
+
+scripts/check_pacifica_r2_archive_health.py
+  - reports payload/`.sha256` pairing and orphan sidecars.
+  - reports latest payload freshness age vs `--stale-after-min`.
+  - reports current UTC-hour payload leakage.
+  - reports channel/date/symbol coverage plus channel/date coverage CSVs.
+  - supports read-only remote gzip sample verification via `rclone cat`: payload SHA-256 must match sibling `.sha256`, and gzip must decompress locally.
+  - parses `rclone lsf` naive timestamps as process-local before UTC conversion, matching the known local-time rclone behavior.
+  - writes local Markdown/CSV artifacts only; no R2 write/delete path was added.
+```
+
+Generated report artifacts:
+
+```text
+docs/ops/pacifica-r2-archive-health/README.md
+docs/ops/pacifica-r2-archive-health/prefix_summary.csv
+docs/ops/pacifica-r2-archive-health/channel_coverage.csv
+docs/ops/pacifica-r2-archive-health/date_coverage.csv
+docs/ops/pacifica-r2-archive-health/channel_date_symbol_coverage.csv
+docs/ops/pacifica-r2-archive-health/missing_sidecars.csv
+docs/ops/pacifica-r2-archive-health/orphan_sidecars.csv
+docs/ops/pacifica-r2-archive-health/active_hour_objects.csv
+docs/ops/pacifica-r2-archive-health/latest_remote_objects.csv
+docs/ops/pacifica-r2-archive-health/remote_gzip_sample_verification.csv
+docs/ops/pacifica-r2-archive-health/gzip_integrity_audit.csv
+```
+
+Committed report run scope: bounded live sample, not full-bucket proof. The committed CSV was built from line-oriented listings for six high-signal prefixes over today/yesterday: `bbo/BTC`, `book/ETH`, `trades/BTC`, `mark_price_candle/ICP`, `prices/BTC`, and `candle/BTC`. Full recursive live listing attempts were intentionally not used after they exceeded the foreground cap / remained too slow; partial files under `data/ops/pacifica-r2-archive-health/*.partial_*` are gitignored local diagnostics only and must not be interpreted as evidence.
+
+Bounded live report result at `2026-05-13T15:11:32Z`:
+
+```text
+ok=True
+failures=[]
+payload_objects=272
+sidecar_objects=272
+missing_sidecars=0
+orphan_sidecars=0
+active_current_hour_payload_objects=0
+latest_payload=raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz
+latest_payload_mod_time=2026-05-13T12:24:52+00:00
+latest_payload_age_min=166.45
+stale_after_min=180.0
+distinct_channels=6
+distinct_dates=2
+distinct_symbols=3
+remote_gzip_sample_ok=8/8
+remote_gzip_sample_bad=0
+write_or_delete_executed=False
+```
+
+Use for future full inventory without truncation:
+
+```bash
+RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
+OUT_DIR=data/ops/pacifica-r2-archive-health
+mkdir -p "$OUT_DIR"
+rclone lsf r2:pacifica-trading-data/raw/pacifica/full_fidelity \
+  --recursive --files-only --format pst --separator ';' \
+  > "$OUT_DIR/r2_raw_inventory_${RUN_TS}.lsf"
+uv run python scripts/pacifica_r2_inventory.py \
+  --lsf "$OUT_DIR/r2_raw_inventory_${RUN_TS}.lsf" \
+  --stream-lsf \
+  --key-prefix raw/pacifica/full_fidelity \
+  --out-csv "$OUT_DIR/r2_raw_inventory_${RUN_TS}.csv"
+uv run python scripts/check_pacifica_r2_archive_health.py \
+  --inventory-csv "$OUT_DIR/r2_raw_inventory_${RUN_TS}.csv" \
+  --out-dir docs/ops/pacifica-r2-archive-health \
+  --raw-prefix raw/pacifica/full_fidelity/ \
+  --stale-after-min 180 \
+  --remote-base r2:pacifica-trading-data \
+  --gzip-sample-size 8
+```
+
+TDD / verification:
+
+```text
+RED:
+  uv run pytest tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_check_pacifica_r2_archive_health.py -q
+  failed with ImportError for missing streaming inventory helpers and gzip verifier.
+
+GREEN:
+  uv run pytest tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_check_pacifica_r2_archive_health.py -q
+  12 passed
+
+Focused regression:
+  python -m py_compile scripts/pacifica_r2_inventory.py scripts/check_pacifica_r2_archive_health.py tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_check_pacifica_r2_archive_health.py
+  uv run pytest tests/scripts/test_pacifica_r2_inventory.py tests/scripts/test_check_pacifica_r2_archive_health.py tests/scripts/test_check_pacifica_r2_freshness.py tests/scripts/test_plan_pacifica_ops_alerts.py -q
+  23 passed
+  git diff --check passed
+```
+
+Remaining caveat: this does not replace the lifecycle DB health counters. The report proves the bounded sampled R2 prefixes have payload/sidecar/gzip health and freshness at report time; a future full-bucket inventory still needs to complete cleanly before claiming archive-wide pairing/orphan coverage.
 
 ## Latest 2026-05-13 v28 lifecycle health counter exposure and bounded status check
 

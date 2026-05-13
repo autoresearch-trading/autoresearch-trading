@@ -1,47 +1,148 @@
 # Pacifica R2 Raw Archive Health
 
-No R2 writes or deletes were executed. This is a read-only diagnostic report from an object inventory snapshot.
+No R2 writes or deletes were executed. This is a read-only diagnostic report from an object inventory snapshot plus optional read-only sample downloads.
 
-Generated at: `2026-05-02T18:07:20.586728+00:00`
+Generated at: `2026-05-13T15:11:32.056957+00:00`
+Inventory CSV: `data/ops/pacifica-r2-archive-health/bounded_live_inventory_20260513T150801Z.csv`
 Raw prefix: `raw/pacifica/full_fidelity/`
+Remote base for sample reads: `r2:pacifica-trading-data`
+
+Inventory scope for this committed run: bounded live sample, not a full-bucket proof. The CSV was built from line-oriented `rclone lsf --recursive --files-only --format pst --separator ';'` listings for six high-signal prefixes over today/yesterday: `bbo/BTC`, `book/ETH`, `trades/BTC`, `mark_price_candle/ICP`, `prices/BTC`, and `candle/BTC`. A full recursive live listing was attempted with stdout streamed to `data/ops/pacifica-r2-archive-health/r2_raw_inventory_20260513T145212Z.lsf`, exceeded the 600s foreground cap, and was marked `.partial_timeout` without being used. A second background `--fast-list` attempt was killed after remaining too slow and was marked `.partial_killed`; do not treat either partial file as evidence.
 
 ## Summary
 
-- Raw-prefix objects: 20
-- Payload objects: 10
-- Sidecar objects: 10
-- Payload bytes: 3639082
-- Latest payload mod time: 2026-05-01T23:56:02.221000+00:00
+- OK: True
+- Failures: []
+- Raw-prefix objects: 544
+- Payload objects: 272
+- Sidecar objects: 272
+- Payload bytes: 245101624
+- Latest payload mod time: 2026-05-13T12:24:52+00:00
+- Latest payload age minutes: 166.45
+- Stale threshold minutes: 180.0
+- Latest payload freshness OK: True
 - Missing payload sidecars: 0
 - Orphan sidecars: 0
 - Active current-hour payload objects: 0
+- Distinct channels: 6
+- Distinct dates: 2
+- Distinct symbols: 3
+- Remote gzip sample verification: 8 OK / 8 sampled
+- Remote gzip sample failures: 0
+- Gzip audit local root: `not requested`
+- Gzip-readable local payloads: 0 / 0
+- Bad gzip local payloads: 0
+- Missing local payloads for gzip audit: 0
 
 ## Prefix summary
 
 | channel | date | payload_objects | payload_bytes | symbols | latest_mod_time |
 | --- | --- | --- | --- | --- | --- |
-| bbo | 2026-05-01 | 9 | 2853956 | 1 | 2026-05-01T23:56:02+0000 |
-| bbo | 2026-04-30 | 1 | 785126 | 1 | 2026-05-01T18:32:37+0000 |
+| bbo | 2026-05-13 | 13 | 50008244 | 1 | 2026-05-13T12:24:52+0000 |
+| book | 2026-05-13 | 13 | 16025261 | 1 | 2026-05-13T12:24:52+0000 |
+| candle | 2026-05-13 | 13 | 3197982 | 1 | 2026-05-13T12:23:17+0000 |
+| mark_price_candle | 2026-05-13 | 13 | 27816307 | 1 | 2026-05-13T12:24:51+0000 |
+| prices | 2026-05-13 | 13 | 1032004 | 1 | 2026-05-13T12:24:44+0000 |
+| trades | 2026-05-13 | 13 | 296237 | 1 | 2026-05-13T12:23:17+0000 |
+| bbo | 2026-05-12 | 27 | 63298129 | 1 | 2026-05-12T23:59:55+0000 |
+| book | 2026-05-12 | 27 | 27683776 | 1 | 2026-05-12T23:59:55+0000 |
+| candle | 2026-05-12 | 46 | 5366038 | 1 | 2026-05-13T00:00:23+0000 |
+| mark_price_candle | 2026-05-12 | 40 | 48128226 | 1 | 2026-05-12T23:59:55+0000 |
+| prices | 2026-05-12 | 27 | 1742846 | 1 | 2026-05-12T23:59:46+0000 |
+| trades | 2026-05-12 | 27 | 506574 | 1 | 2026-05-12T23:59:11+0000 |
+
+## Channel coverage
+
+| channel | payload_objects | payload_bytes | dates | symbols | latest_mod_time |
+| --- | --- | --- | --- | --- | --- |
+| candle | 59 | 8564020 | 2 | 1 | 2026-05-13T12:23:17+0000 |
+| mark_price_candle | 53 | 75944533 | 2 | 1 | 2026-05-13T12:24:51+0000 |
+| bbo | 40 | 113306373 | 2 | 1 | 2026-05-13T12:24:52+0000 |
+| book | 40 | 43709037 | 2 | 1 | 2026-05-13T12:24:52+0000 |
+| prices | 40 | 2774850 | 2 | 1 | 2026-05-13T12:24:44+0000 |
+| trades | 40 | 802811 | 2 | 1 | 2026-05-13T12:23:17+0000 |
+
+## Date coverage
+
+| date | payload_objects | payload_bytes | channels | symbols | latest_mod_time |
+| --- | --- | --- | --- | --- | --- |
+| 2026-05-13 | 78 | 98376035 | 6 | 3 | 2026-05-13T12:24:52+0000 |
+| 2026-05-12 | 194 | 146725589 | 6 | 3 | 2026-05-13T00:00:23+0000 |
+
+## Channel/date/symbol coverage
+
+Full coverage is written to `channel_date_symbol_coverage.csv`; the table below shows the newest 25 rows.
+
+| channel | date | symbol | payload_objects | payload_bytes | hours | latest_mod_time |
+| --- | --- | --- | --- | --- | --- | --- |
+| bbo | 2026-05-13 | BTC | 13 | 50008244 | 13 | 2026-05-13T12:24:52+0000 |
+| book | 2026-05-13 | ETH | 13 | 16025261 | 13 | 2026-05-13T12:24:52+0000 |
+| candle | 2026-05-13 | BTC | 13 | 3197982 | 13 | 2026-05-13T12:23:17+0000 |
+| mark_price_candle | 2026-05-13 | ICP | 13 | 27816307 | 13 | 2026-05-13T12:24:51+0000 |
+| prices | 2026-05-13 | BTC | 13 | 1032004 | 13 | 2026-05-13T12:24:44+0000 |
+| trades | 2026-05-13 | BTC | 13 | 296237 | 13 | 2026-05-13T12:23:17+0000 |
+| bbo | 2026-05-12 | BTC | 27 | 63298129 | 24 | 2026-05-12T23:59:55+0000 |
+| book | 2026-05-12 | ETH | 27 | 27683776 | 24 | 2026-05-12T23:59:55+0000 |
+| candle | 2026-05-12 | BTC | 46 | 5366038 | 24 | 2026-05-13T00:00:23+0000 |
+| mark_price_candle | 2026-05-12 | ICP | 40 | 48128226 | 24 | 2026-05-12T23:59:55+0000 |
+| prices | 2026-05-12 | BTC | 27 | 1742846 | 24 | 2026-05-12T23:59:46+0000 |
+| trades | 2026-05-12 | BTC | 27 | 506574 | 24 | 2026-05-12T23:59:11+0000 |
 
 ## Latest payload objects
 
 | key | size_bytes | mod_time | channel | symbol | date | hour |
 | --- | --- | --- | --- | --- | --- | --- |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/hour=23/run-20260501T220740Z.jsonl.gz | 94693 | 2026-05-01T23:56:02.221Z | bbo | 2Z | 2026-05-01 | 23 |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/hour=22/run-20260501T220740Z.jsonl.gz | 91067 | 2026-05-01T22:59:16.681Z | bbo | 2Z | 2026-05-01 | 22 |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/hour=22/run-20260501T215139Z.jsonl.gz | 287 | 2026-05-01T22:07:53.123Z | bbo | 2Z | 2026-05-01 | 22 |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/hour=21/run-20260501T215139Z.jsonl.gz | 34700 | 2026-05-01T22:07:52.315Z | bbo | 2Z | 2026-05-01 | 21 |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/hour=21/run-20260501T214645Z.jsonl.gz | 13551 | 2026-05-01T21:51:44.664Z | bbo | 2Z | 2026-05-01 | 21 |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/run-20260501T101607Z.jsonl.gz | 543 | 2026-05-01T18:32:44.152Z | bbo | 2Z | 2026-05-01 |  |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/run-20260501T101433Z.jsonl.gz | 21428 | 2026-05-01T18:32:42.476Z | bbo | 2Z | 2026-05-01 |  |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/run-20260501T034250Z.jsonl.gz | 17788 | 2026-05-01T18:32:40.973Z | bbo | 2Z | 2026-05-01 |  |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-05-01/run-20260430T212120Z.jsonl.gz | 2579899 | 2026-05-01T18:32:39.432Z | bbo | 2Z | 2026-05-01 |  |
-| raw/pacifica/full_fidelity/channel=bbo/symbol=2Z/date=2026-04-30/run-20260430T212120Z.jsonl.gz | 785126 | 2026-05-01T18:32:37.240Z | bbo | 2Z | 2026-04-30 |  |
+| raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | 430504 | 2026-05-13T12:24:52+00:00 | bbo | BTC | 2026-05-13 | 12 |
+| raw/pacifica/full_fidelity/channel=book/symbol=ETH/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | 488141 | 2026-05-13T12:24:52+00:00 | book | ETH | 2026-05-13 | 12 |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | 697464 | 2026-05-13T12:24:51+00:00 | mark_price_candle | ICP | 2026-05-13 | 12 |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=00/run-20260513T000011Z.jsonl.gz | 9621797 | 2026-05-13T12:24:51+00:00 | mark_price_candle | ICP | 2026-05-13 | 00 |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=08/run-20260513T000011Z.jsonl.gz | 3521141 | 2026-05-13T12:24:51+00:00 | mark_price_candle | ICP | 2026-05-13 | 08 |
+| raw/pacifica/full_fidelity/channel=prices/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | 29745 | 2026-05-13T12:24:44+00:00 | prices | BTC | 2026-05-13 | 12 |
+| raw/pacifica/full_fidelity/channel=candle/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | 67007 | 2026-05-13T12:23:17+00:00 | candle | BTC | 2026-05-13 | 12 |
+| raw/pacifica/full_fidelity/channel=candle/symbol=BTC/date=2026-05-13/hour=08/run-20260513T000011Z.jsonl.gz | 522639 | 2026-05-13T12:23:17+00:00 | candle | BTC | 2026-05-13 | 08 |
+| raw/pacifica/full_fidelity/channel=candle/symbol=BTC/date=2026-05-13/hour=00/run-20260513T000011Z.jsonl.gz | 1062511 | 2026-05-13T12:23:17+00:00 | candle | BTC | 2026-05-13 | 00 |
+| raw/pacifica/full_fidelity/channel=trades/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | 7862 | 2026-05-13T12:23:17+00:00 | trades | BTC | 2026-05-13 | 12 |
+| raw/pacifica/full_fidelity/channel=book/symbol=ETH/date=2026-05-13/hour=11/run-20260513T000011Z.jsonl.gz | 975934 | 2026-05-13T12:09:24+00:00 | book | ETH | 2026-05-13 | 11 |
+| raw/pacifica/full_fidelity/channel=prices/symbol=BTC/date=2026-05-13/hour=11/run-20260513T000011Z.jsonl.gz | 58885 | 2026-05-13T12:09:23+00:00 | prices | BTC | 2026-05-13 | 11 |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=11/run-20260513T000011Z.jsonl.gz | 932005 | 2026-05-13T12:09:18+00:00 | mark_price_candle | ICP | 2026-05-13 | 11 |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=10/run-20260513T000011Z.jsonl.gz | 1449716 | 2026-05-13T12:09:18+00:00 | mark_price_candle | ICP | 2026-05-13 | 10 |
+| raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=11/run-20260513T000011Z.jsonl.gz | 2546672 | 2026-05-13T12:09:13+00:00 | bbo | BTC | 2026-05-13 | 11 |
+| raw/pacifica/full_fidelity/channel=candle/symbol=BTC/date=2026-05-13/hour=11/run-20260513T000011Z.jsonl.gz | 84801 | 2026-05-13T12:04:27+00:00 | candle | BTC | 2026-05-13 | 11 |
+| raw/pacifica/full_fidelity/channel=trades/symbol=BTC/date=2026-05-13/hour=11/run-20260513T000011Z.jsonl.gz | 14131 | 2026-05-13T12:04:27+00:00 | trades | BTC | 2026-05-13 | 11 |
+| raw/pacifica/full_fidelity/channel=candle/symbol=BTC/date=2026-05-13/hour=10/run-20260513T000011Z.jsonl.gz | 203205 | 2026-05-13T12:04:27+00:00 | candle | BTC | 2026-05-13 | 10 |
+| raw/pacifica/full_fidelity/channel=book/symbol=ETH/date=2026-05-13/hour=10/run-20260513T000011Z.jsonl.gz | 1183095 | 2026-05-13T11:09:22+00:00 | book | ETH | 2026-05-13 | 10 |
+| raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=10/run-20260513T000011Z.jsonl.gz | 2891750 | 2026-05-13T11:09:15+00:00 | bbo | BTC | 2026-05-13 | 10 |
+
+## Remote gzip sample verification
+
+This optional sample uses read-only `rclone cat` calls for payloads and sibling `.sha256` sidecars, then verifies SHA-256 and gzip decompression locally. It does not write or delete R2 objects.
+
+| key | status | rows_read | size_bytes | sha256 | sidecar_sha256 | sha256_matches_sidecar | error |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| raw/pacifica/full_fidelity/channel=bbo/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | ok | 1492 | 430504 | 0ab6c0174913bf6db0b4075bd935ae72d44b6b66a367a0aef6d6bd59cf45065c | 0ab6c0174913bf6db0b4075bd935ae72d44b6b66a367a0aef6d6bd59cf45065c | True |  |
+| raw/pacifica/full_fidelity/channel=book/symbol=ETH/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | ok | 1027 | 488141 | a0c4005c7bdcdaf184ef9be12e42d51fdf82263d48c6ef1c4376ff4ffe4b8428 | a0c4005c7bdcdaf184ef9be12e42d51fdf82263d48c6ef1c4376ff4ffe4b8428 | True |  |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | ok | 2305 | 697464 | 6267b405eddef90edb80ffdde301788aa60c7313a55041016ff8f571c50cde22 | 6267b405eddef90edb80ffdde301788aa60c7313a55041016ff8f571c50cde22 | True |  |
+| raw/pacifica/full_fidelity/channel=prices/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | ok | 85 | 29745 | 43f4cfb35a5c7bd0a85c81401865d288be038217eb15045581c046ed876a86b2 | 43f4cfb35a5c7bd0a85c81401865d288be038217eb15045581c046ed876a86b2 | True |  |
+| raw/pacifica/full_fidelity/channel=candle/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | ok | 229 | 67007 | b91ba99f3d17504e5dfb5129bf4b8d1b3ed6d89a4fd8dc5b2a731407287a277c | b91ba99f3d17504e5dfb5129bf4b8d1b3ed6d89a4fd8dc5b2a731407287a277c | True |  |
+| raw/pacifica/full_fidelity/channel=trades/symbol=BTC/date=2026-05-13/hour=12/run-20260513T000011Z.jsonl.gz | ok | 48 | 7862 | 13da0f9eff1adbf8b7bdaad02e0ab8e81ac17c8c4e82dca4c489222d75c6389e | 13da0f9eff1adbf8b7bdaad02e0ab8e81ac17c8c4e82dca4c489222d75c6389e | True |  |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=00/run-20260513T000011Z.jsonl.gz | ok | 31252 | 9621797 | f647dad1d9496e84853e4dc6ba1b5f039a3fcb0ddb33e4c613d73fcb63caa845 | f647dad1d9496e84853e4dc6ba1b5f039a3fcb0ddb33e4c613d73fcb63caa845 | True |  |
+| raw/pacifica/full_fidelity/channel=mark_price_candle/symbol=ICP/date=2026-05-13/hour=08/run-20260513T000011Z.jsonl.gz | ok | 11561 | 3521141 | 63f251d214c0ccabdd94de58c7d8c5eb7102f2cc26139ddc6d561d7e902c38b1 | 63f251d214c0ccabdd94de58c7d8c5eb7102f2cc26139ddc6d561d7e902c38b1 | True |  |
+
+## Local Gzip integrity audit
+
+This optional audit is local-only and only checks rehydrated payloads under `--local-raw-root`; it does not read, write, or delete remote R2 objects.
+
+_No rows._
 
 ## Output files
 
 - `prefix_summary.csv` — payload counts/bytes by channel/date.
+- `channel_coverage.csv` — payload counts/bytes/dates/symbols by channel.
+- `date_coverage.csv` — payload counts/bytes/channels/symbols by date.
+- `channel_date_symbol_coverage.csv` — payload counts/bytes/hours by channel/date/symbol.
 - `missing_sidecars.csv` — payloads without matching `.sha256` sidecars.
 - `orphan_sidecars.csv` — `.sha256` sidecars without matching payloads.
 - `active_hour_objects.csv` — current UTC hour payloads; these should normally be absent for sealed-chunk uploads.
 - `latest_remote_objects.csv` — newest payload objects in this inventory snapshot.
+- `remote_gzip_sample_verification.csv` — optional read-only remote payload+sidecar SHA/gzip sample verification.
+- `gzip_integrity_audit.csv` — optional local gzip decompression status for rehydrated payloads.
