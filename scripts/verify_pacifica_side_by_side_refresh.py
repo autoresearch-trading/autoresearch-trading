@@ -10,18 +10,18 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from scripts.build_non_hft_regime_state import read_silver_table
 
 DEFAULT_CHANNELS = ("prices", "trades", "bbo", "book", "candle", "mark_price_candle")
 
@@ -63,14 +63,411 @@ def _duplicate_keys(frame: pd.DataFrame, columns: list[str]) -> int:
     return int(frame.duplicated(subset=columns).sum())
 
 
-def _silver_key_columns(frame: pd.DataFrame) -> list[str]:
-    if {"symbol", "event_ts_ms", "recv_ms"}.issubset(frame.columns):
-        return ["symbol", "event_ts_ms", "recv_ms"]
-    if {"symbol", "event_ts_ms"}.issubset(frame.columns):
-        return ["symbol", "event_ts_ms"]
+SOURCE_METADATA_COLUMNS = {"source_key", "source_path", "source_sha256"}
+
+
+def _exact_row_duplicates(frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    payload_columns = [
+        col for col in frame.columns if col not in SOURCE_METADATA_COLUMNS
+    ]
+    if not payload_columns:
+        return 0
+    row_hashes = pd.util.hash_pandas_object(frame[payload_columns], index=False)
+    return int(row_hashes.duplicated().sum())
+
+
+def _row_identity(
+    frame: pd.DataFrame, columns: list[str], *, empty_value: str
+) -> pd.Series:
+    if not columns:
+        return pd.Series([empty_value] * len(frame), index=frame.index, dtype="string")
+    parts = []
+    for col in columns:
+        values = (
+            frame[col].astype("string")
+            if col in frame.columns
+            else pd.Series(pd.NA, index=frame.index, dtype="string")
+        )
+        parts.append(col + "=" + values.fillna("<NA>"))
+    out = parts[0]
+    for part in parts[1:]:
+        out = out.str.cat(part, sep="|")
+    return out.fillna(empty_value)
+
+
+def _base_silver_key_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        col for col in ["symbol", "event_ts_ms", "recv_ms"] if col in frame.columns
+    ]
+    if columns:
+        return frame[columns].copy()
     if {"source_key", "event_ts_ms", "recv_ms"}.issubset(frame.columns):
-        return ["source_key", "event_ts_ms", "recv_ms"]
-    return ["symbol", "event_ts_ms"]
+        return frame[["source_key", "event_ts_ms", "recv_ms"]].copy()
+    return pd.DataFrame(index=frame.index)
+
+
+def _trade_identity(frame: pd.DataFrame) -> pd.Series:
+    history = (
+        frame["history_id"].astype("string")
+        if "history_id" in frame.columns
+        else pd.Series(pd.NA, index=frame.index, dtype="string")
+    )
+    fallback = _row_identity(
+        frame,
+        [
+            col
+            for col in ["nonce", "price", "qty", "direction", "trade_class"]
+            if col in frame.columns
+        ],
+        empty_value="fallback:<no_trade_identity>",
+    )
+    has_history = history.notna() & history.ne("")
+    return ("history_id=" + history).where(has_history, "fallback:" + fallback)
+
+
+def _bbo_identity(frame: pd.DataFrame) -> pd.Series:
+    order_cols = [col for col in ["order_id", "last_order_id"] if col in frame.columns]
+    quote_cols = [
+        col
+        for col in ["bid_px", "bid_qty", "ask_px", "ask_qty", "mid", "spread_bps"]
+        if col in frame.columns
+    ]
+    order_identity = _row_identity(
+        frame, order_cols, empty_value="order:<no_order_identity>"
+    )
+    quote_identity = _row_identity(
+        frame, quote_cols, empty_value="quote:<no_quote_identity>"
+    )
+    if not order_cols:
+        return quote_identity
+    has_order = frame[order_cols].notna().any(axis=1)
+    combined_identity = order_identity + "|" + quote_identity
+    return combined_identity.where(has_order, "quote:" + quote_identity)
+
+
+def _silver_key_frame(frame: pd.DataFrame, channel: str) -> pd.DataFrame:
+    key = _base_silver_key_frame(frame)
+    if channel == "trades":
+        key = key.assign(trade_identity=_trade_identity(frame))
+    elif channel == "bbo":
+        key = key.assign(bbo_identity=_bbo_identity(frame))
+    elif channel in {"candle", "mark_price_candle"}:
+        for col in [
+            "interval",
+            "start_ts_ms",
+            "end_ts_ms",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "trade_count",
+        ]:
+            if col in frame.columns:
+                key[col] = frame[col]
+    return key
+
+
+def _silver_duplicate_keys(frame: pd.DataFrame, channel: str) -> int:
+    if frame.empty:
+        return 0
+    key = _silver_key_frame(frame, channel)
+    if key.empty:
+        return 0
+    return int(key.duplicated().sum())
+
+
+def _silver_key_schema(frame: pd.DataFrame, channel: str) -> str:
+    if frame.empty:
+        return ""
+    key = _silver_key_frame(frame, channel)
+    return ";".join(map(str, key.columns))
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _duckdb_scan_sql() -> str:
+    return "read_parquet(?, union_by_name=true, hive_partitioning=false)"
+
+
+def _has_parquet_file(path: Path) -> bool:
+    return path.exists() and next(path.rglob("*.parquet"), None) is not None
+
+
+def _silver_parquet_inputs(root: Path, channel: str) -> list[str]:
+    inputs: list[str] = []
+    flat_path = root / f"{channel}.parquet"
+    if flat_path.exists():
+        inputs.append(str(flat_path))
+    partition_dir = root / f"channel={channel}"
+    if _has_parquet_file(partition_dir):
+        inputs.append(str(partition_dir / "**" / "*.parquet"))
+    return inputs
+
+
+def _duckdb_connection() -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect(database=":memory:")
+    spill_dir = ROOT / ".tmp" / "duckdb-verifier-spill"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory = {_sql_literal(str(spill_dir))}")
+    memory_limit = os.environ.get("PACIFICA_VERIFIER_DUCKDB_MEMORY_LIMIT", "8GB")
+    if memory_limit:
+        con.execute(f"SET memory_limit = {_sql_literal(memory_limit)}")
+    return con
+
+
+def _duckdb_columns(con: duckdb.DuckDBPyConnection, inputs: list[str]) -> list[str]:
+    rows = con.execute(
+        f"DESCRIBE SELECT * FROM {_duckdb_scan_sql()}", [inputs]
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _duckdb_row_count(con: duckdb.DuckDBPyConnection, inputs: list[str]) -> int:
+    value = con.execute(
+        f"SELECT COUNT(*) FROM {_duckdb_scan_sql()}", [inputs]
+    ).fetchone()[0]
+    return int(value or 0)
+
+
+def _duckdb_key_nulls(
+    con: duckdb.DuckDBPyConnection,
+    inputs: list[str],
+    required_key_cols: list[str],
+    *,
+    row_count: int,
+    columns: list[str],
+) -> int:
+    if any(col not in columns for col in required_key_cols):
+        return row_count
+    predicates = " OR ".join(
+        f"{_quote_identifier(col)} IS NULL" for col in required_key_cols
+    )
+    value = con.execute(
+        f"SELECT COUNT(*) FROM {_duckdb_scan_sql()} WHERE {predicates}", [inputs]
+    ).fetchone()[0]
+    return int(value or 0)
+
+
+def _duckdb_coverage_rows(
+    con: duckdb.DuckDBPyConnection, inputs: list[str], channel: str, columns: list[str]
+) -> list[dict[str, Any]]:
+    if not {"symbol", "event_ts_ms"}.issubset(columns):
+        return []
+    rows = con.execute(
+        f"""
+        SELECT DISTINCT
+            CAST({_quote_identifier('symbol')} AS VARCHAR) AS symbol,
+            strftime(epoch_ms(CAST({_quote_identifier('event_ts_ms')} AS BIGINT)), '%Y-%m-%d') AS date
+        FROM {_duckdb_scan_sql()}
+        WHERE {_quote_identifier('symbol')} IS NOT NULL
+          AND {_quote_identifier('event_ts_ms')} IS NOT NULL
+        ORDER BY symbol, date
+        """,
+        [inputs],
+    ).fetchall()
+    return [
+        {"channel": channel, "symbol": str(symbol), "date": str(date)}
+        for symbol, date in rows
+        if symbol is not None and date is not None
+    ]
+
+
+def _sql_row_identity(columns: list[str], *, empty_value: str) -> str:
+    if not columns:
+        return _sql_literal(empty_value)
+    parts = [
+        f"{_sql_literal(col + '=')} || COALESCE(CAST({_quote_identifier(col)} AS VARCHAR), {_sql_literal('<NA>')})"
+        for col in columns
+    ]
+    return (f" || {_sql_literal('|')} || ").join(parts)
+
+
+def _trade_identity_sql(columns: list[str]) -> str:
+    fallback_cols = [
+        col
+        for col in ["nonce", "price", "qty", "direction", "trade_class"]
+        if col in columns
+    ]
+    fallback = _sql_row_identity(
+        fallback_cols, empty_value="fallback:<no_trade_identity>"
+    )
+    if "history_id" not in columns:
+        return f"{_sql_literal('fallback:')} || {fallback}"
+    history = _quote_identifier("history_id")
+    return (
+        f"CASE WHEN {history} IS NOT NULL AND CAST({history} AS VARCHAR) <> {_sql_literal('')} "
+        f"THEN {_sql_literal('history_id=')} || CAST({history} AS VARCHAR) "
+        f"ELSE {_sql_literal('fallback:')} || {fallback} END"
+    )
+
+
+def _bbo_identity_sql(columns: list[str]) -> str:
+    order_cols = [col for col in ["order_id", "last_order_id"] if col in columns]
+    quote_cols = [
+        col
+        for col in ["bid_px", "bid_qty", "ask_px", "ask_qty", "mid", "spread_bps"]
+        if col in columns
+    ]
+    order_identity = _sql_row_identity(
+        order_cols, empty_value="order:<no_order_identity>"
+    )
+    quote_identity = _sql_row_identity(
+        quote_cols, empty_value="quote:<no_quote_identity>"
+    )
+    if not order_cols:
+        return quote_identity
+    has_order = " OR ".join(
+        f"{_quote_identifier(col)} IS NOT NULL" for col in order_cols
+    )
+    return (
+        f"CASE WHEN {has_order} THEN {order_identity} || {_sql_literal('|')} || {quote_identity} "
+        f"ELSE {_sql_literal('quote:')} || {quote_identity} END"
+    )
+
+
+def _base_silver_key_sql(columns: list[str]) -> tuple[list[str], list[str]]:
+    names = [col for col in ["symbol", "event_ts_ms", "recv_ms"] if col in columns]
+    if names:
+        return [_quote_identifier(col) for col in names], names
+    fallback_names = ["source_key", "event_ts_ms", "recv_ms"]
+    if set(fallback_names).issubset(columns):
+        return [_quote_identifier(col) for col in fallback_names], fallback_names
+    return [], []
+
+
+def _silver_key_sql(columns: list[str], channel: str) -> tuple[list[str], list[str]]:
+    expressions, names = _base_silver_key_sql(columns)
+    if channel == "trades":
+        expressions.append(_trade_identity_sql(columns))
+        names.append("trade_identity")
+    elif channel == "bbo":
+        expressions.append(_bbo_identity_sql(columns))
+        names.append("bbo_identity")
+    elif channel in {"candle", "mark_price_candle"}:
+        for col in [
+            "interval",
+            "start_ts_ms",
+            "end_ts_ms",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "trade_count",
+        ]:
+            if col in columns:
+                expressions.append(_quote_identifier(col))
+                names.append(col)
+    return expressions, names
+
+
+def _duckdb_duplicate_count(
+    con: duckdb.DuckDBPyConnection, inputs: list[str], expressions: list[str]
+) -> int:
+    if not expressions:
+        return 0
+    group_by = ", ".join(expressions)
+    value = con.execute(
+        f"""
+        WITH duplicate_groups AS (
+            SELECT COUNT(*) AS n
+            FROM {_duckdb_scan_sql()}
+            GROUP BY {group_by}
+            HAVING COUNT(*) > 1
+        )
+        SELECT COALESCE(SUM(n - 1), 0)::BIGINT FROM duplicate_groups
+        """,
+        [inputs],
+    ).fetchone()[0]
+    return int(value or 0)
+
+
+def _duckdb_exact_payload_duplicates(
+    con: duckdb.DuckDBPyConnection,
+    inputs: list[str],
+    columns: list[str],
+    *,
+    row_count: int,
+) -> int:
+    if row_count < 2:
+        return 0
+    payload_columns = [col for col in columns if col not in SOURCE_METADATA_COLUMNS]
+    if not payload_columns:
+        return 0
+    group_by = ", ".join(_quote_identifier(col) for col in payload_columns)
+    value = con.execute(
+        f"""
+        WITH duplicate_payloads AS (
+            SELECT COUNT(*) AS n
+            FROM {_duckdb_scan_sql()}
+            GROUP BY {group_by}
+            HAVING COUNT(*) > 1
+        )
+        SELECT COALESCE(SUM(n - 1), 0)::BIGINT FROM duplicate_payloads
+        """,
+        [inputs],
+    ).fetchone()[0]
+    return int(value or 0)
+
+
+def _empty_silver_quality_row(channel: str) -> dict[str, Any]:
+    return {
+        "channel": channel,
+        "key_nulls": 0,
+        "duplicate_keys": 0,
+        "exact_row_duplicates": 0,
+        "duplicate_key_schema": "",
+        "missing_key_columns": "",
+    }
+
+
+def _silver_channel_metrics(
+    root: Path, channel: str
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    inputs = _silver_parquet_inputs(root, channel)
+    if not inputs:
+        return {"channel": channel, "rows": 0}, [], _empty_silver_quality_row(channel)
+
+    con = _duckdb_connection()
+    try:
+        columns = _duckdb_columns(con, inputs)
+        row_count = _duckdb_row_count(con, inputs)
+        count_row = {"channel": channel, "rows": row_count}
+        if row_count == 0:
+            return count_row, [], _empty_silver_quality_row(channel)
+
+        coverage_rows = _duckdb_coverage_rows(con, inputs, channel, columns)
+        required_key_cols = ["symbol", "event_ts_ms"]
+        missing_key_columns = [col for col in required_key_cols if col not in columns]
+        key_expressions, key_names = _silver_key_sql(columns, channel)
+        quality_row = {
+            "channel": channel,
+            "key_nulls": _duckdb_key_nulls(
+                con,
+                inputs,
+                required_key_cols,
+                row_count=row_count,
+                columns=columns,
+            ),
+            "duplicate_keys": _duckdb_duplicate_count(con, inputs, key_expressions),
+            "exact_row_duplicates": _duckdb_exact_payload_duplicates(
+                con, inputs, columns, row_count=row_count
+            ),
+            "duplicate_key_schema": ";".join(key_names),
+            "missing_key_columns": ";".join(missing_key_columns),
+        }
+        return count_row, coverage_rows, quality_row
+    finally:
+        con.close()
 
 
 def _silver_metrics(
@@ -80,45 +477,12 @@ def _silver_metrics(
     coverage_rows: list[dict[str, Any]] = []
     quality_rows: list[dict[str, Any]] = []
     for channel in channels:
-        frame = read_silver_table(root, channel)
-        count_rows.append({"channel": channel, "rows": len(frame)})
-        if frame.empty:
-            quality_rows.append(
-                {
-                    "channel": channel,
-                    "key_nulls": 0,
-                    "duplicate_keys": 0,
-                    "missing_key_columns": "",
-                }
-            )
-            continue
-        dates = (
-            frame["event_ts_ms"].map(_date_from_ms)
-            if "event_ts_ms" in frame
-            else pd.Series([None] * len(frame))
+        count_row, channel_coverage, quality_row = _silver_channel_metrics(
+            root, channel
         )
-        symbols = (
-            frame["symbol"] if "symbol" in frame else pd.Series([None] * len(frame))
-        )
-        for symbol, date in sorted(
-            set(zip(symbols.astype(str), dates.astype(str), strict=False))
-        ):
-            if symbol != "None" and date != "None":
-                coverage_rows.append(
-                    {"channel": channel, "symbol": symbol, "date": date}
-                )
-        required_key_cols = ["symbol", "event_ts_ms"]
-        key_cols = _silver_key_columns(frame)
-        quality_rows.append(
-            {
-                "channel": channel,
-                "key_nulls": _key_nulls(frame, required_key_cols),
-                "duplicate_keys": _duplicate_keys(frame, key_cols),
-                "missing_key_columns": ";".join(
-                    _missing_key_columns(frame, required_key_cols)
-                ),
-            }
-        )
+        count_rows.append(count_row)
+        coverage_rows.extend(channel_coverage)
+        quality_rows.append(quality_row)
     return (
         pd.DataFrame(count_rows),
         pd.DataFrame(coverage_rows, columns=["channel", "symbol", "date"]),
@@ -278,6 +642,15 @@ def compare_side_by_side_refresh(
         .astype(int)
     ).any():
         failures.append("candidate_silver_duplicate_keys")
+    if (
+        silver_quality.get("exact_row_duplicates_candidate", pd.Series(dtype=int))
+        .fillna(0)
+        .astype(int)
+        > silver_quality.get("exact_row_duplicates_canonical", pd.Series(dtype=int))
+        .fillna(0)
+        .astype(int)
+    ).any():
+        failures.append("candidate_silver_exact_row_duplicates")
 
     can_regime_counts, can_regime_cov, can_regime_quality = _regime_metrics(
         canonical_regime_dir

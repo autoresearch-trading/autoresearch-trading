@@ -473,6 +473,50 @@ def test_write_incremental_silver_tables_processes_only_new_changed_sealed_chunk
     assert trades.loc[0, "source_key"].endswith("run=run-second")
 
 
+def test_write_incremental_silver_tables_deduplicates_exact_rows_within_source_chunk(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw"
+    out = tmp_path / "silver_candidate"
+    row = _record(
+        "book",
+        "BTC",
+        {
+            "s": "BTC",
+            "l": [[{"p": "99", "a": "1", "n": 1}], [{"p": "101", "a": "1", "n": 1}]],
+            "li": 10,
+            "t": 1_700_000_000_000,
+        },
+    )
+    source = (
+        raw
+        / "channel=book"
+        / "symbol=BTC"
+        / "date=2023-11-14"
+        / "hour=22"
+        / "run-duplicates.jsonl.gz"
+    )
+    _write_sealed_raw(source, [row, row])
+    manifest = build_source_manifest(
+        raw, channels=["book"], verify_sha=True, count_rows=True
+    )
+
+    result = write_incremental_silver_tables(
+        raw,
+        out,
+        current_manifest=manifest,
+        previous_manifest=None,
+        channels=["book"],
+    )
+
+    assert result["processed_source_objects"] == 1
+    assert result["written_rows_by_channel"] == {"book": 1}
+    parts = list((out / "channel=book" / "symbol=BTC").glob("**/*.parquet"))
+    assert len(parts) == 1
+    table = pd.read_parquet(parts[0])
+    assert len(table) == 1
+
+
 def test_write_incremental_silver_tables_skips_unchanged_manifest_rows(
     tmp_path: Path,
 ) -> None:

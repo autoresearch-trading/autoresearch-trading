@@ -555,11 +555,12 @@ def _write_source_chunk_silver(
             out_path.unlink()
         return 0
     tmp_path = out_path.with_name("part.tmp.parquet")
-    pd.DataFrame(rows).sort_values(
-        ["symbol", "event_ts_ms", "recv_ms"], na_position="last"
-    ).to_parquet(tmp_path, index=False)
+    df = pd.DataFrame(rows).drop_duplicates()
+    df.sort_values(["symbol", "event_ts_ms", "recv_ms"], na_position="last").to_parquet(
+        tmp_path, index=False
+    )
     tmp_path.replace(out_path)
-    return len(rows)
+    return len(df)
 
 
 def write_incremental_silver_tables(
