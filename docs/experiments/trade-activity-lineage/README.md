@@ -3,9 +3,9 @@
 This is a diagnostic audit of raw trades -> silver trades -> regime trade_count/trade_notional -> eligibility activity metrics.
 It is not a strategy, alpha claim, or paper-trading permission.
 
-Verdict: `LINEAGE_AUDIT_FAIL_DIAGNOSTIC`
+Verdict: `LINEAGE_AUDIT_PASS_DIAGNOSTIC`
 Symbols audited: 10
-Sparse-trade zero-median explanations: 0
+Sparse-trade zero-median explanations: 8
 
 ## Interpretation discipline
 
@@ -17,9 +17,9 @@ A PASS here only means the inspected trade-activity lineage is internally consis
 
 | counter | symbols |
 | --- | --- |
-| raw/silver mismatches | 10 |
+| raw/silver mismatches | 0 |
 | silver/regime trade-count mismatches | 0 |
-| sparse-trade zero-median explanations | 0 |
+| sparse-trade zero-median explanations | 8 |
 | unexplained zero medians | 0 |
 
 If raw/silver mismatches appear while silver/regime mismatches are zero, the first suspect is stale research artifacts: local raw cache contains trades that the current silver/regime/eligibility reports have not ingested yet. Refresh silver and regime before treating eligibility as current.
@@ -31,22 +31,22 @@ If raw/silver mismatches appear while silver/regime mismatches are zero, the fir
 - Regime state: `docs/experiments/non-hft-regime-state/regime_state.parquet`
 - Eligibility: `docs/experiments/paper-trading-eligibility/symbol_eligibility.csv`
 - Bucket: `1min`
-- Target symbols: `BTC, ETH, SOL, WLFI, kPEPE, CRV, PUMP, XRP, 2Z, AVAX`
+- Target symbols: `BTC, ETH, SOL, WLFI, CRV, PUMP, kPEPE, XRP, AVAX, BNB`
 
 ## Symbol summary preview
 
 | symbol | raw_trade_rows | silver_trade_rows | regime_trade_count_sum | raw_silver_row_delta | silver_regime_trade_count_delta | regime_trade_active_row_share | regime_trade_notional_median_all_rows | median_trade_notional_per_min | activity_median_zero_reason | diagnostic_notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2Z | 2041 | 1472 | 1472 | 569 | 0 | 0.0929 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| AVAX | 2030 | 1451 | 1451 | 579 | 0 | 0.1026 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| BTC | 11796 | 8606 | 8606 | 3190 | 0 | 0.0927 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| CRV | 1822 | 1261 | 1261 | 561 | 0 | 0.1041 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| ETH | 7506 | 5309 | 5309 | 2197 | 0 | 0.0864 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| PUMP | 2035 | 1320 | 1320 | 715 | 0 | 0.0772 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| SOL | 5834 | 2960 | 2960 | 2874 | 0 | 0.0737 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| WLFI | 6644 | 852 | 852 | 5792 | 0 | 0.0797 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| XRP | 12389 | 843 | 843 | 11546 | 0 | 0.0722 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
-| kPEPE | 9401 | 1042 | 1042 | 8359 | 0 | 0.0903 | 0 | 0 | sparse_trade_minutes_with_raw_silver_gap | raw_silver_trade_row_mismatch;raw_silver_notional_mismatch |
+| AVAX | 11077 | 11077 | 11077 | 0 | 0 | 0.4369 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| BNB | 11990 | 11990 | 11990 | 0 | 0 | 0.4389 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| BTC | 56345 | 56345 | 56345 | 0 | 0 | 0.5642 | 16.4833 | 16.4833 | median_nonzero |  |
+| CRV | 9653 | 9653 | 9653 | 0 | 0 | 0.4162 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| ETH | 36988 | 36988 | 36988 | 0 | 0 | 0.4935 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| PUMP | 11614 | 11614 | 11614 | 0 | 0 | 0.4540 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| SOL | 32116 | 32116 | 32116 | 0 | 0 | 0.4862 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| WLFI | 9003 | 9003 | 9003 | 0 | 0 | 0.4170 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| XRP | 15862 | 15862 | 15862 | 0 | 0 | 0.4822 | 0 | 0 | sparse_trade_minutes_not_missing_trade_lineage | median_zero_explained_by_sparse_trade_minutes |
+| kPEPE | 11848 | 11848 | 11848 | 0 | 0 | 0.5281 | 0.0037 | 0.0037 | median_nonzero |  |
 
 ## Output files
 

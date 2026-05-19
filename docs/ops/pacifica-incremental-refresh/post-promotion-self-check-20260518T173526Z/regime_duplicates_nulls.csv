@@ -1,0 +1,2 @@
+table,key_nulls_canonical,duplicate_keys_canonical,missing_key_columns_canonical,key_nulls_candidate,duplicate_keys_candidate,missing_key_columns_candidate
+regime_state,0,0,,0,0,

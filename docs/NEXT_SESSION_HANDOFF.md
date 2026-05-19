@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-13 22:18 UTC
+Updated: 2026-05-18 22:18 UTC
 
 ## Current state
 
@@ -15,7 +15,603 @@ Canonical active runtime/archive:
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
 
-## Latest 2026-05-13 trade-activity lineage audit
+## Latest 2026-05-18 canonical promotion + refreshed diagnostic reports
+
+Timestamp: `2026-05-18T22:18Z`.
+
+Diego approved canonical promotion after the bounded R2 rehydration, side-by-side silver/regime candidate build, duplicate-key fix, and green verifier.
+
+Promotion run:
+
+```text
+run_id=20260518T173526Z
+backup_root=data/ops/promotion-backups/pacifica-canonical-promotion-20260518T173526Z-20260518T221131Z
+promoted_silver=data/pacifica_silver_partitioned
+promoted_regime=docs/experiments/non-hft-regime-state
+advanced_manifest=data/ops/pacifica-source-manifest/source_manifest_previous.csv
+source_manifest=data/ops/pacifica-source-manifest/source_manifest_20260518T173526Z.csv
+post_promotion_self_check=docs/ops/pacifica-incremental-refresh/post-promotion-self-check-20260518T173526Z
+```
+
+Post-promotion self-check:
+
+```text
+ok=True
+failures=[]
+canonical_old_regime_rows=1,110,785
+promoted_regime_rows=1,225,259
+row_delta=114,474
+focused tests: tests/scripts/test_build_pacifica_full_fidelity_silver.py + tests/scripts/test_verify_pacifica_side_by_side_refresh.py => 30 passed
+```
+
+Refreshed canonical report state:
+
+```text
+docs/experiments/non-hft-regime-state/README.md
+  bucket=1min rows=1,225,259 symbols=66
+  status: useful regime/risk substrate, not an alpha claim
+
+docs/experiments/paper-trading-eligibility/README.md
+  verdict=INSUFFICIENT_SAMPLE_DIAGNOSTIC
+  symbols_evaluated=66 eligible_symbols=0
+  min_days gate=30; top preview symbols currently show up to n_days=19
+  gate_counts: sample_gate_pass=0/66, liquidity_gate_pass=25/66, spread_cost_gate_pass=62/66, activity_gate_pass=0/66, stability_gate_pass=63/66, concentration_gate_pass=66/66, eligible=0/66
+
+docs/experiments/toxic-regime-overlay/README.md
+  verdict=INSUFFICIENT_SAMPLE_DIAGNOSTIC
+  rows=1,225,259 symbols=66 distinct_dates=19
+  minimum serious-validation gate=30 distinct days; fixed cutoffs remain [0.9, 0.8, 0.7]
+
+docs/experiments/trade-activity-lineage/README.md
+  verdict=LINEAGE_AUDIT_PASS_DIAGNOSTIC
+  symbols_audited=10 raw/silver mismatches=0 silver/regime trade-count mismatches=0 unexplained_zero_medians=0 sparse_trade_zero_median_explanations=8
+```
+
+Interpretation:
+
+- The local canonical silver/regime substrate is now current through the bounded refreshed local cache and passed side-by-side/post-promotion checks.
+- This is a data-plumbing success only. It is not an alpha claim, paper-trading permission, or evidence of post-cost profitability.
+- Paper-trading eligibility remains `0/66`; the hard blockers are still the 30-day sample gate and activity gate.
+- The lineage audit indicates the activity failures are not caused by a raw → silver → regime trade-count break for audited symbols; the all-row median trade-notional metric is mostly zero because trade-active minutes remain sparse.
+- Toxic overlay remains diagnostic: 19 distinct dates is still below the 30-day serious-validation gate, and thresholds must not be tuned on this sample.
+
+Current recommendation:
+
+1. Keep treating all outputs as diagnostic.
+2. Do not tune toxicity/governor thresholds on this sample.
+3. Do not paper/live trade; there are still zero eligible symbols.
+4. Continue cost-aware collection/cache decisions first, then refresh reports only from bounded approved data.
+5. Revisit provisional conclusions only after at least `30` full distinct days; prefer `60+` days for serious validation.
+
+## Latest 2026-05-17 original-plan restart + billing usage check
+
+Timestamp: `2026-05-17T16:06Z`.
+
+Diego approved continuing with the original data-safe 24/7 full-fidelity plan after reviewing that the realistic budget is closer to `$50-60/month` across Fly + Cloudflare, not `<$20` each. The Fly collector was restarted.
+
+```text
+flyctl machine start e2862502a76778 -a pacifica-full-fidelity
+  e2862502a76778 has been started
+
+flyctl machine status e2862502a76778 -a pacifica-full-fidelity
+  State: started
+  HostStatus: ok
+  Updated: 2026-05-17T16:06:11Z
+  Image: pacifica-full-fidelity:deployment-01KRHKTRDN862V3YA274ZNE27J
+  Volume: vol_vwn2mpw8mmgwx38v
+
+flyctl status -a pacifica-full-fidelity
+  app=e2862502a76778 version=30 region=iad state=started last_updated=2026-05-17T16:06:11Z
+
+recent Fly logs
+  /data mounted and resized to 214731587584 bytes
+  ops watchdog run start
+  lifecycle scan/upload/verify/prune start
+  scanned=0 state_db=/data/pacifica_full_fidelity_storage.sqlite
+```
+
+Billing/usage check:
+
+- Fly exact current invoice was not exposed through `flyctl`; `flyctl billing`/`flyctl invoices` do not exist in this installed CLI. Fly GraphQL exposed org billing status but not invoice line items.
+- Fly org status via GraphQL: `billingStatus=CURRENT`, `billable=True`, `paidPlan=True`, `creditBalance_cents=0`.
+- Live Fly billable resources: one shared-cpu-1x/1GB machine now `started`; one `200GB` volume `pacifica_full_fidelity_data` attached to `e2862502a76778`. Approximate ongoing burn from here is about `$1.20/day` while running (`~$1/day` volume + `~$0.20/day` compute), before snapshots/bandwidth. Known-resource MTD estimate from 100GB volume until `2026-05-09T23:44Z`, 200GB volume after that, and compute runtime through pause/restart is about `$14.63` before snapshots/bandwidth/dashboard adjustments.
+- Cloudflare exact billing endpoints returned `403 Authentication error` with the current Wrangler OAuth token, so exact invoice also requires the dashboard or a token with billing scope.
+- Cloudflare R2 GraphQL usage for `2026-05-01..2026-05-17` was available and is the best current programmatic signal.
+
+Cloudflare R2 month-to-date usage from GraphQL:
+
+```text
+All R2 buckets latest storage on 2026-05-17:
+  pacifica-trading-data Standard: object_count=3,091,964 payload_gb=116.915 metadata_gb=0.048
+  pacifica-cache Standard:        object_count=4,003     payload_gb=1.012   metadata_gb=0.000
+  pacifica-models Standard:       object_count=0         payload_gb=0.000   metadata_gb=0.000
+
+pacifica-trading-data operations MTD:
+  total_requests=11,816,974
+  response_gb=98.508
+  top actions:
+    DeleteObject=6,634,278
+    HeadObject=3,079,749
+    ListObjects=980,745
+    PutObject=449,364
+    GetObject=351,224
+    CopyObject=321,613
+
+Rough R2 billable estimate from visible R2 usage only:
+  class_a_requests≈1,751,727 -> about $3.38 after 1M free
+  class_b_requests≈3,430,973 -> about $0.00 after 10M free
+  latest Standard storage≈117.927GB -> about $1.62/month if constant after 10GB free
+  visible-R2 subtotal estimate≈$5.00 before any non-R2 Cloudflare products/taxes/dashboard adjustments
+```
+
+Budget check cadence:
+
+- Daily read-only budget checks were scheduled for the next 10 days.
+- Cron job: `c2e30faff15a` (`Pacifica original-plan daily budget check`), `every 24h`, next run `2026-05-18T11:06:46-05:00`, delivery `origin`.
+- The job is read-only: it must not restart/stop Fly, delete local files, delete R2 objects, or modify billing resources.
+
+Operational stance after restart:
+
+- Continue original full-fidelity plan, but watch cost daily.
+- Treat exact provider dashboards as the source of truth for invoice totals; CLI/API estimates are resource/usage evidence only.
+- If Fly or Cloudflare MTD usage approaches the agreed original-plan budget (`~$50-60/month` total), pause and redesign rather than resizing further.
+- Avoid full-prefix local R2 mirrors; bounded rehydration only.
+
+## Latest 2026-05-16 cost-control re-verification
+
+Timestamp: `2026-05-16T20:29:51Z` live bounded checks; local cache partition scan at `2026-05-16T20:34:24Z`.
+
+Diego asked to continue cost-control mode. No destructive action was run. The Fly collector remains stopped and must not be restarted unless Diego explicitly approves renewed spend.
+
+Live checks:
+
+```text
+git status --short
+  dirty working tree with existing modified generated docs/reports/code/tests, including docs/NEXT_SESSION_HANDOFF.md, non-hft-regime-state outputs, paper-trading-eligibility outputs, trade-activity-lineage outputs, pacifica-r2-archive-health outputs, scripts/verify_pacifica_side_by_side_refresh.py, tests/scripts/test_verify_pacifica_side_by_side_refresh.py, and untracked docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification/.
+
+flyctl machine status e2862502a76778 -a pacifica-full-fidelity
+  State: stopped
+  HostStatus: ok
+  Image: pacifica-full-fidelity:deployment-01KRHKTRDN862V3YA274ZNE27J
+  Region: iad
+  Volume: vol_vwn2mpw8mmgwx38v
+  Updated: 2026-05-16T14:38:16Z
+  event: exit_code=0, oom_killed=false, requested_stop=true
+
+flyctl volumes list -a pacifica-full-fidelity
+  vol_vwn2mpw8mmgwx38v  created  pacifica_full_fidelity_data  200GB  iad  attached_to=e2862502a76778  encrypted=true
+
+rclone size r2:pacifica-trading-data/raw/pacifica/full_fidelity --json
+  {"count":332586,"bytes":106353538565,"sizeless":0}
+
+du -sh data/pacifica_full_fidelity data/pacifica_silver_partitioned docs/experiments/non-hft-regime-state data/ops
+  90G   data/pacifica_full_fidelity
+  5.3G  data/pacifica_silver_partitioned
+  156M  docs/experiments/non-hft-regime-state
+  1.4G  data/ops
+
+process scan for rclone/build/verifier/refresh jobs
+  matching_processes=0
+```
+
+Local laptop cache read-only partition summary:
+
+```text
+data/pacifica_full_fidelity total_files=302936 payloads=151462 sidecars=151474 total_gib=89.45
+latest_payload_mtime_utc=2026-05-16T11:06:45.851718+00:00
+latest_payload_path=data/pacifica_full_fidelity/channel=book/symbol=BP/date=2026-05-16/hour=10/run-20260513T212918Z.jsonl.gz
+dates=2026-04-30..2026-05-16 count=17
+keep last 5 local dates 2026-05-12..2026-05-16: keep 16.24 GiB, reclaim 73.22 GiB
+keep last 3 local dates 2026-05-14..2026-05-16: keep 4.78 GiB, reclaim 84.67 GiB
+keep last 7 local dates 2026-05-10..2026-05-16: keep 26.09 GiB, reclaim 63.37 GiB
+```
+
+Cost-control interpretation:
+
+- Keep the Fly machine stopped. It is stopped now, so new collector ingestion, upload/verify request churn, and new R2 raw growth from this collector should remain paused.
+- Fly volume storage is still a cost: `pacifica_full_fidelity_data` is still a 200GB attached volume. Do not destroy it yet unless Diego first decides the lifecycle DB/backlog state is no longer needed or exports/verifies enough replacement evidence.
+- R2 storage is still a cost: active raw prefix is about 332.6k objects / 106.35GB decimal (~99.05 GiB). Do not delete R2 raw directly. First build a non-destructive retention/cold-compaction report and verify manifests/restores.
+- Laptop local cache is not a cloud-cost driver but is too large for the laptop. Pruning by whole date partitions is the safest local-disk cleanup after explicit local-delete approval. Default recommendation: keep only the last 5 local dates and reclaim about 73.22 GiB.
+- Replace full-prefix local R2 mirroring with bounded date/symbol/channel rehydration or a small rolling local cache.
+
+Budget target from Diego: keep both Fly and Cloudflare invoices under `$20` each. Pricing checked from official docs on `2026-05-17T01:22:01Z`: Fly Volumes are `$0.15/GB-month` provisioned and charged even when the attached Machine is stopped; Cloudflare R2 Standard storage is `$0.015/GB-month` after 10GB free, with Class A operations at `$4.50/million` and Class B at `$0.36/million`. At 200GB provisioned, the Fly volume alone is about `$30/month` (`~$1/day` on a 30-day month), so keeping the current 200GB volume all month is incompatible with a `<$20` Fly invoice. At the current R2 raw size, R2 storage alone is only about `$1.45/month` after the 10GB free tier; Cloudflare risk is mainly request/operation churn from full mirrors, lifecycle scans, inventories, and collection uploads.
+
+Root-cause note for the unexpected invoices: the original operational plan was data-loss-safe, not budget-fail-closed. It correctly specified compact raw payloads, a 50GiB free-disk guard, R2 copy/upload semantics, prune-after-remote-verified only, and R2 remote expiry only after cold-compaction/manifests. The failure was that these safety gates were scaled to 24/7 all-symbol/full-fidelity collection before a hard dollar budget gate existed. When verification/backlog lagged ingestion, Fly local prune stayed blocked (`uploaded` is not `verified`), the volume was expanded to 200GB to preserve data/freshness, and that provisioned volume alone became incompatible with a <$20 Fly invoice. Separately, local research refresh used a broad R2-to-laptop copy, creating a near-full local mirror and likely adding Cloudflare operation churn; future refreshes must use bounded rehydration instead.
+
+Budget-constrained feasibility: the original architecture can still work under `<$20` each only with stricter parameters. With 24/7 shared-cpu-1x/1GB compute estimated around `$5.92/month`, Fly volume must stay below roughly 74-80GB if reserving `$2-3` for snapshots/overhead; 100GB is already about `$20.92/month` before snapshots and 200GB is impossible. Because the collector uses a 50GiB free-disk floor, full-universe/full-fidelity 24/7 collection is only feasible at an 80GB-class volume if verified/pruned throughput reliably stays within about one day of ingestion. Otherwise the system must reduce raw GB/day via fewer channels/symbols or scheduled capture windows. On R2, reserving `$5` for operations leaves about 1010GB Standard storage under a `$20` cap; that implies rough steady-state raw-retention limits of ~33.7GB/day for 30 days, ~22.4GB/day for 45 days, or ~16.8GB/day for 60 days before cold compaction/expiry.
+
+Original-plan budget estimate: the data-safe 24/7 full-fidelity plan needs about `$25-40/month` if lifecycle verification/pruning stays healthy and the volume can stay 75-100GB, split roughly Fly `$18-26` plus Cloudflare `$6-15`. A robust/backlog-tolerant version using the current 200GB Fly volume is more like `$45-60+/month`, split roughly Fly `$36-45+` plus Cloudflare `$8-20+` depending on R2 operation churn. At the observed current R2 growth rate (~6.26GB/day across the current prefix), R2 Standard storage is cheap (`~$2.67/month` for 30d retention, `~$5.48/month` for 60d retention), but the earlier docs' rough 25GB/day design rate would be much tighter (`~$11.10/month` for 30d retention and `~$22.35/month` for 60d retention before operations). Therefore the original plan's realistic budget should have been at least about `$50/month` across Fly+Cloudflare, with a safer backlog-tolerant cap closer to `$60/month`; `<$20` each requires budget-mode scope/rate reductions.
+
+Immediate no-risk next actions:
+
+1. Leave `pacifica-full-fidelity` machine `e2862502a76778` stopped.
+2. Avoid any full-prefix `rclone copy` from R2 to the laptop.
+3. Build/read a report-only R2 retention/cold-compaction plan; no remote deletes or lifecycle expiry.
+4. If doing local research before a new collection design, rehydrate only specific dates/symbols/channels into the local cache.
+
+Requires explicit approval before running:
+
+1. Local delete: prune `data/pacifica_full_fidelity/date=<old-date>` whole date partitions. Suggested policy is keep `2026-05-12` through `2026-05-16` and remove older local date partitions, reclaiming about 73.22 GiB. This saves laptop disk only, not invoices.
+2. Fly destructive/irreversible action: destroy/downsize the 200GB volume or delete the app/machine. Do this only after deciding the lifecycle DB/backlog state is no longer needed or safely exported.
+3. R2 destructive action: delete raw objects or enable lifecycle expiry. This requires verified cold compaction + manifest coverage + restore validation + explicit delete approval.
+4. Restart collection: `flyctl machine start e2862502a76778 -a pacifica-full-fidelity` only if Diego explicitly accepts renewed spend.
+
+## Latest 2026-05-16 >24h ops check + local research refresh
+
+Timestamp: `2026-05-16T13:10Z`
+
+Diego noted that more than 24h had passed since the last check, so a bounded, non-destructive live check was run before any local rebuild work.
+
+Live ops/archive evidence:
+
+```text
+flyctl status --app pacifica-full-fidelity
+  app=pacifica-full-fidelity
+  machine=e2862502a76778
+  state=started
+  image=pacifica-full-fidelity:deployment-01KRHKTRDN862V3YA274ZNE27J
+  last_updated=2026-05-13T21:29:17Z
+
+uv run python scripts/check_pacifica_r2_freshness.py --stale-after-min 180 --timeout-s 120 --out data/ops/pacifica-r2-freshness-20260516T130108Z.json
+  ok=True
+  failures=[]
+  latest_payload_age_min=114.4
+  latest_payload=channel=book/symbol=ETH/date=2026-05-16/hour=10/run-20260513T212918Z.jsonl.gz
+  payload_count=137
+  sidecar_count=137
+  sidecar_missing_count=0
+
+Sampled latest R2 payload copied locally for verification:
+  data/ops/r2-sample-verification-20260516T130108Z/run-20260513T212918Z.jsonl.gz
+  sha256_match=True
+  gzip_rows=3002
+  bytes=1417062
+
+uv run python scripts/watch_pacifica_api_surface.py --fail-on-change --out-dir docs/ops/pacifica-api-surface-watch
+  changed=False
+```
+
+Local research raw cache was stale relative to R2 before refresh:
+
+```text
+data/pacifica_full_fidelity/
+  payloads=145995
+  sidecars=145995
+  payload_gib=86.72
+  dates=('2026-04-30', '2026-05-14')
+  latest_local_mtime_utc=2026-05-14T11:04:49.850822+00:00
+  latest_local_age_min=2995.81
+  latest_local_path=data/pacifica_full_fidelity/channel=book/symbol=ANTHROPIC/date=2026-05-14/hour=10/run-20260513T212918Z.jsonl.gz
+```
+
+A safe non-destructive refresh was started to copy new R2 raw objects into the local research cache and then build side-by-side candidate artifacts only, but it was intentionally stopped after Diego flagged the local cache size. No side-by-side candidate was created from this run.
+
+```text
+Hermes background process: proc_2bf0bfb5b20f
+OS wrapper process id: 18537
+Observed child rclone pid while copy was in progress: 18565
+Wrapper: data/ops/pacifica_24h_refresh_20260516T130108Z.sh
+Run timestamp: 20260516T130108Z
+Copy log: data/ops/pacifica-research-refresh-20260516T130108Z/r2_copy.log
+Stop time: about 2026-05-16T13:21Z via `process kill proc_2bf0bfb5b20f`
+Side-by-side driver log: not created
+Candidate silver/regime dirs: not created
+```
+
+Post-stop local cache/retention check:
+
+```text
+data/pacifica_full_fidelity/ size: 91G by du; 89.45 GiB including sidecars by file sum
+payloads=151462 sidecars=151474
+latest_local_mtime_utc=2026-05-16T11:06:45.851718+00:00
+no local rclone/rebuild process remained after stop
+
+Local cache reclaim estimate if pruned by whole date partitions:
+  keep 2026-05-14..2026-05-16 only: keep 4.78 GiB, reclaim 84.67 GiB
+  keep 2026-05-12..2026-05-16 only: keep 16.24 GiB, reclaim 73.22 GiB
+  keep 2026-05-10..2026-05-16 only: keep 26.09 GiB, reclaim 63.37 GiB
+```
+
+Fly/R2 pruning evidence checked at about `2026-05-16T13:24Z`:
+
+```text
+Fly volume: pacifica_full_fidelity_data, 200GB attached to e2862502a76778
+fly machine exec ... df -h /data
+  /data size=197G used=68G avail=120G use=37%
+
+Latest Fly health log around 2026-05-16T12:56Z:
+  ok=True failures=[] rows_with_errors=0
+  db_counts.pruned:   35,603 files / 18,597,964,743 bytes
+  db_counts.sealed:      789 files / 1,325,213,987 bytes
+  db_counts.uploaded:124,271 files / 68,678,539,199 bytes
+  db_counts.verified:  2,000 files / 732,505,126 bytes
+  unverified_gb=65.2
+
+Latest lifecycle logs show frequent fresh-lane upload/sidecar repair, but the 6h backlog lane was skipped in the 12:42Z cycle. Pruning is safety-correct on Fly (`PACIFICA_R2_PRUNE_EXECUTE=1`, retention_days=1), but most local Fly bytes are still `uploaded` rather than `verified`, so they are not yet prune-eligible.
+
+R2 raw prefix size:
+  rclone size r2:pacifica-trading-data/raw/pacifica/full_fidelity --json
+  count=332090 bytes=106326359902 (~99.02 GiB)
+
+R2 remote raw deletion/expiry is intentionally not active. `scripts/plan_pacifica_r2_retention.py` is report-only and requires verified cold compaction + manifest coverage + separate explicit approval before any remote raw expiry/delete.
+```
+
+Safety boundary: do not resume full-prefix R2 -> laptop copy until a local-cache policy is chosen. Prefer bounded date/symbol rehydration or prune the laptop cache by whole date partitions after explicit approval. Fly local prune is running safely but verification backlog is the bottleneck; R2 is intentionally append-only for now, not mis-pruned.
+
+## Latest 2026-05-16 cost-control pause
+
+Timestamp: `2026-05-16T14:39Z`
+
+Diego reported Cloudflare and Fly invoices already around `$16` each. To stop further cloud growth immediately without deleting data, the Fly collector machine was paused after a no-response clarification timeout.
+
+```text
+flyctl machine stop e2862502a76778 -a pacifica-full-fidelity
+  e2862502a76778 has been successfully stopped
+
+flyctl machine status e2862502a76778 -a pacifica-full-fidelity
+  State: stopped
+  Updated: 2026-05-16T14:38:16Z
+  exit_code=0, oom_killed=false, requested_stop=true
+```
+
+Current cost posture:
+
+- New Pacifica raw collection is paused, so new R2 object growth and request volume from the collector should stop.
+- Existing Fly volume `pacifica_full_fidelity_data` still exists at 200GB and will continue to incur storage cost until downsized/destroyed.
+- Existing R2 raw archive remains at about `106,353,538,565` bytes / `99.05 GiB` and will continue to incur storage cost until a reviewed retention/cold-compaction delete plan is explicitly approved and executed.
+- Do not destroy the Fly volume yet: latest Fly DB health showed most bytes in `uploaded` rather than `verified`, so the volume is still useful for verification/backlog state unless we first export/verify enough evidence.
+
+Restart command if Diego explicitly accepts renewed cloud spend:
+
+```bash
+flyctl machine start e2862502a76778 -a pacifica-full-fidelity
+```
+
+Next safe cost-down steps:
+
+1. Prune laptop cache by whole date partitions after explicit local-delete approval. This saves local disk, not invoices.
+2. Build a non-destructive R2 cost report from inventory: object/request drivers, retained recent raw, and cold-compaction candidates.
+3. Decide whether to keep a smaller future collector: fewer channels/symbols or scheduled short capture windows instead of 24/7 full universe.
+4. Only after verified cold archive/manifest coverage and approval, apply R2 raw expiry/delete. No remote delete is approved yet.
+
+## Latest 2026-05-13 research refresh continuation
+
+Timestamp: `2026-05-13T23:32Z`
+
+The refresh was resumed from the trade-activity lineage audit handoff. Ops/archive freshness was checked first with non-destructive live evidence:
+
+```text
+flyctl status --app pacifica-full-fidelity
+  app=pacifica-full-fidelity
+  machine=e2862502a76778
+  version=30
+  state=started
+  image=pacifica-full-fidelity:deployment-01KRHKTRDN862V3YA274ZNE27J
+
+uv run python scripts/check_pacifica_r2_freshness.py --stale-after-min 180 --timeout-s 120 --out data/ops/pacifica-r2-freshness-20260513T230359Z.json
+  ok=True
+  failures=[]
+  latest_payload_age_min=95.01
+  latest_payload=channel=book/symbol=ETH/date=2026-05-13/hour=21/run-20260513T205507Z.jsonl.gz
+  payload_count=228
+  sidecar_count=228
+  sidecar_missing_count=0
+```
+
+The local research raw cache was stale before refresh (`data/pacifica_full_fidelity/` latest local payload was 2026-05-12T15:06:53Z, age about 1919 minutes), so a non-destructive R2 copy was started before building manifests or silver/regime artifacts:
+
+```text
+Hermes background process: proc_7085172d0c1d
+Child rclone pid observed: 84762
+Command:
+  rclone copy r2:pacifica-trading-data/raw/pacifica/full_fidelity data/pacifica_full_fidelity --transfers 16 --checkers 32 --fast-list --stats 30s --stats-one-line
+```
+
+A second non-destructive background driver was started to continue only after the copy PID exits:
+
+```text
+Hermes background process: proc_40a907d748a7
+Script: data/ops/pacifica_research_refresh_after_r2_copy.sh
+Log: data/ops/pacifica-research-refresh-20260513T233058Z/refresh.log
+Behavior:
+  1. wait for rclone pid 84762 to exit;
+  2. summarize local raw cache;
+  3. run read-only `rclone check` source->local with `--one-way --size-only`;
+  4. build `data/ops/pacifica-source-manifest/source_manifest_20260513T233058Z.csv` and matching incremental plan;
+  5. build side-by-side candidate silver under `data/pacifica_silver_partitioned_candidate_20260513T233058Z`;
+  6. build candidate regime delta/full snapshots under `data/ops/pacifica-regime-candidate-20260513T233058Z*`;
+  7. run side-by-side verification into `docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification`.
+```
+
+Safety boundary: this background driver does not advance `source_manifest_previous.csv`, does not overwrite canonical `data/pacifica_silver_partitioned/`, does not overwrite canonical `docs/experiments/non-hft-regime-state/`, does not rebuild canonical eligibility, and does not mutate R2/raw. After it completes, manually inspect the verifier before any promotion or eligibility refresh.
+
+At handoff update time, the local copy was still running and local payload inventory had advanced to about 58,806 payload files / 42.81 GiB with 2026-05-13 data present. Treat silver/regime/eligibility as stale until the background driver completes and a human/agent reviews the verification report.
+
+## Latest 2026-05-14 research refresh continuation update
+
+Timestamp: `2026-05-14T13:53Z`
+
+The long R2 -> local copy completed with exit code 0 after retrying transient R2 `403`/XML parse errors. Local raw cache summary immediately after completion:
+
+```text
+payloads=145995
+sidecars=145995
+payload_gib=86.72
+symbols=67
+channels=['bbo', 'book', 'candle', 'mark_price_candle', 'pong', 'prices', 'subscribe', 'trades']
+dates=('2026-04-30', '2026-05-14')
+latest_local_mtime=2026-05-14T11:04:49.850822+00:00
+latest_local_age_min=160.64
+latest_local_path=data/pacifica_full_fidelity/channel=book/symbol=ANTHROPIC/date=2026-05-14/hour=10/run-20260513T212918Z.jsonl.gz
+```
+
+The first continuation driver `proc_40a907d748a7` then failed at the strict full-root `rclone check` step because the live R2 archive moved during/after the long copy. It found only 10 newest remote files missing locally, all under 2026-05-14 hour=11 for `pong/UNKNOWN` and trades symbols `2Z`, `CHIP`, `kPEPE`, and `WLFI` plus sidecars. This is a moving-snapshot mismatch, not evidence that copied local sealed files are corrupt. Do not promote canonical artifacts from this state without the side-by-side verification below.
+
+A second local-snapshot side-by-side refresh ran from the sealed/checksum/gzip-verified local snapshot rather than a full-root check against a moving live archive. The original verifier implementation failed the run because it used an over-broad generic silver duplicate key and then later OOMed when pandas materialized full production channels:
+
+```text
+Hermes background process: proc_026e06e384d3
+Script: data/ops/pacifica_research_refresh_from_local_snapshot.sh
+Log: data/ops/pacifica-research-refresh-20260514T135053Z/refresh_from_local_snapshot.log
+Original exit: 1
+Original verifier verdict: ok=False
+Original failures: ['candidate_silver_duplicate_keys']
+```
+
+Verifier fix completed on 2026-05-14T19:09Z:
+
+```text
+scripts/verify_pacifica_side_by_side_refresh.py
+  - production silver metrics now use DuckDB/parquet-side aggregation one channel at a time instead of `read_silver_table`/pandas full-frame loads.
+  - computes row counts, symbol/date coverage, required-key nulls, channel-specific semantic duplicate keys, and exact-payload duplicates excluding `source_key`, `source_path`, and `source_sha256`.
+  - DuckDB spill dir defaults to `.tmp/duckdb-verifier-spill`; memory limit defaults to `PACIFICA_VERIFIER_DUCKDB_MEMORY_LIMIT` or `8GB`.
+
+tests/scripts/test_verify_pacifica_side_by_side_refresh.py
+  - keeps channel-specific duplicate semantics tests for `trades`, `bbo`, `candle`, and exact-payload duplicates.
+  - adds a scale-safety regression proving production silver metrics do not call the pandas `read_silver_table` path.
+```
+
+The existing candidate `20260514T135053Z` was rerun through the fixed verifier and is now green:
+
+```text
+Command:
+uv run python scripts/verify_pacifica_side_by_side_refresh.py \
+  --canonical-silver-dir data/pacifica_silver_partitioned \
+  --candidate-silver-dir data/pacifica_silver_partitioned_candidate_20260514T135053Z \
+  --canonical-regime-dir docs/experiments/non-hft-regime-state \
+  --candidate-regime-dir data/ops/pacifica-regime-candidate-20260514T135053Z \
+  --out-dir docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification
+
+Exit: 0
+Verifier verdict: ok=True
+Failures: []
+Runtime: about 3 minutes wall clock in Hermes background process `proc_b4451ff25e3c`
+```
+
+Current green verifier artifacts:
+
+```text
+docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification/README.md
+  ok=True
+  failures=[]
+
+docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification/summary.csv
+  channels=prices,trades,bbo,book,candle,mark_price_candle
+
+docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification/silver_row_counts.csv
+  prices: canonical=1,039,338 candidate=5,252,223 delta=4,212,885
+  trades: canonical=91,069 candidate=699,037 delta=607,968
+  bbo: canonical=12,974,473 candidate=23,669,943 delta=10,695,470
+  book: canonical=14,137,732 candidate=60,389,166 delta=46,251,434
+  candle: canonical=1,915,776 candidate=8,152,538 delta=6,236,762
+  mark_price_candle: canonical=22,446,290 candidate=158,241,147 delta=135,794,857
+
+docs/ops/pacifica-incremental-refresh/latest-side-by-side-verification/regime_row_counts.csv
+  regime_state: canonical=519,903 candidate=1,110,785 delta=590,882
+```
+
+Status after Diego's explicit `approved` message on 2026-05-15: promotion was executed and verified. The former candidate is now canonical, `source_manifest_previous.csv` has been advanced to `source_manifest_20260514T135053Z.csv`, and backups are under `data/ops/pacifica-promotion-backups/20260515T145557Z`. The next sections record the post-promotion self-check, refreshed eligibility, and lineage audit.
+
+## Latest 2026-05-15 approved promotion + refreshed eligibility/lineage
+
+Timestamp: `2026-05-15T14:55Z`
+
+Diego approved promotion after the fixed side-by-side verifier was green. Promotion was executed locally without deleting raw data:
+
+```text
+Promoted candidate run: 20260514T135053Z
+Backup root: data/ops/pacifica-promotion-backups/20260515T145557Z
+  pacifica_silver_partitioned_before/      # old canonical silver
+  non-hft-regime-state_before/             # old canonical regime/report
+  source_manifest_previous_before.MISSING  # no previous manifest existed before promotion
+  promotion_record.json
+
+Canonical after promotion:
+  data/pacifica_silver_partitioned                         5.3G
+  docs/experiments/non-hft-regime-state                    156M
+  data/ops/pacifica-source-manifest/source_manifest_previous.csv
+    line_count=139376 (same current manifest rows + header)
+```
+
+Candidate paths were moved into canonical paths as part of promotion:
+
+```text
+data/pacifica_silver_partitioned_candidate_20260514T135053Z -> data/pacifica_silver_partitioned
+data/ops/pacifica-regime-candidate-20260514T135053Z -> docs/experiments/non-hft-regime-state
+```
+
+Post-promotion canonical self-check:
+
+```text
+uv run python scripts/verify_pacifica_side_by_side_refresh.py \
+  --canonical-silver-dir data/pacifica_silver_partitioned \
+  --candidate-silver-dir data/pacifica_silver_partitioned \
+  --canonical-regime-dir docs/experiments/non-hft-regime-state \
+  --candidate-regime-dir docs/experiments/non-hft-regime-state \
+  --out-dir data/ops/pacifica-incremental-refresh-selfcheck-20260515T145557Z
+
+Exit: 0
+ok=True
+failures=[]
+
+Self-check rows:
+  prices: 5,252,223
+  trades: 699,037
+  bbo: 23,669,943
+  book: 60,389,166
+  candle: 8,152,538
+  mark_price_candle: 158,241,147
+  regime_state: 1,110,785
+```
+
+Canonical eligibility refresh:
+
+```text
+uv run python scripts/build_pacifica_eligibility_gates.py
+
+verdict: INSUFFICIENT_SAMPLE_DIAGNOSTIC
+symbols_evaluated: 66
+eligible_symbols: 0
+report: docs/experiments/paper-trading-eligibility/README.md
+
+gate_counts:
+  sample_gate_pass: 0 / 66
+  liquidity_gate_pass: 25 / 66
+  spread_cost_gate_pass: 62 / 66
+  activity_gate_pass: 0 / 66
+  stability_gate_pass: 63 / 66
+  concentration_gate_pass: 65 / 66
+  eligible: 0 / 66
+```
+
+Interpretation: no symbols are paper-trading eligible. This is expected diagnostic behavior for a young archive: only 15 distinct days are in the promoted regime state, below the fixed 30-day sample gate, and all symbols still fail the current activity gate. Do not loosen gates or treat this as an edge claim.
+
+Trade-activity lineage rerun after promotion and eligibility refresh:
+
+```text
+uv run python scripts/audit_pacifica_trade_activity_lineage.py --max-symbols 10
+
+verdict: LINEAGE_AUDIT_PASS_DIAGNOSTIC
+symbols_audited: 10
+sparse_trade_zero_median_explanations: 7
+raw/silver mismatches: 0
+silver/regime trade-count mismatches: 0
+unexplained zero medians: 0
+report: docs/experiments/trade-activity-lineage/README.md
+```
+
+Interpretation: the promoted raw -> silver -> regime -> eligibility trade-activity lineage is internally consistent for audited symbols. Seven audited symbols have zero all-row median trade notional because trade minutes are sparse, not because the pipeline dropped trades. This still does not authorize trading; it only turns the prior lineage failure into a diagnostic pass.
+
+Next safe steps:
+
+1. Keep collecting until at least the fixed 30-day eligibility sample gate can pass; 60+ days remains preferred for serious validation.
+2. Do not weaken sample/activity gates from this diagnostic run.
+3. If activity remains the dominant blocker after more days, pre-register a replacement metric before changing it: e.g. active-minute median plus active-minute share as a two-part gate.
+4. Rerun eligibility and lineage after the next verified canonical refresh.
+
+## Historical 2026-05-13 trade-activity lineage audit
+
+Superseded by the 2026-05-15 approved promotion and post-promotion lineage pass above. This section is retained only to explain why the refresh/promotion work was needed.
 
 Timestamp: `2026-05-13T22:18Z`
 

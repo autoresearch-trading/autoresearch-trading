@@ -1,0 +1,7 @@
+channel,key_nulls_canonical,duplicate_keys_canonical,exact_row_duplicates_canonical,duplicate_key_schema_canonical,missing_key_columns_canonical,key_nulls_candidate,duplicate_keys_candidate,exact_row_duplicates_candidate,duplicate_key_schema_candidate,missing_key_columns_candidate
+prices,0,102,102,symbol;event_ts_ms;recv_ms,,0,102,102,symbol;event_ts_ms;recv_ms,
+trades,0,8,8,symbol;event_ts_ms;recv_ms;trade_identity,,0,8,8,symbol;event_ts_ms;recv_ms;trade_identity,
+bbo,0,656,656,symbol;event_ts_ms;recv_ms;bbo_identity,,0,652,652,symbol;event_ts_ms;recv_ms;bbo_identity,
+book,0,9885,9884,symbol;event_ts_ms;recv_ms,,0,9882,9881,symbol;event_ts_ms;recv_ms,
+candle,0,77,77,symbol;event_ts_ms;recv_ms;interval;start_ts_ms;end_ts_ms;open;high;low;close;volume;trade_count,,0,77,77,symbol;event_ts_ms;recv_ms;interval;start_ts_ms;end_ts_ms;open;high;low;close;volume;trade_count,
+mark_price_candle,0,62,62,symbol;event_ts_ms;recv_ms;interval;start_ts_ms;end_ts_ms;open;high;low;close;volume;trade_count,,0,62,62,symbol;event_ts_ms;recv_ms;interval;start_ts_ms;end_ts_ms;open;high;low;close;volume;trade_count,
