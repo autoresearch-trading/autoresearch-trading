@@ -1,6 +1,6 @@
 # Pacifica API Surface Watch
 
-Checked at: 2026-05-18T13:00:20.289044+00:00
+Checked at: 2026-05-19T13:02:36.917957+00:00
 Verdict: UNCHANGED
 
 Purpose: alert when Pacifica's public docs/API surface appears to expose new collectable market-data endpoints, websocket sources, or intervals. This is read-only and does not update the collector automatically.

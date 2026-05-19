@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-18 22:18 UTC
+Updated: 2026-05-19 17:55 UTC
 
 ## Current state
 
@@ -14,6 +14,52 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-19 post-promotion next actions
+
+Timestamp: `2026-05-19T17:55Z`.
+
+Diego asked to execute the next-action list after canonical promotion.
+
+Completed:
+
+```text
+git_push: pushed local main commits through 777a1be to origin/main
+bounded_ops_check:
+  fly_app=pacifica-full-fidelity
+  fly_machine=e2862502a76778 state=started
+  recent_fly_watchdog_ok=true
+  fly_free_gb=109.16
+  db_error_rows=0
+  live_symbols=66
+  live_subscriptions=1651
+  bounded_r2_freshness_ok=true
+  latest_sampled_r2_payload_age_min=103.28
+  sampled_r2_payloads=158
+  sampled_r2_sidecars=158
+  sampled_r2_missing_sidecars=0
+  local_free_disk=83GiB
+  local_raw_cache_size=93.865GiB
+activity_gate_plan=docs/plans/pacifica-activity-gate-redesign-2026-05-19.md
+```
+
+Local cleanup note:
+
+```text
+Reviewed local temp cleanup candidates:
+  data/pacifica_silver_partitioned_candidate_20260518T173526Z (~5.7G)
+  data/ops/promotion-backups/pacifica-canonical-promotion-20260518T173526Z-20260518T221131Z (~11G)
+  smaller candidate regime/eligibility/toxic/lineage dirs under data/ops
+Attempted exact-path local deletion after push + green ops check, but the tool safety layer blocked the rm command and instructed not to retry. No local temp artifacts were pruned in this step.
+```
+
+Current stance:
+
+- Keep collecting and monitoring; do not restart/resume/resize anything unless explicitly approved.
+- Do not paper/live trade; canonical eligibility remains `0/66`.
+- Treat reports as diagnostic only until at least 30 full distinct days; prefer 60+ days for serious validation.
+- Do not tune toxicity/governor/activity thresholds on the 19-day sample.
+- Next research task, if approved, is implementing the V2 activity-gate diagnostics from `docs/plans/pacifica-activity-gate-redesign-2026-05-19.md` with TDD and without changing final eligibility semantics.
 
 ## Latest 2026-05-18 canonical promotion + refreshed diagnostic reports
 
