@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-19 17:55 UTC
+Updated: 2026-05-21 14:20 UTC
 
 ## Current state
 
@@ -14,6 +14,78 @@ Canonical active runtime/archive:
 - Active local lifecycle DB on Fly: `/data/pacifica_full_fidelity_storage.sqlite`
 - Local research raw cache: `data/pacifica_full_fidelity/` restored from R2 for research rebuilds
 - Local silver output: `data/pacifica_silver_partitioned/`
+
+## Latest 2026-05-21 Fly spool catch-up mode
+
+Timestamp: `2026-05-21T14:20Z`.
+
+Diego asked why so much data was sitting on Fly and approved catch-up mode to make Fly a bounded spool rather than a long-term archive. No raw local files or R2 objects were blindly deleted.
+
+Live read-only evidence before the change:
+
+```text
+fly_app=pacifica-full-fidelity
+fly_machine=e2862502a76778 state=started
+fly_volume=pacifica_full_fidelity_data size=200GB
+latest health log free_gb=100.81
+latest health log unverified_gb=84.13
+lifecycle_db_counts:
+  pruned:   42,601 files / 21,071,688,481 bytes
+  sealed:      857 files /  1,062,910,708 bytes
+  uploaded: 158,110 files / 89,273,052,409 bytes
+  verified:   1,500 files /    521,234,824 bytes
+  rows_with_errors=0
+old deployed cadence:
+  PACIFICA_FULL_FIDELITY_VERIFY_LIMIT=500
+  PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S=21600
+  effective uploaded-backlog clearing estimate at old cadence: about 79 days before prune eligibility
+```
+
+Change deployed to Fly:
+
+```text
+config file: ops/fly/pacifica-full-fidelity/fly.toml
+first deploy image:  pacifica-full-fidelity:deployment-01KS5C956KDPF90E2XAMT27MAY
+second deploy image: pacifica-full-fidelity:deployment-01KS5DPARYSD6Y7ZVTPVZ576ZJ
+machine instance after second deploy: 01KS5DQ4W6VQ86AQ2WHWA8G75Z
+PACIFICA_FULL_FIDELITY_VERIFY_LIMIT=5000
+PACIFICA_FULL_FIDELITY_BACKLOG_LANE_INTERVAL_S=900
+PACIFICA_FULL_FIDELITY_FULL_SCAN_INTERVAL_S=0
+PACIFICA_FULL_FIDELITY_RETENTION_DAYS=1
+PACIFICA_R2_PRUNE_EXECUTE=1
+```
+
+Why `FULL_SCAN_INTERVAL_S=0`: the first catch-up deploy reached the fresh lane, then appeared to block on a broad full-archive scan before verify/prune. The second deploy disables broad full scans during catch-up so the already-known `uploaded` backlog can be verified/pruned. Recent 12h scans remain enabled for newly closed chunks.
+
+Verification run before deploy:
+
+```text
+bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh && bash -n ops/fly/pacifica-full-fidelity/entrypoint.sh
+uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_pacifica_full_fidelity_storage.py -q
+  33 passed
+git diff --check
+  clean
+flyctl deploy ... --app pacifica-full-fidelity --remote-only
+  machine reached good state
+```
+
+Live post-deploy log evidence:
+
+```text
+2026-05-21T14:06:51Z lifecycle scan/upload/verify/prune start
+2026-05-21T14:07:06Z {"scanned": 5902, "state_db": "/data/pacifica_full_fidelity_storage.sqlite"}
+2026-05-21T14:07:19Z {"failed": 0, "skipped": 0, "uploaded": 67}
+2026-05-21T14:07:39Z {"failed": 0, "sidecars_uploaded": 2000, "skipped": 0}
+2026-05-21T14:07:39Z {"full_scan_skipped":true,"interval_s":0}
+2026-05-21T14:07:39Z {"dry_run": false, "reset": 0, "skipped_missing": 0, "skipped_recent": 0}
+```
+
+Current monitoring implication:
+
+- The catch-up verify/prune cycle was running after `14:07:39Z`; its `upload-verify`/`prune` summary had not appeared yet by `14:20Z`.
+- Next check should use Fly logs/health output to confirm `verified` and then `pruned` files/bytes are increasing, `rows_with_errors` stays zero, and `free_gb` trends up or at least does not trend toward the 50GiB floor.
+- If verify cycles take too long and delay fresh uploads, reduce `PACIFICA_FULL_FIDELITY_VERIFY_LIMIT` from `5000` to a smaller bounded value (for example `1000` or `2000`) while keeping `FULL_SCAN_INTERVAL_S=0` until backlog is under control.
+- After the uploaded backlog is cleared/pruned, restore a slower safety cadence and re-enable a broad full scan interval if needed; do not leave aggressive catch-up settings permanent without checking R2 request spend and archive freshness.
 
 ## Latest 2026-05-19 post-promotion next actions
 
