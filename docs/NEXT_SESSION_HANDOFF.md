@@ -1,6 +1,6 @@
 # Next Session Handoff — Pacifica Full-Fidelity Paper Trading
 
-Updated: 2026-05-21 14:20 UTC
+Updated: 2026-05-22 03:03 UTC
 
 ## Current state
 
@@ -86,6 +86,81 @@ Current monitoring implication:
 - Next check should use Fly logs/health output to confirm `verified` and then `pruned` files/bytes are increasing, `rows_with_errors` stays zero, and `free_gb` trends up or at least does not trend toward the 50GiB floor.
 - If verify cycles take too long and delay fresh uploads, reduce `PACIFICA_FULL_FIDELITY_VERIFY_LIMIT` from `5000` to a smaller bounded value (for example `1000` or `2000`) while keeping `FULL_SCAN_INTERVAL_S=0` until backlog is under control.
 - After the uploaded backlog is cleared/pruned, restore a slower safety cadence and re-enable a broad full scan interval if needed; do not leave aggressive catch-up settings permanent without checking R2 request spend and archive freshness.
+
+Follow-up live check at `2026-05-21T23:53Z`:
+
+```text
+checks_used:
+  flyctl status / machine status: machine started, HostStatus ok, image deployment-01KS5DPARYSD6Y7ZVTPVZ576ZJ
+  fly logs --no-tail: read-only; direct ssh health command was denied by tool policy and was not retried
+  local bounded R2 freshness script: scripts/check_pacifica_r2_freshness.py --stale-after-min 180
+fly_log_evidence:
+  2026-05-21T20:22:07Z upload_verify_summary: upload failed=0 skipped=0 uploaded=0; verify failed=0 skipped=0 verified=5000
+  2026-05-21T20:34:20Z lifecycle complete
+  2026-05-21T21:06:15Z next lifecycle started
+  2026-05-21T21:16:12Z full_scan_skipped=true interval_s=0
+  no later lifecycle complete was visible by 2026-05-21T23:53Z
+health_snapshot_from_logs_at_2026-05-21T20:34:21Z:
+  pruned:   43,101 files / 21,220,861,172 bytes
+  sealed:    2,606 files /  1,664,057,882 bytes
+  uploaded:155,772 files / 85,829,327,807 bytes
+  verified:  6,000 files /  4,674,530,005 bytes
+  rows_with_errors=0
+  free_gb=99.60
+  unverified_gb=81.48
+change_vs_14:20_snapshot:
+  verified: +4,500 files / +3.868 GiB
+  pruned:     +500 files / +0.139 GiB
+  uploaded: -2,338 files / -3.207 GiB
+  unverified_gb: -2.65 GiB
+  free_gb: -1.21 GiB, because new sealed/uploaded data still accumulated while catch-up ran
+bounded_r2_freshness_at_2026-05-21T23:53:18Z:
+  ok=false
+  failure=R2_REMOTE_FRESHNESS_STALE
+  latest_sampled_payload=channel=book/symbol=ETH/date=2026-05-21/hour=18/run-20260521T140652Z.jsonl.gz
+  latest_payload_age_min=282.39
+  payload_count=177 sidecar_count=177 missing_sidecars=0 listing_errors=0
+```
+
+Interpretation: catch-up is partially working but the `5000` verify batch is too slow for the single lifecycle loop; it verified a large backlog chunk, but the next safety cycle appears to be tying up fresh uploads long enough for the bounded R2 freshness SLO to fail. Next recommended ops change, if Diego approves a Fly deploy, is to reduce `PACIFICA_FULL_FIDELITY_VERIFY_LIMIT` to `1000` or `2000` while keeping `PACIFICA_FULL_FIDELITY_FULL_SCAN_INTERVAL_S=0`; this trades slower backlog clearance for less fresh-upload starvation. Do not retry direct Fly SSH diagnostics if denied; use logs, uploaded watchdog artifacts, and bounded R2 checks unless Diego explicitly changes the approval boundary.
+
+Follow-up deploy at `2026-05-22T01:16Z` after Diego approved next ops:
+
+```text
+config_changed:
+  ops/fly/pacifica-full-fidelity/fly.toml
+  PACIFICA_FULL_FIDELITY_VERIFY_LIMIT: 5000 -> 1000
+  PACIFICA_FULL_FIDELITY_FULL_SCAN_INTERVAL_S remains 0
+validation_before_deploy:
+  bash -n scripts/run_pacifica_full_fidelity_r2_lifecycle.sh
+  bash -n ops/fly/pacifica-full-fidelity/entrypoint.sh
+  uv run pytest tests/scripts/test_run_pacifica_full_fidelity_r2_lifecycle.py tests/scripts/test_pacifica_full_fidelity_storage.py -q
+    33 passed
+  git diff --check
+    clean
+deploy:
+  flyctl deploy . -c ops/fly/pacifica-full-fidelity/fly.toml --dockerfile ops/fly/pacifica-full-fidelity/Dockerfile --app pacifica-full-fidelity --remote-only
+  image=pacifica-full-fidelity:deployment-01KS6M1D9R4ZPSZ3T72PH1AHBN
+  machine=e2862502a76778 version=33 state=started HostStatus=ok
+  instance=01KS6M2G28B55K8BFG922J8SE8
+post_deploy_logs:
+  2026-05-22T01:17:00Z lifecycle scan/upload/verify/prune start
+  2026-05-22T01:18:31Z scanned=5493
+  2026-05-22T01:23:51Z upload failed=0 skipped=133 uploaded=1543
+  2026-05-22T01:26:42Z sidecars_uploaded=2000 failed=0 skipped=0
+  2026-05-22T01:26:42Z full_scan_skipped=true interval_s=0
+  2026-05-22T02:34:05Z upload_verify_summary: upload failed=0 skipped=133 uploaded=0; verify failed=0 skipped=0 verified=1000
+  2026-05-22T02:34:22Z post_safety_fresh_catchup=true
+  2026-05-22T02:35:46Z post_safety_fresh_scan scanned=5564
+  2026-05-22T02:40:23Z post_safety_fresh_upload failed=0 skipped=0 uploaded=937
+  2026-05-22T02:42:40Z post_safety_sidecars sidecars_uploaded=2000 failed=0 skipped=0
+  2026-05-22T02:42:40Z lifecycle complete
+bounded_r2_freshness_after_deploy:
+  2026-05-22T01:37:00Z ok=true latest_payload_age_min=146.75 payload_count=72 sidecar_count=72 missing_sidecars=0; caveat: one trades/BTC listing timeout
+  2026-05-22T03:03:23Z ok=true latest_payload_age_min=173.74 payload_count=104 sidecar_count=104 missing_sidecars=0 listing_errors=0
+```
+
+Current interpretation after the `1000` verify-limit deploy: the smaller safety lane completed successfully. Total lifecycle runtime was about 85 minutes (`01:17` to `02:42`) versus about 6.5 hours for the prior `5000` verify batch. Fresh uploads recovered enough for bounded R2 freshness checks to pass, but the `03:03Z` sample age was still close to the 180-minute threshold (`173.74` minutes). Next check should verify freshness stays under 180 minutes after the next lifecycle boundary, and that verified/pruned bytes keep increasing without DB error rows.
 
 ## Latest 2026-05-19 post-promotion next actions
 

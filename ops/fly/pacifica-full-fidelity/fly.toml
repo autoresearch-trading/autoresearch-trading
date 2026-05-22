@@ -19,8 +19,8 @@ kill_timeout = "30s"
   PACIFICA_FULL_FIDELITY_LIFECYCLE_INTERVAL_S = "900"
   PACIFICA_FULL_FIDELITY_BATCH_LIMIT = "2000"
   PACIFICA_FULL_FIDELITY_UPLOAD_LIMIT = "2000"
-  # Catch-up mode: verify/prune the uploaded backlog fast enough that Fly stays a bounded spool.
-  PACIFICA_FULL_FIDELITY_VERIFY_LIMIT = "5000"
+  # Catch-up mode: smaller verify batches keep fresh uploads from being starved while pruning still advances.
+  PACIFICA_FULL_FIDELITY_VERIFY_LIMIT = "1000"
   PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_LIMIT = "2000"
   PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_TRANSFERS = "16"
   PACIFICA_FULL_FIDELITY_FRESH_UPLOAD_CHECKERS = "32"
